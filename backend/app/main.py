@@ -61,8 +61,16 @@ async def lifespan(app: FastAPI):
         _optimization_loop_job,
         "cron",
         hour=4,
-        minute=0,           # 4 AM UTC daily — after US session closes
+        minute=0,
         id="optimization_loop",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _daily_reset_job,
+        "cron",
+        hour=0,
+        minute=1,           # just after midnight UTC — reset daily counters
+        id="daily_reset",
         replace_existing=True,
     )
     scheduler.start()
@@ -157,14 +165,37 @@ async def _resolve_paper_trades_job():
         logger.error("Error in resolve_paper_trades_job: %s", exc, exc_info=True)
 
 
+async def _daily_reset_job():
+    """Midnight UTC: create fresh DailyStats rows so counters start at zero each day."""
+    try:
+        from .services.paper_trading import reset_daily_stats
+        db = SessionLocal()
+        try:
+            reset_daily_stats(db)
+        finally:
+            db.close()
+    except Exception as exc:
+        logger.error("Error in daily_reset_job: %s", exc, exc_info=True)
+
+
 async def _optimization_loop_job():
     """
-    Daily: analyse performance and write insights to StrategyLog.
+    Daily at 4 AM UTC: analyse performance and write insights to StrategyLog.
+
+    The self-learning loop looks at:
+      • Overall win rate trend (last 10 vs all-time)
+      • Per-setup win rates — flag declining setups
+      • Best/worst trading sessions
+      • Profit factor and drawdown patterns
+      • Ticks P&L trajectory
 
     NEVER auto-applies changes — only records findings for human review.
     """
     try:
+        import json as _json
         from .services.paper_trading import compute_performance_stats
+        from .models import PaperTrade, DailyStats
+        from datetime import date, timedelta
 
         db = SessionLocal()
         try:
@@ -173,13 +204,13 @@ async def _optimization_loop_job():
                 if stats["total_trades"] < 5:
                     continue
 
-                insights = _generate_insights(stats, instrument)
-                for msg, data in insights:
+                insights = _generate_insights(stats, instrument, db)
+                for msg, log_type, data in insights:
                     log = StrategyLog(
                         instrument=instrument,
-                        log_type="INSIGHT",
+                        log_type=log_type,
                         message=msg,
-                        data_json=__import__("json").dumps(data),
+                        data_json=_json.dumps(data),
                     )
                     db.add(log)
             db.commit()
@@ -190,34 +221,70 @@ async def _optimization_loop_job():
         logger.error("Error in optimization_loop_job: %s", exc, exc_info=True)
 
 
-def _generate_insights(stats: dict, instrument: str) -> list[tuple[str, dict]]:
+def _generate_insights(stats: dict, instrument: str, db) -> list[tuple[str, str, dict]]:
     """
-    Produce human-readable insights from performance stats.
-    Returns list of (message, supporting_data) tuples.
+    Returns list of (message, log_type, data) tuples.
+    log_type: INSIGHT | WARNING | SUGGESTION
     """
-    insights = []
+    import json as _json
+    from datetime import date, timedelta
+    from .models import PaperTrade, DailyStats, Signal as SignalModel
 
+    insights = []
     wr = stats["win_rate"]
+    total = stats["total_trades"]
+    pf = stats.get("profit_factor")
+    total_ticks = stats.get("total_ticks", 0)
+
+    # ── Win rate assessment ────────────────────────────────────────────────────
     if wr < 45:
         insights.append((
-            f"{instrument}: Win rate has dropped to {wr:.1f}% over "
-            f"{stats['total_trades']} trades. Consider reviewing gate thresholds "
-            "or reducing position size until performance improves.",
-            {"win_rate": wr, "trades": stats["total_trades"]},
+            f"{instrument}: Win rate {wr:.1f}% over {total} trades is below 45% threshold. "
+            "Review gate thresholds or raise minimum grade to A+.",
+            "WARNING",
+            {"win_rate": wr, "trades": total},
         ))
-    elif wr >= 70:
+    elif wr >= 65:
         insights.append((
-            f"{instrument}: Strong performance — {wr:.1f}% win rate over "
-            f"{stats['total_trades']} trades.",
-            {"win_rate": wr, "trades": stats["total_trades"]},
+            f"{instrument}: Strong win rate of {wr:.1f}% over {total} trades.",
+            "INSIGHT",
+            {"win_rate": wr, "trades": total},
         ))
 
+    # ── Recent trend: last 10 trades vs all-time ───────────────────────────────
+    recent = (
+        db.query(PaperTrade)
+        .filter(PaperTrade.instrument == instrument, PaperTrade.status == "CLOSED")
+        .order_by(PaperTrade.closed_at.desc())
+        .limit(10)
+        .all()
+    )
+    if len(recent) >= 10:
+        recent_wins = sum(1 for t in recent if t.is_win)
+        recent_wr = recent_wins / len(recent) * 100
+        if recent_wr < wr - 15:
+            insights.append((
+                f"{instrument}: Last 10 trades show declining performance — "
+                f"{recent_wr:.0f}% win rate vs {wr:.1f}% all-time. "
+                "Consider pausing until conditions improve.",
+                "WARNING",
+                {"recent_wr": recent_wr, "alltime_wr": wr},
+            ))
+        elif recent_wr > wr + 15:
+            insights.append((
+                f"{instrument}: Recent momentum improving — "
+                f"last 10 trades at {recent_wr:.0f}% vs {wr:.1f}% all-time.",
+                "INSIGHT",
+                {"recent_wr": recent_wr, "alltime_wr": wr},
+            ))
+
+    # ── Setup analysis ─────────────────────────────────────────────────────────
     if stats["best_setup"]:
         best_wr = stats["setup_win_rates"].get(stats["best_setup"], 0)
         insights.append((
-            f"{instrument}: Best-performing setup is '{stats['best_setup']}' "
-            f"with {best_wr:.1f}% win rate. Consider prioritising A+ grade signals "
-            "from this setup.",
+            f"{instrument}: Best setup is '{stats['best_setup']}' at {best_wr:.1f}% win rate. "
+            "Prioritise A+ signals from this setup.",
+            "SUGGESTION",
             {"best_setup": stats["best_setup"], "best_wr": best_wr},
         ))
 
@@ -225,20 +292,88 @@ def _generate_insights(stats: dict, instrument: str) -> list[tuple[str, dict]]:
         worst_wr = stats["setup_win_rates"].get(stats["worst_setup"], 0)
         if worst_wr < 40:
             insights.append((
-                f"{instrument}: Weakest setup is '{stats['worst_setup']}' "
-                f"({worst_wr:.1f}% win rate). Consider disabling or raising the grade "
-                "threshold for this setup type.",
+                f"{instrument}: '{stats['worst_setup']}' is underperforming at {worst_wr:.1f}%. "
+                "Consider disabling this setup or requiring A+ grade only.",
+                "SUGGESTION",
                 {"worst_setup": stats["worst_setup"], "worst_wr": worst_wr},
             ))
 
-    pf = stats.get("profit_factor")
+    # ── Profit factor ──────────────────────────────────────────────────────────
     if pf is not None and pf < 1.0:
         insights.append((
-            f"{instrument}: Profit factor is below 1.0 ({pf:.2f}). "
-            "The strategy is currently losing more than it wins in dollar terms. "
-            "PAUSE paper trading and review recent signals before continuing.",
+            f"{instrument}: Profit factor {pf:.2f} is below 1.0 — "
+            "losing more than winning in dollar terms. PAUSE and review.",
+            "WARNING",
             {"profit_factor": pf},
         ))
+    elif pf is not None and pf >= 2.0:
+        insights.append((
+            f"{instrument}: Excellent profit factor of {pf:.2f}.",
+            "INSIGHT",
+            {"profit_factor": pf},
+        ))
+
+    # ── Ticks P&L trajectory ──────────────────────────────────────────────────
+    if total_ticks < 0:
+        insights.append((
+            f"{instrument}: Cumulative P&L is negative ({total_ticks:+.0f} ticks). "
+            "Review entries — consider requiring higher score threshold.",
+            "WARNING",
+            {"total_ticks": total_ticks},
+        ))
+
+    # ── Session-based learning: last 30 days ──────────────────────────────────
+    try:
+        import pytz
+        ET = pytz.timezone("America/New_York")
+        from collections import defaultdict
+        session_data: dict = defaultdict(lambda: {"wins": 0, "total": 0})
+
+        all_closed = (
+            db.query(PaperTrade)
+            .filter(PaperTrade.instrument == instrument, PaperTrade.status == "CLOSED")
+            .all()
+        )
+        for t in all_closed:
+            if not t.opened_at:
+                continue
+            et = t.opened_at.astimezone(ET) if t.opened_at.tzinfo else ET.localize(t.opened_at)
+            h = et.hour
+            sess = "London" if 2 <= h < 8 else "NY Open" if 8 <= h < 12 else "Afternoon" if 13 <= h < 17 else "Other"
+            session_data[sess]["total"] += 1
+            if t.is_win:
+                session_data[sess]["wins"] += 1
+
+        best_sess = max(
+            ((s, v) for s, v in session_data.items() if v["total"] >= 5),
+            key=lambda x: x[1]["wins"] / x[1]["total"],
+            default=None,
+        )
+        worst_sess = min(
+            ((s, v) for s, v in session_data.items() if v["total"] >= 5),
+            key=lambda x: x[1]["wins"] / x[1]["total"],
+            default=None,
+        )
+        if best_sess:
+            s, v = best_sess
+            sess_wr = v["wins"] / v["total"] * 100
+            insights.append((
+                f"{instrument}: Best session is '{s}' with {sess_wr:.0f}% win rate "
+                f"over {v['total']} trades. Focus signals during this window.",
+                "SUGGESTION",
+                {"best_session": s, "session_wr": round(sess_wr, 1), "session_trades": v["total"]},
+            ))
+        if worst_sess and worst_sess[1]["wins"] / worst_sess[1]["total"] < 0.4:
+            s, v = worst_sess
+            sess_wr = v["wins"] / v["total"] * 100
+            insights.append((
+                f"{instrument}: Weakest session is '{s}' at {sess_wr:.0f}% win rate. "
+                "Consider filtering out signals during this window.",
+                "SUGGESTION",
+                {"worst_session": s, "session_wr": round(sess_wr, 1)},
+            ))
+    except Exception:
+        pass
 
     return insights
 

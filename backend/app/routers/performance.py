@@ -15,10 +15,19 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import PaperTrade, Signal, StrategyLog
-from ..services.paper_trading import compute_performance_stats
+from ..services.paper_trading import compute_performance_stats, get_risk_status
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/performance", tags=["Performance"])
+
+
+@router.get("/status")
+def get_status(db: Session = Depends(get_db)):
+    """
+    Live risk dashboard: per-instrument halt state, daily trade counts,
+    ticks P&L, consecutive losses, and global drawdown.
+    """
+    return get_risk_status(db)
 
 
 @router.get("")

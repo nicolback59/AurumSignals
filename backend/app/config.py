@@ -22,10 +22,15 @@ class Settings(BaseSettings):
     # Behaviour
     log_level: str = "INFO"
     paper_trading_enabled: bool = True
-    max_open_trades_per_instrument: int = 1  # avoid stacking multiple open trades
+    max_open_trades_per_instrument: int = 1
     trade_contracts: int = 1
 
-    # Scheduler (minutes between engine scans when running Python engine)
+    # Daily risk limits
+    daily_trade_limit: int = 10                  # halt instrument after N trades/day
+    global_drawdown_halt_ticks: float = 1000.0   # halt ALL trading at -X ticks global
+    consecutive_loss_halt: int = 5               # halt instrument after N consecutive losses
+
+    # Scheduler
     scan_interval_minutes: int = 5
 
     class Config:

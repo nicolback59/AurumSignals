@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, Float, String, Boolean, DateTime, Text, ForeignKey
+from sqlalchemy import Column, Integer, Float, String, Boolean, DateTime, Date, Text, ForeignKey, UniqueConstraint
 from sqlalchemy.orm import relationship
 from datetime import datetime
 
@@ -47,11 +47,12 @@ class PaperTrade(Base):
 
     entry_price = Column(Float, nullable=False)
     exit_price = Column(Float)
-    # TP1 | TP2 | TP3 | TP4 | SL | EXPIRED
+    # TP1 | TP2 | TP3 | TP4 | SL | BE | EXPIRED
     exit_reason = Column(String(20))
 
     contracts = Column(Integer, default=1)
     pnl_points = Column(Float)
+    pnl_ticks = Column(Float)
     pnl_dollars = Column(Float)
 
     opened_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -66,6 +67,30 @@ class PaperTrade(Base):
     @property
     def is_win(self) -> bool:
         return self.exit_reason in ("TP1", "TP2", "TP3", "TP4")
+
+    @property
+    def is_be(self) -> bool:
+        return self.exit_reason == "BE"
+
+
+class DailyStats(Base):
+    """Per-instrument daily trade counter and risk state. Reset each trading day."""
+    __tablename__ = "daily_stats"
+    __table_args__ = (UniqueConstraint("instrument", "date", name="uq_instrument_date"),)
+
+    id = Column(Integer, primary_key=True, index=True)
+    instrument = Column(String(10), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+
+    trades_count = Column(Integer, default=0)
+    wins = Column(Integer, default=0)
+    losses = Column(Integer, default=0)
+    be_count = Column(Integer, default=0)
+    pnl_ticks = Column(Float, default=0.0)
+    pnl_dollars = Column(Float, default=0.0)
+    consecutive_losses = Column(Integer, default=0)
+    is_halted = Column(Boolean, default=False)
+    halt_reason = Column(String(50))
 
 
 class StrategyLog(Base):

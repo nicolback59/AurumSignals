@@ -1,14 +1,9 @@
 <!DOCTYPE html>
 <!--
-  NQ Signal Pro — Live Signal Dashboard Widget
-  =============================================
-  Embed this in Squarespace via a Code Block.
-
-  SETUP:
-    1. Deploy backend to Render and note your URL (e.g. https://nq-signal-pro.onrender.com)
-    2. Replace API_BASE_URL below with your Render URL.
-    3. In Squarespace editor → add a Code Block → paste ALL of this HTML.
-    4. Save and publish.
+  NQ Signal Pro — Live Signal Dashboard
+  ======================================
+  Embed in Squarespace via a Code Block.
+  Replace API_BASE_URL below with your Render URL.
 -->
 <html lang="en">
 <head>
@@ -16,197 +11,109 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <style>
   :root {
-    --bg:       #0a0a1e;
-    --bg2:      #111130;
-    --border:   #2a2a4a;
-    --text:     #ccccee;
-    --muted:    #888899;
-    --green:    #00ff88;
-    --red:      #ff4444;
-    --gold:     #ffd700;
-    --blue:     #40c4ff;
-    --purple:   #ce93d8;
-    --font:     'Courier New', Courier, monospace;
+    --bg:      #0a0a0f;
+    --bg2:     #111118;
+    --bg3:     #0d0d14;
+    --border:  #1e1e2e;
+    --text:    #ccccee;
+    --muted:   #666677;
+    --green:   #00ff88;
+    --red:     #ff4444;
+    --gold:    #ffd700;
+    --blue:    #40c4ff;
+    --purple:  #ce93d8;
+    --orange:  #ff9800;
+    --font:    'Courier New', Courier, monospace;
   }
-
   * { box-sizing: border-box; margin: 0; padding: 0; }
-
-  body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--font);
-    font-size: 13px;
-    padding: 16px;
-  }
+  body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; padding: 16px; }
 
   .widget-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    padding: 10px 14px;
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 6px 6px 0 0;
-    margin-bottom: 2px;
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 14px; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: 6px; margin-bottom: 12px;
   }
-
   .widget-title { color: #aaaacc; font-size: 14px; letter-spacing: 1px; }
-
-  .live-dot {
-    width: 8px; height: 8px;
-    border-radius: 50%;
-    background: var(--green);
-    animation: pulse 2s infinite;
-    display: inline-block;
-    margin-right: 6px;
-  }
-  @keyframes pulse {
-    0%, 100% { opacity: 1; }
-    50%       { opacity: 0.3; }
-  }
-
+  .live-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; display: inline-block; margin-right: 6px; }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
   .refresh-info { color: var(--muted); font-size: 11px; }
 
-  .signal-card {
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-    padding: 14px;
-    margin-bottom: 8px;
-  }
+  .status-row { display: flex; gap: 8px; margin-bottom: 12px; flex-wrap: wrap; }
+  .status-pill { flex: 1; min-width: 110px; padding: 8px 12px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg2); }
+  .status-pill.active { border-color: rgba(0,255,136,0.4); background: rgba(0,255,136,0.04); }
+  .status-pill.halted { border-color: rgba(255,68,68,0.4);  background: rgba(255,68,68,0.04); }
+  .pill-dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; margin-right: 6px; vertical-align: middle; }
+  .pill-dot.active { background: var(--green); box-shadow: 0 0 6px var(--green); }
+  .pill-dot.halted  { background: var(--red);   box-shadow: 0 0 6px var(--red); }
+  .pill-name { font-weight: bold; font-size: 13px; }
+  .pill-state { font-size: 10px; margin-top: 2px; }
+  .pill-state.active { color: var(--green); }
+  .pill-state.halted { color: var(--red); }
 
+  .cards-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin-bottom: 12px; }
+  .card { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; }
+  .card-label { color: var(--muted); font-size: 10px; letter-spacing: 0.5px; margin-bottom: 5px; }
+  .card-value { font-size: 20px; font-weight: bold; line-height: 1.1; }
+  .card-sub   { color: var(--muted); font-size: 10px; margin-top: 3px; }
+
+  .risk-panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 6px; margin-bottom: 12px; overflow: hidden; }
+  .risk-header { padding: 8px 12px; border-bottom: 1px solid var(--border); color: #88ccaa; font-size: 11px; letter-spacing: 1px; display: flex; justify-content: space-between; align-items: center; }
+  .risk-row { padding: 10px 12px; border-bottom: 1px solid #0f0f18; display: grid; grid-template-columns: 65px 1fr auto; align-items: start; gap: 10px; }
+  .risk-row:last-of-type { border-bottom: none; }
+  .risk-inst  { font-weight: bold; font-size: 13px; }
+  .badge-active { color: var(--green); font-size: 10px; }
+  .badge-halted { color: var(--red);   font-size: 10px; }
+  .halt-reason  { color: var(--orange); font-size: 9px; margin-top: 2px; line-height: 1.3; }
+  .risk-bar-track { height: 4px; background: #1a1a2a; border-radius: 2px; margin-top: 4px; }
+  .risk-bar-fill  { height: 100%; border-radius: 2px; transition: width 0.5s; }
+  .risk-pnl { font-size: 13px; font-weight: bold; text-align: right; }
+  .global-row { padding: 8px 12px; background: #080810; border-top: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
+  .global-label { color: var(--muted); font-size: 10px; }
+
+  .section-label { color: var(--muted); font-size: 10px; letter-spacing: 1px; margin-bottom: 8px; }
+
+  .signal-card { background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; padding: 12px 14px; margin-bottom: 8px; }
   .signal-card.long  { border-left: 3px solid var(--green); }
   .signal-card.short { border-left: 3px solid var(--red); }
-
-  .signal-header {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    margin-bottom: 10px;
-  }
-
-  .direction-badge {
-    font-size: 15px;
-    font-weight: bold;
-    letter-spacing: 1px;
-  }
+  .signal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
+  .direction-badge { font-size: 14px; font-weight: bold; letter-spacing: 1px; }
   .direction-badge.long  { color: var(--green); }
   .direction-badge.short { color: var(--red); }
-
-  .grade-badge {
-    padding: 2px 8px;
-    border-radius: 3px;
-    font-size: 12px;
-    font-weight: bold;
-  }
-  .grade-A-plus { background: rgba(255,215,0,0.15); color: var(--gold); border: 1px solid var(--gold); }
-  .grade-A      { background: rgba(128,203,196,0.15); color: #80cbc4; border: 1px solid #80cbc4; }
+  .grade-badge { padding: 2px 8px; border-radius: 3px; font-size: 11px; font-weight: bold; }
+  .grade-A-plus { background: rgba(255,215,0,0.15);   color: var(--gold);  border: 1px solid var(--gold); }
+  .grade-A      { background: rgba(128,203,196,0.15); color: #80cbc4;      border: 1px solid #80cbc4; }
   .grade-B-plus { background: rgba(136,136,153,0.15); color: var(--muted); border: 1px solid var(--muted); }
-
-  .price-grid {
-    display: grid;
-    grid-template-columns: repeat(3, 1fr);
-    gap: 6px;
-    margin-top: 8px;
-  }
-
+  .price-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; margin-top: 8px; }
   .price-item { text-align: center; }
   .price-label { color: var(--muted); font-size: 10px; text-transform: uppercase; }
-  .price-value { font-size: 13px; }
-  .price-value.entry  { color: var(--text); }
-  .price-value.sl     { color: var(--red); }
-  .price-value.tp1    { color: var(--green); }
-  .price-value.tp2    { color: var(--blue); }
-  .price-value.tp3    { color: var(--purple); }
-  .price-value.tp4    { color: var(--gold); }
+  .price-value.entry { color: var(--text); }
+  .price-value.sl    { color: var(--red); }
+  .price-value.tp1   { color: var(--green); }
+  .price-value.tp2   { color: var(--blue); }
+  .price-value.tp3   { color: var(--purple); }
+  .price-value.tp4   { color: var(--gold); }
+  .score-bar  { height: 3px; background: var(--border); border-radius: 2px; margin-top: 4px; overflow: hidden; }
+  .score-fill { height: 100%; border-radius: 2px; transition: width 0.4s; }
+  .meta-row   { display: flex; justify-content: space-between; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--border); color: var(--muted); font-size: 10px; }
 
-  .meta-row {
-    display: flex;
-    justify-content: space-between;
-    margin-top: 10px;
-    padding-top: 8px;
-    border-top: 1px solid var(--border);
-    color: var(--muted);
-    font-size: 11px;
-  }
+  .no-signals { text-align: center; padding: 24px; color: var(--muted); background: var(--bg2); border: 1px solid var(--border); border-radius: 4px; }
+  .waiting-chip { display: inline-block; padding: 4px 12px; border-radius: 20px; background: rgba(255,152,0,0.08); border: 1px solid rgba(255,152,0,0.3); color: var(--orange); font-size: 11px; margin-top: 8px; }
 
-  .gates-row {
-    display: flex;
-    gap: 6px;
-    flex-wrap: wrap;
-    margin-top: 8px;
-  }
-
-  .gate-chip {
-    padding: 1px 6px;
-    border-radius: 3px;
-    font-size: 10px;
-  }
-  .gate-pass { background: rgba(0,255,136,0.1); color: var(--green); border: 1px solid rgba(0,255,136,0.3); }
-  .gate-fail { background: rgba(255,68,68,0.1); color: var(--red); border: 1px solid rgba(255,68,68,0.3); }
-
-  .no-signals {
-    text-align: center;
-    padding: 30px;
-    color: var(--muted);
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 4px;
-  }
-
-  .error-msg {
-    color: var(--red);
-    text-align: center;
-    padding: 20px;
-    background: var(--bg2);
-    border: 1px solid #331111;
-    border-radius: 4px;
-  }
-
-  .loading {
-    text-align: center;
-    padding: 30px;
-    color: var(--muted);
-  }
-
-  .tab-row {
-    display: flex;
-    gap: 4px;
-    margin-bottom: 8px;
-  }
-
-  .tab-btn {
-    padding: 5px 12px;
-    background: var(--bg2);
-    border: 1px solid var(--border);
-    border-radius: 3px;
-    color: var(--muted);
-    cursor: pointer;
-    font-size: 12px;
-    font-family: var(--font);
-  }
+  .tab-row { display: flex; gap: 4px; margin-bottom: 10px; }
+  .tab-btn { padding: 5px 12px; background: var(--bg2); border: 1px solid var(--border); border-radius: 3px; color: var(--muted); cursor: pointer; font-size: 12px; font-family: var(--font); }
   .tab-btn.active { background: #1a1a3a; color: var(--text); border-color: #4444aa; }
-
-  .score-bar {
-    height: 3px;
-    background: var(--border);
-    border-radius: 2px;
-    margin-top: 4px;
-    overflow: hidden;
-  }
-  .score-fill {
-    height: 100%;
-    border-radius: 2px;
-    transition: width 0.4s ease;
-  }
+  .loading   { text-align: center; padding: 30px; color: var(--muted); }
+  .error-msg { color: var(--red); text-align: center; padding: 20px; background: var(--bg2); border: 1px solid #331111; border-radius: 4px; }
+  .disclaimer { margin-top: 12px; padding: 8px 10px; background: #0f0a00; border: 1px solid #332200; border-radius: 4px; color: #885522; font-size: 10px; }
 </style>
 </head>
 <body>
 
+<!-- !! REPLACE WITH YOUR RENDER URL !! -->
+<script>const API_BASE_URL = 'https://nq-signal-pro.onrender.com';</script>
+
 <div class="widget-header">
-  <span class="widget-title">
-    <span class="live-dot"></span>LIVE SIGNALS
-  </span>
+  <span class="widget-title"><span class="live-dot"></span>NQ SIGNAL PRO</span>
   <span class="refresh-info" id="last-refresh">Loading…</span>
 </div>
 
@@ -216,57 +123,144 @@
   <button class="tab-btn" onclick="setFilter('MGC')">MGC</button>
 </div>
 
-<div id="signals-container">
-  <div class="loading">Fetching signals…</div>
-</div>
+<div id="status-section"></div>
+<div id="signals-section"><div class="loading">Fetching signals…</div></div>
+
+<div class="disclaimer">⚠ PAPER TRADING ONLY — Simulated results. Not financial advice. Futures involve substantial risk of loss.</div>
 
 <script>
-  // !! REPLACE WITH YOUR RENDER URL !!
-  const API_BASE_URL = 'https://nq-signal-pro.onrender.com';
-  const REFRESH_MS   = 60_000;  // refresh every 60 seconds
-
+  const REFRESH_MS = 60_000;
   let currentFilter = 'ALL';
 
   function setFilter(f) {
     currentFilter = f;
-    document.querySelectorAll('.tab-btn').forEach(b => {
-      b.classList.toggle('active', b.textContent === f);
-    });
-    loadSignals();
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.toggle('active', b.textContent === f));
+    loadAll();
   }
 
-  async function loadSignals() {
-    const container = document.getElementById('signals-container');
+  async function loadAll() {
     try {
-      const url = currentFilter === 'ALL'
-        ? `${API_BASE_URL}/signals?limit=10`
-        : `${API_BASE_URL}/signals?instrument=${currentFilter}&limit=10`;
-
-      const resp = await fetch(url);
-      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-
-      const signals = await resp.json();
+      const [statusData, signals] = await Promise.all([
+        fetch(`${API_BASE_URL}/performance/status`).then(r => r.json()),
+        fetch(`${API_BASE_URL}/signals?limit=8${currentFilter !== 'ALL' ? '&instrument=' + currentFilter : ''}`).then(r => r.json()),
+      ]);
+      renderStatus(statusData);
       renderSignals(signals);
-
-      const now = new Date();
-      document.getElementById('last-refresh').textContent =
-        `Updated ${now.toLocaleTimeString()}`;
+      document.getElementById('last-refresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
     } catch (err) {
-      container.innerHTML = `<div class="error-msg">
-        Unable to load signals.<br>
-        <small>${err.message}</small>
-      </div>`;
+      document.getElementById('signals-section').innerHTML =
+        `<div class="error-msg">Unable to load data.<br><small>${err.message}</small></div>`;
     }
+  }
+
+  function renderStatus(s) {
+    const instruments = s.instruments || {};
+    const instKeys = currentFilter === 'ALL' ? Object.keys(instruments) : [currentFilter].filter(k => instruments[k]);
+
+    let totalWins = 0, totalLosses = 0, totalBE = 0, totalTicks = 0;
+    instKeys.forEach(k => {
+      const i = instruments[k];
+      totalWins   += i.wins_today   || 0;
+      totalLosses += i.losses_today || 0;
+      totalBE     += i.be_today     || 0;
+      totalTicks  += i.pnl_ticks_today || 0;
+    });
+    const decided = totalWins + totalLosses;
+    const wr = decided > 0 ? (totalWins / decided * 100).toFixed(1) : null;
+    const wrColor = !wr ? 'var(--muted)' : +wr >= 60 ? 'var(--green)' : +wr >= 50 ? 'var(--gold)' : 'var(--red)';
+    const tickColor = totalTicks >= 0 ? 'var(--green)' : 'var(--red)';
+
+    const pillsHtml = instKeys.map(k => {
+      const i = instruments[k];
+      const cls = i.is_active ? 'active' : 'halted';
+      return `<div class="status-pill ${cls}">
+        <div><span class="pill-dot ${cls}"></span><span class="pill-name">${k}</span></div>
+        <div class="pill-state ${cls}">${i.is_active ? 'ACTIVE' : 'HALTED'} · ${i.trades_today}/${i.trades_limit} trades</div>
+      </div>`;
+    }).join('');
+
+    const riskRowsHtml = instKeys.map(k => {
+      const i = instruments[k];
+      const pct = Math.min((i.trades_today / i.trades_limit) * 100, 100);
+      const barColor = pct >= 100 ? 'var(--red)' : pct >= 70 ? 'var(--orange)' : 'var(--blue)';
+      const decided_i = (i.wins_today || 0) + (i.losses_today || 0);
+      const wrI = decided_i > 0 ? (i.wins_today / decided_i * 100).toFixed(0) + '%' : '—';
+      const pnlColor = (i.pnl_ticks_today || 0) >= 0 ? 'var(--green)' : 'var(--red)';
+      const pnlSign  = (i.pnl_ticks_today || 0) >= 0 ? '+' : '';
+      return `<div class="risk-row">
+        <div>
+          <div class="risk-inst">${k}</div>
+          <div class="${i.is_active ? 'badge-active' : 'badge-halted'}">${i.is_active ? 'ACTIVE' : 'HALTED'}</div>
+          ${!i.is_active ? `<div class="halt-reason">${(i.halt_reason||'').replace(/\(.*\)/,'').trim()}</div>` : ''}
+        </div>
+        <div>
+          <div style="font-size:11px;color:var(--text)">${i.wins_today}W / ${i.losses_today}L / ${i.be_today}BE &nbsp; WR ${wrI}</div>
+          <div class="risk-bar-track"><div class="risk-bar-fill" style="width:${pct}%;background:${barColor}"></div></div>
+          <div style="font-size:9px;color:var(--muted);margin-top:2px">${i.trades_today} / ${i.trades_limit} trades used</div>
+        </div>
+        <div>
+          <div class="risk-pnl" style="color:${pnlColor}">${pnlSign}${(i.pnl_ticks_today||0).toFixed(0)}t</div>
+          ${(i.consecutive_losses||0) > 0 ? `<div style="color:var(--orange);font-size:9px;text-align:right;margin-top:2px">CONSEC L: ${i.consecutive_losses}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('');
+
+    const ddPct = Math.min(Math.abs(s.global_pnl_ticks) / s.global_drawdown_limit * 100, 100);
+    const ddColor = ddPct >= 80 ? 'var(--red)' : ddPct >= 50 ? 'var(--orange)' : 'var(--green)';
+    const gdColor = s.global_pnl_ticks >= 0 ? 'var(--green)' : 'var(--red)';
+    const gdSign  = s.global_pnl_ticks >= 0 ? '+' : '';
+
+    document.getElementById('status-section').innerHTML = `
+      <div class="status-row">${pillsHtml}</div>
+
+      <div class="cards-grid">
+        <div class="card">
+          <div class="card-label">TODAY'S RECORD</div>
+          <div class="card-value" style="font-size:15px">${totalWins}W / ${totalLosses}L / ${totalBE}BE</div>
+          <div class="card-sub">${decided} decided</div>
+        </div>
+        <div class="card">
+          <div class="card-label">WIN RATE</div>
+          <div class="card-value" style="color:${wrColor}">${wr ? wr + '%' : '—'}</div>
+          <div class="card-sub">today</div>
+        </div>
+        <div class="card">
+          <div class="card-label">TOTAL TICKS</div>
+          <div class="card-value" style="color:${tickColor}">${totalTicks >= 0 ? '+' : ''}${totalTicks.toFixed(0)}t</div>
+          <div class="card-sub">paper P&L today</div>
+        </div>
+        <div class="card">
+          <div class="card-label">GLOBAL DRAWDOWN</div>
+          <div class="card-value" style="color:${gdColor};font-size:16px">${gdSign}${s.global_pnl_ticks}t</div>
+          <div class="card-sub">limit: -${s.global_drawdown_limit}t</div>
+        </div>
+      </div>
+
+      <div class="risk-panel">
+        <div class="risk-header"><span>── DAILY RISK ──</span><span style="color:var(--muted)">${s.date||''}</span></div>
+        ${riskRowsHtml}
+        <div class="global-row">
+          <div>
+            <div class="global-label">Global drawdown (halt at -${s.global_drawdown_limit}t)</div>
+            <div style="height:3px;background:#1a1a2a;border-radius:2px;margin-top:4px;width:140px">
+              <div style="height:100%;border-radius:2px;width:${ddPct}%;background:${ddColor};transition:width 0.5s"></div>
+            </div>
+          </div>
+          <div style="font-size:12px;font-weight:bold;color:${gdColor}">${gdSign}${s.global_pnl_ticks}t / -${s.global_drawdown_limit}t</div>
+        </div>
+      </div>
+
+      <div class="section-label">── LIVE SIGNALS ──</div>
+    `;
   }
 
   function renderSignals(signals) {
-    const container = document.getElementById('signals-container');
+    const el = document.getElementById('signals-section');
     if (!signals || signals.length === 0) {
-      container.innerHTML = '<div class="no-signals">No signals yet today.<br>Waiting for market conditions…</div>';
+      el.innerHTML = `<div class="no-signals">No signals today.<br><span class="waiting-chip">◆ WAITING — No clear setup</span></div>`;
       return;
     }
-
-    container.innerHTML = signals.map(s => buildCard(s)).join('');
+    el.innerHTML = signals.map(buildCard).join('');
   }
 
   function buildCard(s) {
@@ -274,71 +268,33 @@
     const dirClass = isLong ? 'long' : 'short';
     const arrow = isLong ? '▲' : '▼';
     const gradeClass = s.grade === 'A+' ? 'grade-A-plus' : s.grade === 'A' ? 'grade-A' : 'grade-B-plus';
-
     const score = s.score || 0;
-    const scoreColor = score >= 85 ? '#ffd700' : score >= 72 ? '#80cbc4' : '#888899';
+    const scoreColor = score >= 85 ? 'var(--gold)' : score >= 72 ? '#80cbc4' : 'var(--muted)';
+    const t = s.signal_time ? new Date(s.signal_time).toLocaleString('en-US', {
+      timeZone: 'America/New_York', hour12: false, month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit'
+    }) : '—';
 
-    const gates = s.gates || {};
-    const gateChips = Object.entries(gates)
-      .filter(([k]) => k.startsWith('G') || k.startsWith('F'))
-      .map(([k, v]) =>
-        `<span class="gate-chip ${v ? 'gate-pass' : 'gate-fail'}">${k} ${v ? '✓' : '✗'}</span>`
-      ).join('');
-
-    const signalTime = s.signal_time
-      ? new Date(s.signal_time).toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false })
-      : '—';
-
-    return `
-    <div class="signal-card ${dirClass}">
+    return `<div class="signal-card ${dirClass}">
       <div class="signal-header">
         <div>
           <span class="direction-badge ${dirClass}">${arrow} ${s.instrument} ${s.direction}</span>
-          ${s.setup_type ? `<span style="color:var(--muted);margin-left:8px">${s.setup_type}</span>` : ''}
+          ${s.setup_type ? `<span style="color:var(--muted);font-size:11px;margin-left:8px">${s.setup_type}</span>` : ''}
         </div>
         <span class="grade-badge ${gradeClass}">${s.grade || '—'}</span>
       </div>
-
       <div style="margin-bottom:4px">
-        <span style="color:var(--muted);font-size:11px">Score: ${score}/100</span>
-        <div class="score-bar">
-          <div class="score-fill" style="width:${score}%;background:${scoreColor}"></div>
-        </div>
+        <span style="color:var(--muted);font-size:10px">Score: ${score}/100</span>
+        <div class="score-bar"><div class="score-fill" style="width:${score}%;background:${scoreColor}"></div></div>
       </div>
-
       <div class="price-grid">
-        <div class="price-item">
-          <div class="price-label">Entry</div>
-          <div class="price-value entry">${fmt(s.entry_price)}</div>
-        </div>
-        <div class="price-item">
-          <div class="price-label">Stop</div>
-          <div class="price-value sl">${fmt(s.sl_price)}</div>
-        </div>
-        <div class="price-item">
-          <div class="price-label">TP1</div>
-          <div class="price-value tp1">${fmt(s.tp1_price)}</div>
-        </div>
-        ${s.tp2_price ? `<div class="price-item">
-          <div class="price-label">TP2</div>
-          <div class="price-value tp2">${fmt(s.tp2_price)}</div>
-        </div>` : ''}
-        ${s.tp3_price ? `<div class="price-item">
-          <div class="price-label">TP3</div>
-          <div class="price-value tp3">${fmt(s.tp3_price)}</div>
-        </div>` : ''}
-        ${s.tp4_price ? `<div class="price-item">
-          <div class="price-label">TP4</div>
-          <div class="price-value tp4">${fmt(s.tp4_price)}</div>
-        </div>` : ''}
+        <div class="price-item"><div class="price-label">Entry</div><div class="price-value entry">${fmt(s.entry_price)}</div></div>
+        <div class="price-item"><div class="price-label">Stop</div><div class="price-value sl">${fmt(s.sl_price)}</div></div>
+        <div class="price-item"><div class="price-label">TP1</div><div class="price-value tp1">${fmt(s.tp1_price)}</div></div>
+        ${s.tp2_price ? `<div class="price-item"><div class="price-label">TP2</div><div class="price-value tp2">${fmt(s.tp2_price)}</div></div>` : ''}
+        ${s.tp3_price ? `<div class="price-item"><div class="price-label">TP3</div><div class="price-value tp3">${fmt(s.tp3_price)}</div></div>` : ''}
+        ${s.tp4_price ? `<div class="price-item"><div class="price-label">TP4</div><div class="price-value tp4">${fmt(s.tp4_price)}</div></div>` : ''}
       </div>
-
-      ${gateChips ? `<div class="gates-row">${gateChips}</div>` : ''}
-
-      <div class="meta-row">
-        <span>${signalTime} ET</span>
-        <span>${s.source || 'TRADINGVIEW'}</span>
-      </div>
+      <div class="meta-row"><span>${t} ET</span><span>${s.source || 'TRADINGVIEW'}</span></div>
     </div>`;
   }
 
@@ -347,9 +303,8 @@
     return Number(n).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 2 });
   }
 
-  // Initial load + auto-refresh
-  loadSignals();
-  setInterval(loadSignals, REFRESH_MS);
+  loadAll();
+  setInterval(loadAll, REFRESH_MS);
 </script>
 </body>
 </html>
