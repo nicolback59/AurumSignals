@@ -1,0 +1,392 @@
+<!DOCTYPE html>
+<!--
+  NQ Signal Pro — Performance Stats Widget
+  =========================================
+  Embed in Squarespace via a Code Block.
+  Replace API_BASE_URL with your Render URL.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<style>
+  :root {
+    --bg:     #0a0a1e;
+    --bg2:    #111130;
+    --bg3:    #0a1400;
+    --border: #2a2a4a;
+    --text:   #ccccee;
+    --muted:  #888899;
+    --green:  #00ff88;
+    --red:    #ff4444;
+    --gold:   #ffd700;
+    --blue:   #40c4ff;
+    --purple: #ce93d8;
+    --font:   'Courier New', Courier, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    padding: 16px;
+  }
+
+  .section-header {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    padding: 10px 14px;
+    border-radius: 6px 6px 0 0;
+    color: #88ccaa;
+    letter-spacing: 1px;
+    font-size: 13px;
+  }
+
+  .stats-grid {
+    display: grid;
+    grid-template-columns: repeat(2, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-top: none;
+    margin-bottom: 12px;
+  }
+
+  .stat-cell {
+    background: var(--bg3);
+    padding: 10px 14px;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+
+  .stat-label { color: var(--muted); }
+  .stat-value { font-weight: bold; }
+
+  .wr-value { font-size: 20px; }
+
+  .bar-container {
+    height: 6px;
+    background: var(--border);
+    border-radius: 3px;
+    margin-top: 4px;
+    overflow: hidden;
+    min-width: 80px;
+  }
+  .bar-fill {
+    height: 100%;
+    border-radius: 3px;
+    transition: width 0.6s ease;
+  }
+
+  .tp-row {
+    display: grid;
+    grid-template-columns: repeat(4, 1fr);
+    gap: 1px;
+    background: var(--border);
+    border: 1px solid var(--border);
+    border-top: none;
+    margin-bottom: 12px;
+  }
+
+  .tp-cell {
+    background: var(--bg3);
+    padding: 10px;
+    text-align: center;
+  }
+
+  .setup-table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--bg3);
+    border: 1px solid var(--border);
+    border-top: none;
+    margin-bottom: 12px;
+  }
+
+  .setup-table th {
+    text-align: left;
+    padding: 8px 12px;
+    color: var(--muted);
+    font-size: 11px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .setup-table td {
+    padding: 7px 12px;
+    border-bottom: 1px solid #1a1a2a;
+  }
+
+  .equity-section {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px;
+  }
+
+  .equity-chart {
+    height: 80px;
+    position: relative;
+    margin-top: 10px;
+  }
+
+  canvas { width: 100% !important; }
+
+  .loading, .error-msg {
+    text-align: center;
+    padding: 30px;
+    color: var(--muted);
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+  .error-msg { color: var(--red); }
+
+  .tab-row {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+  .tab-btn {
+    padding: 5px 12px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    font-family: var(--font);
+  }
+  .tab-btn.active { background: #1a1a3a; color: var(--text); border-color: #4444aa; }
+
+  .disclaimer {
+    margin-top: 12px;
+    padding: 10px;
+    background: #1a0a00;
+    border: 1px solid #443322;
+    border-radius: 4px;
+    color: #aa7733;
+    font-size: 10px;
+    line-height: 1.5;
+  }
+</style>
+</head>
+<body>
+
+<!-- !! REPLACE WITH YOUR RENDER URL !! -->
+<script>const API_BASE_URL = 'https://nq-signal-pro.onrender.com';</script>
+
+<div class="tab-row">
+  <button class="tab-btn active" onclick="setInstrument(null)">All</button>
+  <button class="tab-btn" onclick="setInstrument('MNQ')">MNQ</button>
+  <button class="tab-btn" onclick="setInstrument('MGC')">MGC</button>
+</div>
+
+<div id="perf-container">
+  <div class="loading">Loading performance data…</div>
+</div>
+
+<script>
+  let currentInstrument = null;
+
+  function setInstrument(inst) {
+    currentInstrument = inst;
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      b.classList.toggle('active',
+        (inst === null && b.textContent === 'All') ||
+        b.textContent === inst
+      );
+    });
+    loadAll();
+  }
+
+  async function loadAll() {
+    try {
+      const qs = currentInstrument ? `?instrument=${currentInstrument}` : '';
+      const [perf, setupPerf, equity] = await Promise.all([
+        fetch(`${API_BASE_URL}/performance${qs}`).then(r => r.json()),
+        fetch(`${API_BASE_URL}/performance/by-setup${qs}`).then(r => r.json()),
+        fetch(`${API_BASE_URL}/performance/equity-curve${qs}`).then(r => r.json()),
+      ]);
+      render(perf, setupPerf, equity);
+    } catch (err) {
+      document.getElementById('perf-container').innerHTML =
+        `<div class="error-msg">Unable to load performance data.<br><small>${err.message}</small></div>`;
+    }
+  }
+
+  function render(perf, setupPerf, equity) {
+    const wr = perf.win_rate || 0;
+    const wrColor = wr >= 70 ? 'var(--green)' : wr >= 55 ? 'var(--gold)' : 'var(--red)';
+
+    const pf = perf.profit_factor != null ? perf.profit_factor.toFixed(2) : '—';
+    const pfColor = perf.profit_factor != null && perf.profit_factor >= 1.5 ? 'var(--green)' : 'var(--text)';
+
+    const pnlColor = perf.total_pnl_dollars >= 0 ? 'var(--green)' : 'var(--red)';
+    const pnlSign = perf.total_pnl_dollars >= 0 ? '+' : '';
+
+    const total = perf.total_trades || 0;
+    const tp1Rate = total > 0 ? (perf.tp1_hits / total * 100).toFixed(1) : '0.0';
+    const tp2Rate = perf.tp1_hits > 0 ? (perf.tp2_hits / perf.tp1_hits * 100).toFixed(1) : '0.0';
+    const tp3Rate = perf.tp2_hits > 0 ? (perf.tp3_hits / perf.tp2_hits * 100).toFixed(1) : '0.0';
+    const tp4Rate = perf.tp3_hits > 0 ? (perf.tp4_hits / perf.tp3_hits * 100).toFixed(1) : '0.0';
+
+    // Setup table rows
+    const setupRows = (setupPerf || [])
+      .sort((a, b) => b.win_rate - a.win_rate)
+      .map(s => {
+        const c = s.win_rate >= 65 ? 'var(--green)' : s.win_rate >= 50 ? 'var(--gold)' : 'var(--red)';
+        return `<tr>
+          <td>${s.setup}</td>
+          <td style="color:${c}">${s.win_rate}%</td>
+          <td style="color:var(--muted)">${s.wins}W / ${s.losses}L</td>
+          <td style="color:${s.pnl_dollars >= 0 ? 'var(--green)' : 'var(--red)'}">
+            ${s.pnl_dollars >= 0 ? '+' : ''}$${s.pnl_dollars.toFixed(0)}
+          </td>
+        </tr>`;
+      }).join('');
+
+    const equityPoints = (equity.equity_curve || []);
+    const equityHtml = equityPoints.length > 1
+      ? `<canvas id="eq-canvas" height="80"></canvas>`
+      : '<p style="color:var(--muted);text-align:center;padding:20px">No closed trades yet</p>';
+
+    document.getElementById('perf-container').innerHTML = `
+      <div class="section-header">── OVERALL PERFORMANCE ──</div>
+      <div class="stats-grid">
+        <div class="stat-cell">
+          <span class="stat-label">Win Rate</span>
+          <span class="stat-value wr-value" style="color:${wrColor}">${wr.toFixed(1)}%</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Record</span>
+          <span class="stat-value" style="color:var(--text)">${perf.wins}W — ${perf.losses}L</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Total Trades</span>
+          <span class="stat-value">${perf.total_trades}</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Profit Factor</span>
+          <span class="stat-value" style="color:${pfColor}">${pf}</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Avg Win</span>
+          <span class="stat-value" style="color:var(--green)">${perf.avg_win_pts.toFixed(1)} pts</span>
+        </div>
+        <div class="stat-cell">
+          <span class="stat-label">Avg Loss</span>
+          <span class="stat-value" style="color:var(--red)">${perf.avg_loss_pts.toFixed(1)} pts</span>
+        </div>
+        <div class="stat-cell" style="grid-column: span 2;">
+          <span class="stat-label">Total P&amp;L (paper)</span>
+          <span class="stat-value" style="color:${pnlColor};font-size:16px">
+            ${pnlSign}$${perf.total_pnl_dollars.toFixed(2)}
+          </span>
+        </div>
+      </div>
+
+      <div class="section-header">── TP HIT RATES ──</div>
+      <div class="tp-row">
+        ${[
+          ['TP1', tp1Rate, 'var(--green)'],
+          ['TP2', tp2Rate, 'var(--blue)'],
+          ['TP3', tp3Rate, 'var(--purple)'],
+          ['TP4', tp4Rate, 'var(--gold)'],
+        ].map(([label, rate, color]) => `
+          <div class="tp-cell">
+            <div style="color:${color};font-weight:bold">${label}</div>
+            <div style="color:var(--text);font-size:15px;margin:4px 0">${rate}%</div>
+            <div class="bar-container">
+              <div class="bar-fill" style="width:${rate}%;background:${color}"></div>
+            </div>
+          </div>`).join('')}
+      </div>
+
+      ${setupRows ? `
+      <div class="section-header">── BY SETUP TYPE ──</div>
+      <table class="setup-table">
+        <thead><tr>
+          <th>Setup</th><th>Win%</th><th>Record</th><th>P&amp;L</th>
+        </tr></thead>
+        <tbody>${setupRows}</tbody>
+      </table>` : ''}
+
+      <div class="equity-section">
+        <span style="color:var(--muted);font-size:11px">EQUITY CURVE (paper)</span>
+        <div class="equity-chart">${equityHtml}</div>
+      </div>
+
+      <div class="disclaimer">
+        ⚠️ PAPER TRADING ONLY — All results shown are simulated and do not represent real money.
+        Past performance does not guarantee future results. Futures trading involves substantial
+        risk of loss. This is not financial advice.
+      </div>
+    `;
+
+    // Draw equity curve
+    if (equityPoints.length > 1) {
+      setTimeout(() => drawEquityCurve(equityPoints), 50);
+    }
+  }
+
+  function drawEquityCurve(points) {
+    const canvas = document.getElementById('eq-canvas');
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.offsetWidth;
+    const H = 80;
+    canvas.width = W;
+    canvas.height = H;
+
+    const values = points.map(p => p.pnl_dollars);
+    const minV = Math.min(0, ...values);
+    const maxV = Math.max(0, ...values);
+    const range = maxV - minV || 1;
+
+    const toX = i => (i / (values.length - 1)) * W;
+    const toY = v => H - ((v - minV) / range) * (H - 4) - 2;
+
+    // Zero line
+    const zeroY = toY(0);
+    ctx.strokeStyle = '#333355';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.beginPath();
+    ctx.moveTo(0, zeroY);
+    ctx.lineTo(W, zeroY);
+    ctx.stroke();
+    ctx.setLineDash([]);
+
+    // Equity line with gradient fill
+    const lastVal = values[values.length - 1];
+    const lineColor = lastVal >= 0 ? '#00ff88' : '#ff4444';
+
+    const gradient = ctx.createLinearGradient(0, 0, 0, H);
+    gradient.addColorStop(0, lastVal >= 0 ? 'rgba(0,255,136,0.3)' : 'rgba(255,68,68,0.3)');
+    gradient.addColorStop(1, 'rgba(0,0,0,0)');
+
+    ctx.beginPath();
+    ctx.moveTo(toX(0), toY(values[0]));
+    values.forEach((v, i) => { if (i > 0) ctx.lineTo(toX(i), toY(v)); });
+    ctx.lineTo(W, H);
+    ctx.lineTo(0, H);
+    ctx.closePath();
+    ctx.fillStyle = gradient;
+    ctx.fill();
+
+    ctx.beginPath();
+    ctx.moveTo(toX(0), toY(values[0]));
+    values.forEach((v, i) => { if (i > 0) ctx.lineTo(toX(i), toY(v)); });
+    ctx.strokeStyle = lineColor;
+    ctx.lineWidth = 2;
+    ctx.stroke();
+  }
+
+  loadAll();
+  setInterval(loadAll, 120_000);
+</script>
+</body>
+</html>

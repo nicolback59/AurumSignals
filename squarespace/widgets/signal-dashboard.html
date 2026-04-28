@@ -1,0 +1,355 @@
+<!DOCTYPE html>
+<!--
+  NQ Signal Pro — Live Signal Dashboard Widget
+  =============================================
+  Embed this in Squarespace via a Code Block.
+
+  SETUP:
+    1. Deploy backend to Render and note your URL (e.g. https://nq-signal-pro.onrender.com)
+    2. Replace API_BASE_URL below with your Render URL.
+    3. In Squarespace editor → add a Code Block → paste ALL of this HTML.
+    4. Save and publish.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg:       #0a0a1e;
+    --bg2:      #111130;
+    --border:   #2a2a4a;
+    --text:     #ccccee;
+    --muted:    #888899;
+    --green:    #00ff88;
+    --red:      #ff4444;
+    --gold:     #ffd700;
+    --blue:     #40c4ff;
+    --purple:   #ce93d8;
+    --font:     'Courier New', Courier, monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font);
+    font-size: 13px;
+    padding: 16px;
+  }
+
+  .widget-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 6px 6px 0 0;
+    margin-bottom: 2px;
+  }
+
+  .widget-title { color: #aaaacc; font-size: 14px; letter-spacing: 1px; }
+
+  .live-dot {
+    width: 8px; height: 8px;
+    border-radius: 50%;
+    background: var(--green);
+    animation: pulse 2s infinite;
+    display: inline-block;
+    margin-right: 6px;
+  }
+  @keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50%       { opacity: 0.3; }
+  }
+
+  .refresh-info { color: var(--muted); font-size: 11px; }
+
+  .signal-card {
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 14px;
+    margin-bottom: 8px;
+  }
+
+  .signal-card.long  { border-left: 3px solid var(--green); }
+  .signal-card.short { border-left: 3px solid var(--red); }
+
+  .signal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+
+  .direction-badge {
+    font-size: 15px;
+    font-weight: bold;
+    letter-spacing: 1px;
+  }
+  .direction-badge.long  { color: var(--green); }
+  .direction-badge.short { color: var(--red); }
+
+  .grade-badge {
+    padding: 2px 8px;
+    border-radius: 3px;
+    font-size: 12px;
+    font-weight: bold;
+  }
+  .grade-A-plus { background: rgba(255,215,0,0.15); color: var(--gold); border: 1px solid var(--gold); }
+  .grade-A      { background: rgba(128,203,196,0.15); color: #80cbc4; border: 1px solid #80cbc4; }
+  .grade-B-plus { background: rgba(136,136,153,0.15); color: var(--muted); border: 1px solid var(--muted); }
+
+  .price-grid {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 6px;
+    margin-top: 8px;
+  }
+
+  .price-item { text-align: center; }
+  .price-label { color: var(--muted); font-size: 10px; text-transform: uppercase; }
+  .price-value { font-size: 13px; }
+  .price-value.entry  { color: var(--text); }
+  .price-value.sl     { color: var(--red); }
+  .price-value.tp1    { color: var(--green); }
+  .price-value.tp2    { color: var(--blue); }
+  .price-value.tp3    { color: var(--purple); }
+  .price-value.tp4    { color: var(--gold); }
+
+  .meta-row {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+  }
+
+  .gates-row {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+  }
+
+  .gate-chip {
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 10px;
+  }
+  .gate-pass { background: rgba(0,255,136,0.1); color: var(--green); border: 1px solid rgba(0,255,136,0.3); }
+  .gate-fail { background: rgba(255,68,68,0.1); color: var(--red); border: 1px solid rgba(255,68,68,0.3); }
+
+  .no-signals {
+    text-align: center;
+    padding: 30px;
+    color: var(--muted);
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 4px;
+  }
+
+  .error-msg {
+    color: var(--red);
+    text-align: center;
+    padding: 20px;
+    background: var(--bg2);
+    border: 1px solid #331111;
+    border-radius: 4px;
+  }
+
+  .loading {
+    text-align: center;
+    padding: 30px;
+    color: var(--muted);
+  }
+
+  .tab-row {
+    display: flex;
+    gap: 4px;
+    margin-bottom: 8px;
+  }
+
+  .tab-btn {
+    padding: 5px 12px;
+    background: var(--bg2);
+    border: 1px solid var(--border);
+    border-radius: 3px;
+    color: var(--muted);
+    cursor: pointer;
+    font-size: 12px;
+    font-family: var(--font);
+  }
+  .tab-btn.active { background: #1a1a3a; color: var(--text); border-color: #4444aa; }
+
+  .score-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 4px;
+    overflow: hidden;
+  }
+  .score-fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.4s ease;
+  }
+</style>
+</head>
+<body>
+
+<div class="widget-header">
+  <span class="widget-title">
+    <span class="live-dot"></span>LIVE SIGNALS
+  </span>
+  <span class="refresh-info" id="last-refresh">Loading…</span>
+</div>
+
+<div class="tab-row">
+  <button class="tab-btn active" onclick="setFilter('ALL')">All</button>
+  <button class="tab-btn" onclick="setFilter('MNQ')">MNQ</button>
+  <button class="tab-btn" onclick="setFilter('MGC')">MGC</button>
+</div>
+
+<div id="signals-container">
+  <div class="loading">Fetching signals…</div>
+</div>
+
+<script>
+  // !! REPLACE WITH YOUR RENDER URL !!
+  const API_BASE_URL = 'https://nq-signal-pro.onrender.com';
+  const REFRESH_MS   = 60_000;  // refresh every 60 seconds
+
+  let currentFilter = 'ALL';
+
+  function setFilter(f) {
+    currentFilter = f;
+    document.querySelectorAll('.tab-btn').forEach(b => {
+      b.classList.toggle('active', b.textContent === f);
+    });
+    loadSignals();
+  }
+
+  async function loadSignals() {
+    const container = document.getElementById('signals-container');
+    try {
+      const url = currentFilter === 'ALL'
+        ? `${API_BASE_URL}/signals?limit=10`
+        : `${API_BASE_URL}/signals?instrument=${currentFilter}&limit=10`;
+
+      const resp = await fetch(url);
+      if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+
+      const signals = await resp.json();
+      renderSignals(signals);
+
+      const now = new Date();
+      document.getElementById('last-refresh').textContent =
+        `Updated ${now.toLocaleTimeString()}`;
+    } catch (err) {
+      container.innerHTML = `<div class="error-msg">
+        Unable to load signals.<br>
+        <small>${err.message}</small>
+      </div>`;
+    }
+  }
+
+  function renderSignals(signals) {
+    const container = document.getElementById('signals-container');
+    if (!signals || signals.length === 0) {
+      container.innerHTML = '<div class="no-signals">No signals yet today.<br>Waiting for market conditions…</div>';
+      return;
+    }
+
+    container.innerHTML = signals.map(s => buildCard(s)).join('');
+  }
+
+  function buildCard(s) {
+    const isLong = s.direction === 'LONG';
+    const dirClass = isLong ? 'long' : 'short';
+    const arrow = isLong ? '▲' : '▼';
+    const gradeClass = s.grade === 'A+' ? 'grade-A-plus' : s.grade === 'A' ? 'grade-A' : 'grade-B-plus';
+
+    const score = s.score || 0;
+    const scoreColor = score >= 85 ? '#ffd700' : score >= 72 ? '#80cbc4' : '#888899';
+
+    const gates = s.gates || {};
+    const gateChips = Object.entries(gates)
+      .filter(([k]) => k.startsWith('G') || k.startsWith('F'))
+      .map(([k, v]) =>
+        `<span class="gate-chip ${v ? 'gate-pass' : 'gate-fail'}">${k} ${v ? '✓' : '✗'}</span>`
+      ).join('');
+
+    const signalTime = s.signal_time
+      ? new Date(s.signal_time).toLocaleString('en-US', { timeZone: 'America/New_York', hour12: false })
+      : '—';
+
+    return `
+    <div class="signal-card ${dirClass}">
+      <div class="signal-header">
+        <div>
+          <span class="direction-badge ${dirClass}">${arrow} ${s.instrument} ${s.direction}</span>
+          ${s.setup_type ? `<span style="color:var(--muted);margin-left:8px">${s.setup_type}</span>` : ''}
+        </div>
+        <span class="grade-badge ${gradeClass}">${s.grade || '—'}</span>
+      </div>
+
+      <div style="margin-bottom:4px">
+        <span style="color:var(--muted);font-size:11px">Score: ${score}/100</span>
+        <div class="score-bar">
+          <div class="score-fill" style="width:${score}%;background:${scoreColor}"></div>
+        </div>
+      </div>
+
+      <div class="price-grid">
+        <div class="price-item">
+          <div class="price-label">Entry</div>
+          <div class="price-value entry">${fmt(s.entry_price)}</div>
+        </div>
+        <div class="price-item">
+          <div class="price-label">Stop</div>
+          <div class="price-value sl">${fmt(s.sl_price)}</div>
+        </div>
+        <div class="price-item">
+          <div class="price-label">TP1</div>
+          <div class="price-value tp1">${fmt(s.tp1_price)}</div>
+        </div>
+        ${s.tp2_price ? `<div class="price-item">
+          <div class="price-label">TP2</div>
+          <div class="price-value tp2">${fmt(s.tp2_price)}</div>
+        </div>` : ''}
+        ${s.tp3_price ? `<div class="price-item">
+          <div class="price-label">TP3</div>
+          <div class="price-value tp3">${fmt(s.tp3_price)}</div>
+        </div>` : ''}
+        ${s.tp4_price ? `<div class="price-item">
+          <div class="price-label">TP4</div>
+          <div class="price-value tp4">${fmt(s.tp4_price)}</div>
+        </div>` : ''}
+      </div>
+
+      ${gateChips ? `<div class="gates-row">${gateChips}</div>` : ''}
+
+      <div class="meta-row">
+        <span>${signalTime} ET</span>
+        <span>${s.source || 'TRADINGVIEW'}</span>
+      </div>
+    </div>`;
+  }
+
+  function fmt(n) {
+    if (n == null) return '—';
+    return Number(n).toLocaleString('en-US', { minimumFractionDigits: 1, maximumFractionDigits: 2 });
+  }
+
+  // Initial load + auto-refresh
+  loadSignals();
+  setInterval(loadSignals, REFRESH_MS);
+</script>
+</body>
+</html>

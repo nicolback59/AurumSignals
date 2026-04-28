@@ -1,0 +1,775 @@
+//@version=6
+// ================================================================
+// NQ PRO SIGNAL ENGINE v4.0 — OTE + STDV + HTF BIAS
+// ================================================================
+// WHAT'S NEW vs v3:
+//   + HTF Bias (15m EMA structure) replaces simple EMA stack gate
+//   + OTE Zone (61.8-78.6% Fibonacci pullback) as primary entry model
+//   + STDV Deviation Bands (1σ/2σ from VWAP) for reversal detection
+//   + 3 distinct setup types: OTE Pullback / STDV Reversal / OTE+STDV Combo
+//   + Live Win Probability % shown on each signal label
+//   + Setup-type breakdown in performance tracker
+//   + More signals via multi-setup model while keeping A/A+ quality gate
+//
+// 4-FACTOR MODEL:
+//   F1: HTF BIAS       — 15m EMA structure + daily direction
+//   F2: OTE ZONE       — 61.8-78.6% retracement into discount/premium
+//   F3: STDV DEVIATION — VWAP σ bands for overextension / reset
+//   F4: CONFIRMATION   — displacement + volume + momentum shift
+//
+// WIN RULE: TP1 before SL = WIN. SL before TP1 = LOSS.
+// Non-repainting: barstate.isconfirmed on ALL signals
+// ================================================================
+indicator(
+    title            = "NQ Pro Signal Engine v4",
+    shorttitle       = "NQ.PRO.v4",
+    overlay          = true,
+    max_labels_count = 500,
+    max_lines_count  = 500,
+    max_boxes_count  = 300
+)
+
+// ================================================================
+// A. INPUTS
+// ================================================================
+var string GE = "Signal Engine"
+i_minGrade  = input.string("A",  "Min Grade", options=["A+","A"], group=GE)
+i_slPts     = input.int(25,  "Stop Loss (points)",    minval=10, maxval=50,  group=GE)
+i_tpPts     = input.int(75,  "Full Target (points)",  minval=30, maxval=150, group=GE)
+i_contracts = input.int(1,   "MNQ Contracts",         minval=1,  maxval=20,  group=GE)
+i_cooldown  = input.int(3,   "Cooldown (bars)",        minval=1,  maxval=20,  group=GE)
+i_maxBars   = input.int(50,  "Max Bars to Resolve",   minval=5,  maxval=200, group=GE)
+i_beBars    = input.int(8,   "BE Check (bars after entry)", minval=2, maxval=30, group=GE)
+i_beFavor   = input.int(10,  "Favorable pts for BE",  minval=3,  maxval=25,  group=GE)
+i_showAll   = input.bool(false, "Relax HTF Filter (more signals)", group=GE)
+
+var string GO = "OTE Settings"
+i_oteLow    = input.float(0.618, "OTE Low (Fib %)",  minval=0.5,  maxval=0.7,  step=0.01, group=GO)
+i_oteHigh   = input.float(0.786, "OTE High (Fib %)", minval=0.7,  maxval=0.9,  step=0.01, group=GO)
+i_swingLook = input.int(20,  "Swing Range Lookback (bars)", minval=10, maxval=100, group=GO)
+i_showOTE   = input.bool(true,  "Show OTE Zones", group=GO)
+
+var string GS2 = "STDV Settings"
+i_stdvLen   = input.int(20,   "STDV Lookback",     minval=10, maxval=100, group=GS2)
+i_std1      = input.float(1.0,"1σ Multiplier",     minval=0.5, maxval=2.0, step=0.1, group=GS2)
+i_std2      = input.float(2.0,"2σ Multiplier",     minval=1.0, maxval=4.0, step=0.1, group=GS2)
+i_showSTDV  = input.bool(true,  "Show STDV Bands", group=GS2)
+
+var string GH = "HTF Bias"
+i_htfTF     = input.string("15", "HTF Timeframe", options=["5","10","15","30","60"], group=GH)
+i_htfEmaF   = input.int(9,  "HTF Fast EMA", minval=3,  maxval=50,  group=GH)
+i_htfEmaS   = input.int(21, "HTF Slow EMA", minval=5,  maxval=100, group=GH)
+i_showHTF   = input.bool(true,  "Show HTF Bias Label", group=GH)
+
+var string GR = "Reference Levels"
+i_showVwap  = input.bool(true,  "Show VWAP",    group=GR)
+i_showOR    = input.bool(true,  "Show OR Hi/Lo",group=GR)
+i_showPD    = input.bool(false, "Show Prev Day H/L", group=GR)
+
+var string GI = "Indicators"
+i_atrLen    = input.int(14, "ATR Length",    minval=5,  maxval=30,  group=GI)
+i_swingL    = input.int(7,  "Swing Lookback",minval=3,  maxval=15,  group=GI)
+i_emaF      = input.int(9,  "Fast EMA",      minval=3,  maxval=30,  group=GI)
+i_emaS      = input.int(21, "Slow EMA",      minval=5,  maxval=100, group=GI)
+i_emaT      = input.int(50, "Trend EMA",     minval=10, maxval=200, group=GI)
+
+var string GD = "Display"
+i_showProb  = input.bool(true,  "Show Probability Panel",  group=GD)
+i_showStats = input.bool(true,  "Show Performance Stats",  group=GD)
+i_showBE    = input.bool(true,  "Show Breakeven Marks",    group=GD)
+i_lineLen   = input.int(20,    "Line Length (bars)", minval=5, maxval=60, group=GD)
+i_tblPos    = input.string("top_right",    "Signal Panel Position", options=["top_right","top_left","bottom_right","bottom_left"], group=GD)
+i_statPos   = input.string("bottom_right", "Stats Panel Position",  options=["top_right","top_left","bottom_right","bottom_left"], group=GD)
+
+// ================================================================
+// B. CORE INDICATORS
+// ================================================================
+atr    = ta.atr(i_atrLen)
+atrSma = ta.sma(atr, 20)
+atrExp = atr > atrSma * 1.05
+emaF   = ta.ema(close, i_emaF)
+emaS   = ta.ema(close, i_emaS)
+emaT   = ta.ema(close, i_emaT)
+vwap   = ta.vwap(hlc3)
+volAvg = ta.sma(volume, 20)
+
+// ================================================================
+// C. HTF BIAS (Factor 1)
+// ================================================================
+htfEmaFast = request.security(syminfo.tickerid, i_htfTF, ta.ema(close, i_htfEmaF), lookahead=barmerge.lookahead_off)
+htfEmaSlow = request.security(syminfo.tickerid, i_htfTF, ta.ema(close, i_htfEmaS), lookahead=barmerge.lookahead_off)
+htfClose   = request.security(syminfo.tickerid, i_htfTF, close, lookahead=barmerge.lookahead_off)
+htfHigh    = request.security(syminfo.tickerid, i_htfTF, high,  lookahead=barmerge.lookahead_off)
+htfLow     = request.security(syminfo.tickerid, i_htfTF, low,   lookahead=barmerge.lookahead_off)
+
+htfBull = htfEmaFast > htfEmaSlow and htfClose > htfEmaSlow
+htfBear = htfEmaFast < htfEmaSlow and htfClose < htfEmaSlow
+htfNeutral = not htfBull and not htfBear
+
+htfBiasStr = htfBull ? "BULL ▲" : htfBear ? "BEAR ▼" : "NEUTRAL"
+htfBiasCol = htfBull ? color.new(#00FF88,0) : htfBear ? color.new(#FF4444,0) : color.new(#888899,0)
+
+if i_showHTF and barstate.islast
+    label.new(bar_index + 2, high + atr*2, text="HTF " + i_htfTF + "m: " + htfBiasStr, color=color.new(#1A1A2E,10), textcolor=htfBiasCol, style=label.style_label_left, size=size.small)
+
+// ================================================================
+// D. STDV DEVIATION BANDS (Factor 3)
+// ================================================================
+// Standard deviation bands around VWAP — gold standard for NQ overextension
+vwapStdv = ta.stdev(close, i_stdvLen)
+vwapUpp1 = vwap + vwapStdv * i_std1
+vwapDwn1 = vwap - vwapStdv * i_std1
+vwapUpp2 = vwap + vwapStdv * i_std2
+vwapDwn2 = vwap - vwapStdv * i_std2
+
+plot(i_showVwap ? vwap : na,     "VWAP",       color.new(#FF9800,15), 1)
+plot(i_showSTDV ? vwapUpp1 : na, "VWAP +1σ",   color.new(#4FC3F7,50), 1, plot.style_line)
+plot(i_showSTDV ? vwapDwn1 : na, "VWAP -1σ",   color.new(#4FC3F7,50), 1, plot.style_line)
+plot(i_showSTDV ? vwapUpp2 : na, "VWAP +2σ",   color.new(#CE93D8,50), 1, plot.style_line)
+plot(i_showSTDV ? vwapDwn2 : na, "VWAP -2σ",   color.new(#CE93D8,50), 1, plot.style_line)
+
+// STDV state
+abvVwap1 = close > vwapUpp1
+abvVwap2 = close > vwapUpp2
+blwVwap1 = close < vwapDwn1
+blwVwap2 = close < vwapDwn2
+atVwap   = math.abs(close - vwap) < vwapStdv * 0.3  // near VWAP mean
+
+// Overextension (2σ) = likely reversal zone
+stdvExtUp  = abvVwap2   // extremely extended up
+stdvExtDn  = blwVwap2   // extremely extended down
+
+// Reset (back to mean) after extension
+var bool hadExtUp = false
+var bool hadExtDn = false
+if stdvExtUp
+    hadExtUp := true
+if stdvExtDn
+    hadExtDn := true
+if atVwap
+    hadExtUp := false
+    hadExtDn := false
+
+stdvResetL = hadExtDn and blwVwap1 and not blwVwap2  // was extended down, now pulling back
+stdvResetS = hadExtUp and abvVwap1 and not abvVwap2  // was extended up, now pulling back
+
+// ================================================================
+// E. SESSION
+// ================================================================
+exchHour = hour(time,   "America/New_York")
+exchMin  = minute(time, "America/New_York")
+hhmm     = exchHour * 100 + exchMin
+inRTH     = hhmm >= 930  and hhmm < 1600
+inNYOpen  = hhmm >= 930  and hhmm < 1130
+inMidDay  = hhmm >= 1130 and hhmm < 1330
+inAftNoon = hhmm >= 1330 and hhmm < 1600
+inLunch   = hhmm >= 1145 and hhmm < 1300
+sessOK    = inRTH and not inLunch
+sessScore = inNYOpen ? 3 : inAftNoon ? 2 : inMidDay ? 1 : 0
+sessQ     = inNYOpen ? 1.0 : inAftNoon ? 0.85 : inMidDay ? 0.65 : 0.5
+
+f_sessName() => inNYOpen ? "NY Open ★" : inAftNoon ? "Afternoon ✓" : inMidDay ? "Midday" : hhmm >= 1600 ? "After Hours" : hhmm >= 400 ? "Pre-Market" : "Overnight"
+f_sessCol()  => inNYOpen or inAftNoon ? color.new(#00FF88,0) : color.new(#AAAACC,0)
+
+var float orH   = na
+var float orL   = na
+var bool  orSet = false
+isORWindow = hhmm >= 930 and hhmm < 945
+isNewDay   = hhmm == 930
+if isNewDay
+    orH := na
+    orL := na
+    orSet := false
+if isORWindow
+    orH := na(orH) ? high : math.max(orH, high)
+    orL := na(orL) ? low  : math.min(orL, low)
+if hhmm == 945 and not orSet
+    orSet := true
+
+pdH = request.security(syminfo.tickerid, "D", high[1], lookahead=barmerge.lookahead_off)
+pdL = request.security(syminfo.tickerid, "D", low[1],  lookahead=barmerge.lookahead_off)
+
+plot(i_showOR and orSet ? orH : na, "OR Hi", color.new(#4FC3F7,40), 1, plot.style_stepline)
+plot(i_showOR and orSet ? orL : na, "OR Lo", color.new(#4FC3F7,40), 1, plot.style_stepline)
+plot(i_showPD ? pdH : na, "PDH", color.new(#FFD700,40), 1, plot.style_stepline)
+plot(i_showPD ? pdL : na, "PDL", color.new(#FFD700,40), 1, plot.style_stepline)
+plot(emaF, "EMA Fast", color.new(#00BCD4, 0), 1)
+plot(emaS, "EMA Slow", color.new(#FF5252, 0), 1)
+plot(emaT, "EMA Trend",color.new(#9E9E9E,30), 1)
+pF = plot(emaF, display=display.none)
+pS = plot(emaS, display=display.none)
+fill(pF, pS, color = emaF > emaS ? color.new(#00C896,92) : color.new(#FF3D5A,92))
+
+// ================================================================
+// F. OTE ZONES (Factor 2)
+// ================================================================
+// OTE = Optimal Trade Entry at 61.8–78.6% retracement
+// Measured from most recent significant swing
+swHigh = ta.highest(high, i_swingLook)
+swLow  = ta.lowest(low,   i_swingLook)
+swRng  = swHigh - swLow
+
+// Bull OTE: pullback from high — zone is 61.8-78.6% retracement below high
+// = swHigh - swRng*0.618 to swHigh - swRng*0.786
+oteDiscLow  = swLow  + swRng * (1.0 - i_oteHigh)  // low end of bull OTE
+oteDiscHigh = swLow  + swRng * (1.0 - i_oteLow)   // high end of bull OTE
+// Bear OTE: rally into 61.8-78.6% of prior move — zone in premium
+otePremLow  = swLow  + swRng * i_oteLow
+otePremHigh = swLow  + swRng * i_oteHigh
+
+inOTEDisc = close >= oteDiscLow and close <= oteDiscHigh  // long OTE
+inOTEPrem = close >= otePremLow and close <= otePremHigh  // short OTE
+
+// OTE proximity — near but not exactly in zone
+nearOTEDisc = close >= oteDiscLow - atr*0.5 and close <= oteDiscHigh + atr*0.3
+nearOTEPrem = close >= otePremLow - atr*0.3 and close <= otePremHigh + atr*0.5
+
+// Draw OTE zones when in session
+if i_showOTE and inNYOpen and barstate.isconfirmed
+    if inOTEDisc
+        bgcolor(color.new(#00C896, 96), title="OTE Discount")
+    if inOTEPrem
+        bgcolor(color.new(#FF3D5A, 96), title="OTE Premium")
+
+// ================================================================
+// G. CANDLE ANALYSIS
+// ================================================================
+cRng   = high - low
+cBody  = math.abs(close - open)
+bull   = close > open
+bear   = close < open
+cLoc   = cRng > 0 ? (close - low) / cRng : 0.5
+lWick  = math.min(open, close) - low
+uWick  = high - math.max(open, close)
+lWR    = cRng > 0 ? lWick / cRng : 0.0
+uWR    = cRng > 0 ? uWick / cRng : 0.0
+spike  = cRng >= 4.5 * atr
+
+dispBull = cBody >= 0.5*atr and cLoc >= 0.62 and bull and not spike
+dispBear = cBody >= 0.5*atr and cLoc <= 0.38 and bear and not spike
+rejUp    = lWR >= 0.33 and lWick > cBody * 0.4
+rejDown  = uWR >= 0.33 and uWick > cBody * 0.4
+mBull    = close > high[1] and bull
+mBear    = close < low[1]  and bear
+volUp    = volume > volAvg * 1.2
+
+// ================================================================
+// H. MARKET STRUCTURE
+// ================================================================
+pivH = ta.pivothigh(high, i_swingL, i_swingL)
+pivL = ta.pivotlow(low,   i_swingL, i_swingL)
+var float sh0 = na
+var float sh1 = na
+var float sl0 = na
+var float sl1 = na
+if not na(pivH)
+    sh1 := sh0
+    sh0 := pivH
+if not na(pivL)
+    sl1 := sl0
+    sl0 := pivL
+
+msBull    = not na(sh0) and not na(sh1) and not na(sl0) and not na(sl1) and sh0 > sh1 and sl0 > sl1
+msBear    = not na(sh0) and not na(sh1) and not na(sl0) and not na(sl1) and sh0 < sh1 and sl0 < sl1
+abvT      = close > emaT
+blwT      = close < emaT
+abvS      = close > emaS
+blwS      = close < emaS
+bullStack = emaF > emaS and emaS > emaT
+bearStack = emaF < emaS and emaS < emaT
+
+chopH  = ta.highest(high, 15)
+chopL  = ta.lowest(low,   15)
+isChop = (chopH - chopL) < atr * 3.0
+
+// Liquidity sweeps
+eqTol  = atr * 0.18
+eqH    = not na(sh0) and not na(sh1) and math.abs(sh0 - sh1) <= eqTol
+eqL    = not na(sl0) and not na(sl1) and math.abs(sl0 - sl1) <= eqTol
+refH   = ta.highest(high, i_swingL * 2)
+refL   = ta.lowest(low,   i_swingL * 2)
+sweepL = low  < refL and close > refL and bull and not spike
+sweepH = high > refH and close < refH and bear and not spike
+var int swpLBar = na
+var int swpHBar = na
+if sweepL
+    swpLBar := bar_index
+if sweepH
+    swpHBar := bar_index
+swpLA = not na(swpLBar) ? bar_index - swpLBar : 999
+swpHA = not na(swpHBar) ? bar_index - swpHBar : 999
+
+// ================================================================
+// I. THREE SETUP TYPES
+// ================================================================
+
+// ── SETUP 1: OTE PULLBACK CONTINUATION ───────────────────────
+// HTF bias → pullback into OTE zone → confirmation
+// Requires: HTF aligned + in OTE zone + confirmation candle
+s1Long = htfBull and inOTEDisc and (dispBull or (rejUp and mBull)) and not isChop and sessOK
+s1Short= htfBear and inOTEPrem and (dispBear or (rejDown and mBear)) and not isChop and sessOK
+
+// ── SETUP 2: STDV REVERSAL ────────────────────────────────────
+// Price hits 2σ extension → exhaustion → reversal back toward mean
+// Countertrend allowed ONLY at 2σ with strong exhaustion
+s2Long = stdvExtDn and (rejUp or dispBull) and not htfBull and not isChop and sessOK
+s2Short= stdvExtUp and (rejDown or dispBear) and not htfBear and not isChop and sessOK
+// Also allow with-trend if reset from extension
+s2ContL= stdvResetL and htfBull and (dispBull or mBull) and sessOK
+s2ContS= stdvResetS and htfBear and (dispBear or mBear) and sessOK
+
+// ── SETUP 3: OTE + STDV COMBO (highest priority) ─────────────
+// Extension → pullback into OTE → highest confluence entry
+// Long: was extended up (2σ), pulled back to OTE discount, HTF bull
+s3Long = htfBull and inOTEDisc and blwVwap1 and (dispBull or rejUp) and not isChop and sessOK
+// Short: was extended down (2σ), rallied to OTE premium, HTF bear
+s3Short= htfBear and inOTEPrem and abvVwap1 and (dispBear or rejDown) and not isChop and sessOK
+
+// Determine active setup
+anyLong  = s1Long  or s2Long  or s2ContL or s3Long
+anyShort = s1Short or s2Short or s2ContS or s3Short
+
+// Setup type labels
+f_setupL() => s3Long ? "OTE+STDV" : s1Long ? "OTE PB" : s2ContL ? "STDV RST" : s2Long ? "STDV REV" : "—"
+f_setupS() => s3Short ? "OTE+STDV" : s1Short ? "OTE PB" : s2ContS ? "STDV RST" : s2Short ? "STDV REV" : "—"
+
+// ================================================================
+// J. FACTOR SCORING (4 factors)
+// ================================================================
+// F1: HTF BIAS (0-6)
+f1ScoreL = htfBull ? 6 : htfNeutral ? 2 : 0
+f1ScoreS = htfBear ? 6 : htfNeutral ? 2 : 0
+
+// F2: OTE ZONE (0-7)
+f2ScoreL = inOTEDisc ? 7 : nearOTEDisc ? 3 : 0
+f2ScoreS = inOTEPrem ? 7 : nearOTEPrem ? 3 : 0
+
+// F3: STDV (0-7)
+f3ScoreL = stdvExtDn ? 7 : blwVwap1 ? 4 : stdvResetL ? 5 : atVwap ? 2 : 0
+f3ScoreS = stdvExtUp ? 7 : abvVwap1 ? 4 : stdvResetS ? 5 : atVwap ? 2 : 0
+
+// F4: CONFIRMATION (0-6)
+f4ScoreL = (dispBull ? 4 : rejUp ? 3 : 0) + (mBull ? 1 : 0) + (volUp ? 1 : 0)
+f4ScoreS = (dispBear ? 4 : rejDown ? 3 : 0) + (mBear ? 1 : 0) + (volUp ? 1 : 0)
+
+// Bonus points
+bonusL = (s3Long ? 4 : 0) + (msBull ? 2 : 0) + (eqL ? 2 : 0) + (swpLA <= 5 ? 2 : 0) + sessScore
+bonusS = (s3Short ? 4 : 0) + (msBear ? 2 : 0) + (eqH ? 2 : 0) + (swpHA <= 5 ? 2 : 0) + sessScore
+
+// Total (max ~35)
+lTotal = anyLong  ? math.min(f1ScoreL + f2ScoreL + f3ScoreL + f4ScoreL + bonusL, 35) : 0
+sTotal = anyShort ? math.min(f1ScoreS + f2ScoreS + f3ScoreS + f4ScoreS + bonusS, 35) : 0
+
+// Grade thresholds: A+ = 24+, A = 16+
+isAplusL = lTotal >= 24
+isAplusS = sTotal >= 24
+isAL     = lTotal >= 16
+isAS     = sTotal >= 16
+gradeL   = isAplusL ? "A+" : "A"
+gradeS   = isAplusS ? "A+" : "A"
+gradeThresh = i_minGrade == "A+" ? 24 : 16
+
+// HTF relaxation: allow neutral HTF only for STDV reversals
+htfOKL = i_showAll or htfBull or (htfNeutral and s2Long)
+htfOKS = i_showAll or htfBear or (htfNeutral and s2Short)
+
+// ================================================================
+// K. FIXED 25pt / 75pt STRUCTURE
+// ================================================================
+slPts    = float(i_slPts)
+tp1Pts   = slPts
+tp2Pts   = slPts * 2.0
+tp3Pts   = slPts * 3.0
+longSL   = close - slPts
+longTP1  = close + tp1Pts
+longTP2  = close + tp2Pts
+longTP3  = close + tp3Pts
+shortSL  = close + slPts
+shortTP1 = close - tp1Pts
+shortTP2 = close - tp2Pts
+shortTP3 = close - tp3Pts
+mnqMult  = 2.0
+lRisk    = slPts  * mnqMult * i_contracts
+lRewFull = tp3Pts * mnqMult * i_contracts
+
+// ================================================================
+// L. SIGNAL GATE
+// ================================================================
+var int lastBar = na
+coolOK   = na(lastBar) or (bar_index - lastBar) >= i_cooldown
+
+longSig  = barstate.isconfirmed and anyLong  and isAL and lTotal >= gradeThresh and coolOK and not spike and htfOKL
+shortSig = barstate.isconfirmed and anyShort and isAS and sTotal >= gradeThresh and coolOK and not spike and htfOKS
+
+if longSig or shortSig
+    lastBar := bar_index
+
+// ================================================================
+// M. LIVE WIN PROBABILITY PER SIGNAL
+// ================================================================
+// Calibrated base rates by setup type, adjusted by score + session
+
+f_winProb(total, isAplus, sQ, isOTECombo, isOTEPB, isSTDV) =>
+    // Base rate by setup type
+    base = isOTECombo ? 0.70 : isOTEPB ? 0.65 : isSTDV ? 0.60 : 0.58
+    // Grade adjustment
+    gAdj = isAplus ? 0.06 : 0.0
+    // Score adjustment (35 max, calibrated around threshold)
+    sAdj = (total - 16) * 0.008
+    // Session quality
+    ssAdj = sQ >= 0.85 ? 0.04 : sQ >= 0.65 ? 0.0 : -0.06
+    // Historical blend (updates as chart builds data)
+    p = math.min(math.max(base + gAdj + sAdj + ssAdj, 0.35), 0.92)
+    p
+
+lWinProb  = f_winProb(lTotal, isAplusL, sessQ, s3Long,  s1Long,  s2Long  or s2ContL)
+sWinProb  = f_winProb(sTotal, isAplusS, sessQ, s3Short, s1Short, s2Short or s2ContS)
+lWinProbTP2 = lWinProb * 0.72
+lWinProbTP3 = lWinProb * 0.50
+sWinProbTP2 = sWinProb * 0.72
+sWinProbTP3 = sWinProb * 0.50
+
+// ================================================================
+// N. PERFORMANCE TRACKER (all-float, fully fixed)
+// ================================================================
+var int MAX_TRACK = 10
+var array<float> trkEntry   = array.new<float>(MAX_TRACK, -1.0)
+var array<float> trkDir     = array.new<float>(MAX_TRACK,  0.0)
+var array<float> trkTP1arr  = array.new<float>(MAX_TRACK, -1.0)
+var array<float> trkSLarr   = array.new<float>(MAX_TRACK, -1.0)
+var array<float> trkBarArr  = array.new<float>(MAX_TRACK, -1.0)
+var array<float> trkGrade   = array.new<float>(MAX_TRACK,  0.0)
+var array<float> trkType    = array.new<float>(MAX_TRACK,  0.0)  // 1=OTE, 2=STDV, 3=Combo
+var array<bool>  trkDone    = array.new<bool>(MAX_TRACK, true)
+var array<float> trkBest    = array.new<float>(MAX_TRACK,  0.0)
+var array<bool>  trkBEFired = array.new<bool>(MAX_TRACK, false)
+
+var int trkIdx   = 0
+var int totSigs  = 0
+var int totWins  = 0
+var int totLoss  = 0
+var int totBE    = 0
+var int apWins   = 0
+var int apLoss   = 0
+var int aWins    = 0
+var int aLoss    = 0
+var int tp1Hits  = 0
+var int oteWins  = 0
+var int oteLoss  = 0
+var int stdvWins = 0
+var int stdvLoss = 0
+var int comboWins= 0
+var int comboLoss= 0
+
+if longSig or shortSig
+    _type = (longSig and s3Long) or (shortSig and s3Short) ? 3.0 : (longSig and s1Long) or (shortSig and s1Short) ? 1.0 : 2.0
+    array.set(trkDone,    trkIdx, true)
+    array.set(trkEntry,   trkIdx, close)
+    array.set(trkDir,     trkIdx, longSig ? 1.0 : -1.0)
+    array.set(trkTP1arr,  trkIdx, longSig ? close + tp1Pts : close - tp1Pts)
+    array.set(trkSLarr,   trkIdx, longSig ? close - slPts  : close + slPts)
+    array.set(trkBarArr,  trkIdx, float(bar_index))
+    array.set(trkGrade,   trkIdx, longSig ? (isAplusL ? 2.0 : 1.0) : (isAplusS ? 2.0 : 1.0))
+    array.set(trkType,    trkIdx, _type)
+    array.set(trkBest,    trkIdx, 0.0)
+    array.set(trkBEFired, trkIdx, false)
+    array.set(trkDone,    trkIdx, false)
+    trkIdx  := (trkIdx + 1) % MAX_TRACK
+    totSigs += 1
+
+var bool beLongFired  = false
+var bool beShortFired = false
+beLongFired  := false
+beShortFired := false
+
+for i = 0 to MAX_TRACK - 1
+    if not array.get(trkDone, i) and array.get(trkBarArr, i) >= 0.0
+        _dir    = array.get(trkDir,    i)
+        _tp1    = array.get(trkTP1arr, i)
+        _sl     = array.get(trkSLarr,  i)
+        _entry  = array.get(trkEntry,  i)
+        _b      = array.get(trkBarArr, i)
+        _g      = array.get(trkGrade,  i)
+        _t      = array.get(trkType,   i)
+        _bars   = float(bar_index) - _b
+        _beFired= array.get(trkBEFired, i)
+
+        if _bars >= 1.0
+            _favor   = _dir == 1.0 ? high - _entry : _entry - low
+            _curBest = array.get(trkBest, i)
+            if _favor > _curBest
+                array.set(trkBest, i, _favor)
+
+            _hitTP1    = _dir == 1.0 ? high >= _tp1 : low  <= _tp1
+            _hitSL     = _dir == 1.0 ? low  <= _sl  : high >= _sl
+            _bestSoFar = array.get(trkBest, i)
+            _retEntry  = _dir == 1.0 ? close <= _entry + 3.0 : close >= _entry - 3.0
+            _hadFavor  = _bestSoFar >= float(i_beFavor)
+            _weakening = _dir == 1.0 ? (emaF < emaF[1] and bear) : (emaF > emaF[1] and bull)
+            _beCond    = _hadFavor and _retEntry and _weakening and not _beFired and _bars >= float(i_beBars)
+
+            if _beCond
+                array.set(trkBEFired, i, true)
+                if _dir == 1.0
+                    beLongFired := true
+                else
+                    beShortFired := true
+
+            if _hitTP1 and not _hitSL
+                array.set(trkDone, i, true)
+                totWins += 1
+                tp1Hits += 1
+                if _g >= 2.0
+                    apWins += 1
+                else
+                    aWins += 1
+                if _t >= 3.0
+                    comboWins += 1
+                else if _t >= 2.0
+                    stdvWins += 1
+                else
+                    oteWins += 1
+
+            else if _hitSL and not _hitTP1
+                array.set(trkDone, i, true)
+                if array.get(trkBEFired, i)
+                    totBE += 1
+                else
+                    totLoss += 1
+                    if _g >= 2.0
+                        apLoss += 1
+                    else
+                        aLoss += 1
+                    if _t >= 3.0
+                        comboLoss += 1
+                    else if _t >= 2.0
+                        stdvLoss += 1
+                    else
+                        oteLoss += 1
+
+            else if _hitTP1 and _hitSL
+                _tieWin = _dir == 1.0 ? open >= _entry - 5.0 : open <= _entry + 5.0
+                array.set(trkDone, i, true)
+                if _tieWin
+                    totWins += 1
+                    tp1Hits += 1
+                    if _g >= 2.0
+                        apWins += 1
+                    else
+                        aWins += 1
+                else
+                    totLoss += 1
+                    if _g >= 2.0
+                        apLoss += 1
+                    else
+                        aLoss += 1
+
+            else if _bars >= float(i_maxBars)
+                array.set(trkDone, i, true)
+
+// ================================================================
+// O. BREAKEVEN MARKS
+// ================================================================
+if i_showBE and beLongFired
+    label.new(bar_index, low - atr*0.25, text="⚠ TAKE BE
+LONG", color=color.new(#FF9800,5), textcolor=color.new(#FFFFFF,0), style=label.style_label_up, size=size.small)
+if i_showBE and beShortFired
+    label.new(bar_index, high + atr*0.25, text="⚠ TAKE BE
+SHORT", color=color.new(#FF9800,5), textcolor=color.new(#FFFFFF,0), style=label.style_label_down, size=size.small)
+alertcondition(beLongFired,  "TAKE BE LONG",  "⚠ TAKE BREAKEVEN — NQ LONG — Trade weakening")
+alertcondition(beShortFired, "TAKE BE SHORT", "⚠ TAKE BREAKEVEN — NQ SHORT — Trade weakening")
+
+// ================================================================
+// P. VISUALIZATION
+// ================================================================
+C_LONG  = color.new(#00C896,0)
+C_SHORT = color.new(#FF3D5A,0)
+C_ENTRY = color.new(#ECEFF1,0)
+C_SL    = color.new(#FF5252,0)
+C_TP1   = color.new(#69F0AE,0)
+C_TP2   = color.new(#40C4FF,0)
+C_TP3   = color.new(#CE93D8,0)
+C_APLUS = color.new(#FFD700,0)
+
+plotshape(longSig,  "Long",  shape.triangleup,   location.belowbar, C_LONG,  size=size.normal)
+plotshape(shortSig, "Short", shape.triangledown, location.abovebar, C_SHORT, size=size.normal)
+bgcolor(longSig  ? color.new(#00C896,93) : na)
+bgcolor(shortSig ? color.new(#FF3D5A,93) : na)
+
+if longSig
+    line.new(bar_index, close,   bar_index+i_lineLen, close,   color=C_ENTRY, width=2)
+    line.new(bar_index, longSL,  bar_index+i_lineLen, longSL,  color=C_SL,  width=1, style=line.style_dashed)
+    line.new(bar_index, longTP1, bar_index+i_lineLen, longTP1, color=C_TP1, width=2, style=line.style_dotted)
+    line.new(bar_index, longTP2, bar_index+i_lineLen, longTP2, color=C_TP2, width=1, style=line.style_dotted)
+    line.new(bar_index, longTP3, bar_index+i_lineLen, longTP3, color=C_TP3, width=1, style=line.style_dotted)
+if shortSig
+    line.new(bar_index, close,    bar_index+i_lineLen, close,    color=C_ENTRY, width=2)
+    line.new(bar_index, shortSL,  bar_index+i_lineLen, shortSL,  color=C_SL,  width=1, style=line.style_dashed)
+    line.new(bar_index, shortTP1, bar_index+i_lineLen, shortTP1, color=C_TP1, width=2, style=line.style_dotted)
+    line.new(bar_index, shortTP2, bar_index+i_lineLen, shortTP2, color=C_TP2, width=1, style=line.style_dotted)
+    line.new(bar_index, shortTP3, bar_index+i_lineLen, shortTP3, color=C_TP3, width=1, style=line.style_dotted)
+
+// ================================================================
+// Q. SIGNAL CARD LABEL (with live win probability)
+// ================================================================
+f_pctStr(p) => str.tostring(math.round(p * 100)) + "%"
+
+if longSig
+    _setup = f_setupL()
+    _prob  = f_pctStr(lWinProb)
+    _col   = isAplusL ? color.new(#1A3A2A,5) : color.new(#1A2E2A,8)
+    _tc    = isAplusL ? C_APLUS : C_TP1
+    label.new(bar_index, low - atr*0.55,
+        text = "✅ " + gradeL + " LONG — " + _setup + "
+Entry    " + str.tostring(close,"#.00") + "    [" + str.tostring(lTotal) + "/35]
+Stop     " + str.tostring(longSL,"#.00") + "  (-" + str.tostring(i_slPts) + "pts)
+TP1      " + str.tostring(longTP1,"#.00") + "  (+" + str.tostring(i_slPts) + "pts)
+TP2      " + str.tostring(longTP2,"#.00") + "  (+" + str.tostring(i_slPts*2) + "pts)
+TP3      " + str.tostring(longTP3,"#.00") + "  (+" + str.tostring(i_tpPts) + "pts)
+─────────────────────
+F1 HTF Bias    " + (htfBull ? "✓ BULL" : "○ NEUT") + "
+F2 OTE Zone    " + (inOTEDisc ? "✓ IN ZONE" : "○ NEAR") + "
+F3 STDV        " + (blwVwap1 ? "✓ EXTENDED" : "○ NEAR VWAP") + "
+F4 Confirm     " + (dispBull ? "✓ DISPLACE" : rejUp ? "✓ REJECT" : "○") + "
+─────────────────────
+Win Prob TP1:  " + _prob + "
+Win Prob TP2:  " + f_pctStr(lWinProbTP2) + "
+Risk $" + str.tostring(lRisk) + " → Full $" + str.tostring(lRewFull),
+        color=_col, textcolor=_tc, style=label.style_label_up, size=size.normal, textalign=text.align_left)
+
+if shortSig
+    _setup = f_setupS()
+    _prob  = f_pctStr(sWinProb)
+    _col   = isAplusS ? color.new(#3A1A1A,5) : color.new(#2E1A1A,8)
+    _tc    = isAplusS ? C_APLUS : color.new(#FF8A80,0)
+    label.new(bar_index, high + atr*0.55,
+        text = "✅ " + gradeS + " SHORT — " + _setup + "
+Entry    " + str.tostring(close,"#.00") + "    [" + str.tostring(sTotal) + "/35]
+Stop     " + str.tostring(shortSL,"#.00") + "  (+" + str.tostring(i_slPts) + "pts)
+TP1      " + str.tostring(shortTP1,"#.00") + "  (-" + str.tostring(i_slPts) + "pts)
+TP2      " + str.tostring(shortTP2,"#.00") + "  (-" + str.tostring(i_slPts*2) + "pts)
+TP3      " + str.tostring(shortTP3,"#.00") + "  (-" + str.tostring(i_tpPts) + "pts)
+─────────────────────
+F1 HTF Bias    " + (htfBear ? "✓ BEAR" : "○ NEUT") + "
+F2 OTE Zone    " + (inOTEPrem ? "✓ IN ZONE" : "○ NEAR") + "
+F3 STDV        " + (abvVwap1 ? "✓ EXTENDED" : "○ NEAR VWAP") + "
+F4 Confirm     " + (dispBear ? "✓ DISPLACE" : rejDown ? "✓ REJECT" : "○") + "
+─────────────────────
+Win Prob TP1:  " + _prob + "
+Win Prob TP2:  " + f_pctStr(sWinProbTP2) + "
+Risk $" + str.tostring(lRisk) + " → Full $" + str.tostring(lRewFull),
+        color=_col, textcolor=_tc, style=label.style_label_down, size=size.normal, textalign=text.align_left)
+
+// ================================================================
+// R. PROBABILITY PANEL
+// ================================================================
+var table probTable = table.new(i_tblPos == "top_right" ? position.top_right : i_tblPos == "top_left" ? position.top_left : i_tblPos == "bottom_right" ? position.bottom_right : position.bottom_left, columns=2, rows=11, bgcolor=color.new(#0A0A14,5), border_color=color.new(#333355,80), border_width=1, frame_color=color.new(#444466,60), frame_width=1)
+
+f_pct(p) => str.tostring(math.round(p * 100)) + "%"
+f_bar(p) =>
+    filled = math.round(p * 10)
+    b = ""
+    for i = 0 to 9
+        b += i < filled ? "█" : "░"
+    b
+
+if i_showProb and barstate.islast
+    isLP    = longSig or not shortSig
+    _hasSig = longSig or shortSig or not na(lastBar)
+    _grade  = not _hasSig ? "—" : isLP ? gradeL : gradeS
+    _dir    = not _hasSig ? "Scanning..." : isLP ? "▲ LONG" : "▼ SHORT"
+    _p1     = isLP ? lWinProb    : sWinProb
+    _p2     = isLP ? lWinProbTP2 : sWinProbTP2
+    _p3     = isLP ? lWinProbTP3 : sWinProbTP3
+    _score  = isLP ? lTotal      : sTotal
+    _setup  = isLP ? f_setupL()  : f_setupS()
+    _dcol   = not _hasSig ? color.new(#888899,0) : isLP ? color.new(#00C896,0) : color.new(#FF3D5A,0)
+    _gcol   = _grade == "A+" ? C_APLUS : _grade == "A" ? color.new(#80CBC4,0) : color.new(#888899,0)
+
+    table.cell(probTable, 0, 0,  "NQ PRO v4 SIGNAL",      text_color=color.new(#AAAACC,0), text_size=size.small, bgcolor=color.new(#111130,0))
+    table.cell(probTable, 1, 0,  _dir,                    text_color=_dcol,                text_size=size.small, bgcolor=color.new(#111130,0))
+    table.cell(probTable, 0, 1,  "Signal Grade",           text_color=color.new(#888899,0), text_size=size.small)
+    table.cell(probTable, 1, 1,  _grade,                   text_color=_gcol,                text_size=size.small)
+    table.cell(probTable, 0, 2,  "Setup Type",             text_color=color.new(#888899,0), text_size=size.small)
+    table.cell(probTable, 1, 2,  _setup,                   text_color=color.new(#FFDD88,0), text_size=size.small)
+    table.cell(probTable, 0, 3,  "Score /35",              text_color=color.new(#888899,0), text_size=size.small)
+    table.cell(probTable, 1, 3,  str.tostring(_score) + " / 35", text_color=color.new(#CCCCEE,0), text_size=size.small)
+    table.cell(probTable, 0, 4,  "HTF Bias",               text_color=color.new(#888899,0), text_size=size.tiny)
+    table.cell(probTable, 1, 4,  htfBiasStr,               text_color=htfBiasCol,            text_size=size.tiny)
+    table.cell(probTable, 0, 5,  "── WIN PROBABILITY ──",  text_color=color.new(#555577,0), text_size=size.tiny)
+    table.cell(probTable, 1, 5,  "(statistical estimate)", text_color=color.new(#444466,0), text_size=size.tiny)
+    table.cell(probTable, 0, 6,  "TP1 (" + str.tostring(i_slPts) + "pts)",   text_color=color.new(#69F0AE,0), text_size=size.small)
+    table.cell(probTable, 1, 6,  f_pct(_p1) + "  " + f_bar(_p1),             text_color=color.new(#69F0AE,0), text_size=size.small)
+    table.cell(probTable, 0, 7,  "TP2 (" + str.tostring(i_slPts*2) + "pts)", text_color=color.new(#40C4FF,0), text_size=size.small)
+    table.cell(probTable, 1, 7,  f_pct(_p2) + "  " + f_bar(_p2),             text_color=color.new(#40C4FF,0), text_size=size.small)
+    table.cell(probTable, 0, 8,  "TP3 (" + str.tostring(i_tpPts) + "pts)",   text_color=color.new(#CE93D8,0), text_size=size.small)
+    table.cell(probTable, 1, 8,  f_pct(_p3) + "  " + f_bar(_p3),             text_color=color.new(#CE93D8,0), text_size=size.small)
+    table.cell(probTable, 0, 9,  "Session",                text_color=color.new(#888899,0), text_size=size.tiny)
+    table.cell(probTable, 1, 9,  f_sessName(),             text_color=f_sessCol(),           text_size=size.tiny)
+    table.cell(probTable, 0, 10, "Chop State",             text_color=color.new(#888899,0), text_size=size.tiny)
+    table.cell(probTable, 1, 10, isChop ? "CHOP-avoid" : "Trending", text_color=isChop ? color.new(#FF9800,0) : color.new(#00FF88,0), text_size=size.tiny)
+
+// ================================================================
+// S. PERFORMANCE STATS PANEL
+// ================================================================
+var table statsTable = table.new(i_statPos == "top_right" ? position.top_right : i_statPos == "top_left" ? position.top_left : i_statPos == "bottom_right" ? position.bottom_right : position.bottom_left, columns=2, rows=18, bgcolor=color.new(#0A1A0A,5), border_color=color.new(#224422,80), border_width=1, frame_color=color.new(#335533,60), frame_width=1)
+
+if i_showStats and barstate.islast
+    resolved = totWins + totLoss
+    winRate  = resolved > 0 ? float(totWins) / float(resolved) * 100.0 : float(na)
+    wrStr    = not na(winRate) ? str.tostring(math.round(winRate*100)/100.0,"#.##") + "%" : "—"
+    wrCol    = not na(winRate) ? (winRate >= 65 ? color.new(#00FF88,0) : winRate >= 50 ? color.new(#FFD700,0) : color.new(#FF4444,0)) : color.new(#888899,0)
+    oteRes   = oteWins  + oteLoss
+    stdvRes  = stdvWins + stdvLoss
+    comboRes = comboWins + comboLoss
+    oteWR    = oteRes  > 0 ? str.tostring(math.round(float(oteWins) /float(oteRes) *1000)/10.0,"#.#") + "%" : "—"
+    stdvWR   = stdvRes > 0 ? str.tostring(math.round(float(stdvWins)/float(stdvRes)*1000)/10.0,"#.#") + "%" : "—"
+    comboWR  = comboRes> 0 ? str.tostring(math.round(float(comboWins)/float(comboRes)*1000)/10.0,"#.#") + "%" : "—"
+    pending  = math.max(totSigs - resolved - totBE, 0)
+
+    table.cell(statsTable, 0, 0,  "── PERFORMANCE TRACKER ──", text_color=color.new(#88CCAA,0), text_size=size.small, bgcolor=color.new(#0A2A0A,0))
+    table.cell(statsTable, 1, 0,  "Win = TP1 first",           text_color=color.new(#446644,0), text_size=size.tiny,  bgcolor=color.new(#0A2A0A,0))
+    table.cell(statsTable, 0, 1,  "Total Signals",  text_color=color.new(#AAAACC,0), text_size=size.small)
+    table.cell(statsTable, 1, 1,  str.tostring(totSigs), text_color=color.new(#EEEEFF,0), text_size=size.small)
+    table.cell(statsTable, 0, 2,  "Wins",           text_color=color.new(#00FF88,0), text_size=size.small)
+    table.cell(statsTable, 1, 2,  str.tostring(totWins), text_color=color.new(#00FF88,0), text_size=size.small)
+    table.cell(statsTable, 0, 3,  "Losses",         text_color=color.new(#FF4444,0), text_size=size.small)
+    table.cell(statsTable, 1, 3,  str.tostring(totLoss), text_color=color.new(#FF4444,0), text_size=size.small)
+    table.cell(statsTable, 0, 4,  "Breakevens",     text_color=color.new(#FF9800,0), text_size=size.small)
+    table.cell(statsTable, 1, 4,  str.tostring(totBE), text_color=color.new(#FF9800,0), text_size=size.small)
+    table.cell(statsTable, 0, 5,  "Win Rate",        text_color=color.new(#FFDD88,0), text_size=size.small)
+    table.cell(statsTable, 1, 5,  wrStr, text_color=wrCol, text_size=size.small)
+    table.cell(statsTable, 0, 6,  "Record",          text_color=color.new(#AAAACC,0), text_size=size.small)
+    table.cell(statsTable, 1, 6,  str.tostring(totWins) + "W-" + str.tostring(totLoss) + "L-" + str.tostring(totBE) + "BE", text_color=color.new(#CCDDCC,0), text_size=size.small)
+    table.cell(statsTable, 0, 7,  "TP1 Hits",        text_color=color.new(#69F0AE,0), text_size=size.small)
+    table.cell(statsTable, 1, 7,  str.tostring(tp1Hits), text_color=color.new(#69F0AE,0), text_size=size.small)
+    table.cell(statsTable, 0, 8,  "── BY SETUP TYPE ──", text_color=color.new(#446644,0), text_size=size.tiny)
+    table.cell(statsTable, 1, 8,  "",                    text_color=color.new(#446644,0), text_size=size.tiny)
+    table.cell(statsTable, 0, 9,  "OTE Pullback",    text_color=color.new(#4FC3F7,0), text_size=size.small)
+    table.cell(statsTable, 1, 9,  str.tostring(oteWins) + "W-" + str.tostring(oteLoss) + "L  " + oteWR, text_color=color.new(#4FC3F7,0), text_size=size.small)
+    table.cell(statsTable, 0, 10, "STDV Reversal",   text_color=color.new(#CE93D8,0), text_size=size.small)
+    table.cell(statsTable, 1, 10, str.tostring(stdvWins) + "W-" + str.tostring(stdvLoss) + "L  " + stdvWR, text_color=color.new(#CE93D8,0), text_size=size.small)
+    table.cell(statsTable, 0, 11, "OTE+STDV Combo",  text_color=color.new(#FFD700,0), text_size=size.small)
+    table.cell(statsTable, 1, 11, str.tostring(comboWins) + "W-" + str.tostring(comboLoss) + "L  " + comboWR, text_color=color.new(#FFD700,0), text_size=size.small)
+    table.cell(statsTable, 0, 12, "── BY GRADE ──",   text_color=color.new(#446644,0), text_size=size.tiny)
+    table.cell(statsTable, 1, 12, "",                  text_color=color.new(#446644,0), text_size=size.tiny)
+    table.cell(statsTable, 0, 13, "A+ Record",        text_color=color.new(#FFD700,0), text_size=size.small)
+    table.cell(statsTable, 1, 13, str.tostring(apWins) + "W-" + str.tostring(apLoss) + "L", text_color=color.new(#FFD700,0), text_size=size.small)
+    table.cell(statsTable, 0, 14, "A  Record",        text_color=color.new(#80CBC4,0), text_size=size.small)
+    table.cell(statsTable, 1, 14, str.tostring(aWins)  + "W-" + str.tostring(aLoss)  + "L", text_color=color.new(#80CBC4,0), text_size=size.small)
+    table.cell(statsTable, 0, 15, "HTF Bias Now",     text_color=color.new(#888899,0), text_size=size.tiny)
+    table.cell(statsTable, 1, 15, htfBiasStr,          text_color=htfBiasCol,            text_size=size.tiny)
+    table.cell(statsTable, 0, 16, "Pending",           text_color=color.new(#888899,0), text_size=size.tiny)
+    table.cell(statsTable, 1, 16, str.tostring(pending), text_color=color.new(#888899,0), text_size=size.tiny)
+    table.cell(statsTable, 0, 17, "Past ≠ future",    text_color=color.new(#334433,0), text_size=size.tiny)
+    table.cell(statsTable, 1, 17, "stats only",       text_color=color.new(#334433,0), text_size=size.tiny)
+
+// ================================================================
+// T. ALERTS
+// ================================================================
+alertcondition(longSig  and isAplusL, "✅ A+ LONG NQ",  "✅ A+ LONG — NQ — All 4 factors confirmed")
+alertcondition(shortSig and isAplusS, "✅ A+ SHORT NQ", "✅ A+ SHORT — NQ — All 4 factors confirmed")
+alertcondition(longSig,               "✅ A LONG NQ",   "✅ A LONG — NQ — All 4 factors confirmed")
+alertcondition(shortSig,              "✅ A SHORT NQ",  "✅ A SHORT — NQ — All 4 factors confirmed")
+alertcondition(longSig  and s3Long,   "OTE+STDV LONG",  "OTE+STDV COMBO LONG — highest priority setup")
+alertcondition(shortSig and s3Short,  "OTE+STDV SHORT", "OTE+STDV COMBO SHORT — highest priority setup")

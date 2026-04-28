@@ -1,0 +1,49 @@
+# Render Blueprint — deploy the NQ Signal Pro backend as a web service.
+# Docs: https://render.com/docs/blueprint-spec
+#
+# HOW TO USE:
+#   1. Push this repo to GitHub.
+#   2. In Render dashboard → "New Blueprint Instance" → connect your repo.
+#   3. Set the environment variables listed below in the Render dashboard.
+
+services:
+  - type: web
+    name: nq-signal-pro
+    env: python
+    plan: free          # free tier keeps the service alive; upgrade to "starter" ($7/mo) for always-on
+    region: oregon
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn -w 1 -k uvicorn.workers.UvicornWorker app.main:app --bind 0.0.0.0:$PORT --timeout 120
+
+    envVars:
+      # DATABASE_URL is injected automatically if you add a Render Postgres DB below
+      - key: DATABASE_URL
+        fromDatabase:
+          name: nq-signals-db
+          property: connectionString
+      # Generate a random secret: python -c "import secrets; print(secrets.token_urlsafe(32))"
+      - key: WEBHOOK_SECRET
+        sync: false       # set manually in Render dashboard
+      # Set to your Squarespace domain in production
+      - key: CORS_ORIGINS
+        value: "*"
+      - key: PAPER_TRADING_ENABLED
+        value: "true"
+      - key: LOG_LEVEL
+        value: "INFO"
+      # Optional — set in Render dashboard if you want Discord/email alerts
+      - key: DISCORD_WEBHOOK_URL
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: ALERT_EMAIL_TO
+        sync: false
+
+    healthCheckPath: /health
+
+databases:
+  - name: nq-signals-db
+    databaseName: nq_signals
+    user: nq_user
+    plan: free            # Render free Postgres (90-day retention; upgrade for production)

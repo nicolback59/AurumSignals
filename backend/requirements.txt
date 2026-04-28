@@ -1,0 +1,31 @@
+# Web framework
+fastapi==0.115.5
+uvicorn[standard]==0.32.1
+
+# Database
+sqlalchemy==2.0.36
+# For PostgreSQL on Render (leave out if using SQLite only):
+# psycopg2-binary==2.9.10
+
+# Config
+pydantic-settings==2.6.1
+
+# HTTP client (async alerts)
+httpx==0.27.2
+
+# Scheduler (background jobs)
+apscheduler==3.10.4
+
+# Market data (free OHLCV for trade resolution + backtesting)
+yfinance==0.2.48
+pandas==2.2.3
+numpy==1.26.4
+
+# Timezone
+pytz==2024.2
+
+# Email alerts (optional — only needed if SENDGRID_API_KEY is set)
+sendgrid==6.11.0
+
+# Production server
+gunicorn==23.0.0

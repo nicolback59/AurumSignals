@@ -1,0 +1,370 @@
+//@version=6
+// ================================================================
+// MGC GOLD SCALPER v3.0 — SELECTIVE HIGH-WIN-RATE EDITION
+// ================================================================
+// TARGET: 75%+ win rate | Fewer, higher-quality signals only
+// TIMEFRAME: 5m or 15m on MGC1!
+// R/R: SL=50tks | TP1=50tks | TP2=75tks | TP3=100tks | TP4=125tks
+//
+// 5 MANDATORY GATES (ALL must pass — any fail = no signal):
+//   G1: HTF MOMENTUM — 15m EMA direction + slope (not just direction)
+//   G2: VWAP SIDE    — price must be on correct side of VWAP
+//   G3: REGIME       — ATR expanding + no chop + session active
+//   G4: CANDLE       — displacement body + volume surge required
+//   G5: RSI ZONE     — 45-65 bull / 35-55 bear (healthy momentum only)
+//
+// 4 SETUP TYPES (reduced from 10 — weakest 6 removed):
+//   S1: EMA PULLBACK  — best edge setup for gold trends
+//   S2: VWAP SNAP     — clean VWAP reject/reclaim with momentum
+//   S3: MOMENTUM BURST— displacement at structure in HTF direction
+//   S4: SWEEP REVERSE — liquidity grab + snap back (mean reversion)
+//
+// Non-repainting: barstate.isconfirmed on ALL signals
+// ================================================================
+indicator(title            = "MGC Gold Scalper v3",
+          shorttitle       = "MGC.v3",
+          overlay          = true,
+          max_labels_count = 500,
+          max_lines_count  = 500,
+          max_boxes_count  = 200)
+
+// ================================================================
+// A. INPUTS
+// ================================================================
+var string GE = "Signal Engine"
+i_minTier   = input.string("A",  "Min Signal Tier", options=["A+","A","B+"], group=GE)
+i_contracts = input.int(1,   "MGC Contracts", minval=1, maxval=20, group=GE)
+i_cooldown  = input.int(3,   "Cooldown (bars)", minval=1, maxval=20, group=GE)
+i_showAll   = input.bool(false, "Relax Filters (debug mode)", group=GE)
+
+var string GT = "Risk Structure (ticks — MGC tick = 0.1pt)"
+i_slTks  = input.int(50,  "Stop Loss (ticks)",  minval=10, maxval=200, group=GT)
+i_tp1Tks = input.int(50,  "TP1 (ticks)",        minval=10, maxval=200, group=GT)
+i_tp2Tks = input.int(75,  "TP2 (ticks)",        minval=10, maxval=300, group=GT)
+i_tp3Tks = input.int(100, "TP3 (ticks)",        minval=10, maxval=400, group=GT)
+i_tp4Tks = input.int(125, "TP4 (ticks)",        minval=10, maxval=500, group=GT)
+i_tickSz = input.float(0.1,"Tick Size (MGC=0.1)",minval=0.01,maxval=1.0,step=0.01,group=GT)
+
+var string GH = "HTF Bias — Gate 1"
+i_htfTF   = input.string("15","HTF Timeframe", options=["5","10","15","30","60"], group=GH)
+i_htfFast = input.int(9,  "HTF Fast EMA", minval=3,  maxval=50,  group=GH)
+i_htfSlow = input.int(21, "HTF Slow EMA", minval=5,  maxval=100, group=GH)
+i_htfSlope= input.int(5,  "HTF Slope Lookback", minval=2, maxval=20, group=GH)
+
+var string GV = "Quality Filters — Gates 3-5"
+i_atrLen    = input.int(14,   "ATR Length",          minval=5,  maxval=30,  group=GV)
+i_atrSmaLen = input.int(20,   "ATR Regime SMA",      minval=10, maxval=50,  group=GV)
+i_atrExpMn  = input.float(1.0,"ATR Expansion Min",   minval=0.8,maxval=3.0, step=0.05, group=GV)
+i_chopBars  = input.int(12,   "Chop Window (bars)",  minval=5,  maxval=30,  group=GV)
+i_chopMult  = input.float(2.2,"Chop ATR Threshold",  minval=1.0,maxval=5.0, step=0.1,  group=GV)
+i_minCandle = input.float(0.4,"Min Displacement (ATR x)", minval=0.2, maxval=1.5, step=0.05, group=GV)
+i_volMult   = input.float(1.3,"Volume Surge (x avg)",minval=1.0,maxval=3.0, step=0.05, group=GV)
+
+var string GI = "LTF Indicators"
+i_emaF = input.int(9,  "Fast EMA",  minval=3,  maxval=30,  group=GI)
+i_emaS = input.int(21, "Slow EMA",  minval=5,  maxval=100, group=GI)
+i_emaT = input.int(50, "Trend EMA", minval=10, maxval=200, group=GI)
+i_rsiL = input.int(14, "RSI Length",minval=5,  maxval=30,  group=GI)
+
+var string GS = "Session Filter"
+i_sess    = input.session("0200-1700","Active Session (ET)", group=GS)
+i_bestOnly= input.bool(true, "Best Hours Only (London+NY 2-11AM ET)", group=GS)
+i_noLunch = input.bool(true, "Block Lunch 12:00-13:30 ET", group=GS)
+
+var string GD = "Display"
+i_showVwap    = input.bool(true,  "Show VWAP + Bands",       group=GD)
+i_showSess    = input.bool(true,  "Highlight Sessions",       group=GD)
+i_showProb    = input.bool(true,  "Show Signal Panel",        group=GD)
+i_showTracker = input.bool(true,  "Show Performance Tracker", group=GD)
+i_tblPos      = input.string("top_right",    "Signal Panel Pos", options=["top_right","top_left","bottom_right","bottom_left"], group=GD)
+i_statPos     = input.string("bottom_right", "Tracker Pos",      options=["top_right","top_left","bottom_right","bottom_left"], group=GD)
+i_lineLen     = input.int(15, "Line Length (bars)", minval=5, maxval=40, group=GD)
+i_maxResolve  = input.int(60, "Max Bars to Resolve", minval=10, maxval=200, group=GD)
+
+// ================================================================
+// B. CORE INDICATORS
+// ================================================================
+atr    = ta.atr(i_atrLen)
+atrSma = ta.sma(atr, i_atrSmaLen)
+atrExp = atr > atrSma * i_atrExpMn
+emaF   = ta.ema(close, i_emaF)
+emaS   = ta.ema(close, i_emaS)
+emaT   = ta.ema(close, i_emaT)
+rsi    = ta.rsi(close, i_rsiL)
+vwap   = ta.vwap(hlc3)
+volAvg = ta.sma(volume, 20)
+
+vwapStdv = ta.stdev(close, 20)
+vwapU1   = vwap + vwapStdv
+vwapD1   = vwap - vwapStdv
+vwapU2   = vwap + vwapStdv * 2.0
+vwapD2   = vwap - vwapStdv * 2.0
+
+// ================================================================
+// C. HTF BIAS — Gate 1 (MANDATORY)
+// ================================================================
+htfFast  = request.security(syminfo.tickerid, i_htfTF, ta.ema(close, i_htfFast), lookahead=barmerge.lookahead_off)
+htfSlow  = request.security(syminfo.tickerid, i_htfTF, ta.ema(close, i_htfSlow), lookahead=barmerge.lookahead_off)
+htfClose = request.security(syminfo.tickerid, i_htfTF, close, lookahead=barmerge.lookahead_off)
+
+htfBull    = htfFast > htfSlow and htfClose > htfSlow
+htfBear    = htfFast < htfSlow and htfClose < htfSlow
+htfBullMom = htfFast > htfFast[i_htfSlope]
+htfBearMom = htfFast < htfFast[i_htfSlope]
+
+g1Long  = htfBull and htfBullMom
+g1Short = htfBear and htfBearMom
+
+// ================================================================
+// D. SESSION — Gate 3 component
+// ================================================================
+inSess   = not na(time(timeframe.period, i_sess, "America/New_York"))
+exchHour = hour(time,   "America/New_York")
+exchMin  = minute(time, "America/New_York")
+isLondon  = exchHour >= 2  and exchHour < 8
+isNYOpen  = exchHour >= 8  and exchHour < 12
+isOverlap = exchHour >= 8  and exchHour < 11
+isAftNoon = exchHour >= 13 and exchHour < 17
+isLunch   = i_noLunch and ((exchHour == 12) or (exchHour == 13 and exchMin < 30))
+isBest    = isLondon or isNYOpen
+isActive  = (i_bestOnly ? isBest : (isLondon or isNYOpen or isAftNoon)) and not isLunch and inSess
+sessBonus = isOverlap ? 10 : isNYOpen ? 7 : isLondon ? 5 : 0
+
+bgcolor(i_showSess and isOverlap ? color.new(#FFD700,97) : na, title="NY Open")
+bgcolor(i_showSess and isLondon  ? color.new(#4FC3F7,97) : na, title="London")
+
+// ================================================================
+// E. CANDLE QUALITY — Gate 4 (MANDATORY)
+// ================================================================
+cRng  = high - low
+cBody = math.abs(close - open)
+bull  = close > open
+bear  = close < open
+cLoc  = cRng > 0 ? (close - low) / cRng : 0.5
+lWick = math.min(open, close) - low
+uWick = high - math.max(open, close)
+lWR   = cRng > 0 ? lWick / cRng : 0.0
+uWR   = cRng > 0 ? uWick / cRng : 0.0
+spike = cRng >= 5.0 * atr
+
+dispBull = cBody >= i_minCandle * atr and cLoc >= 0.62 and bull and not spike
+dispBear = cBody >= i_minCandle * atr and cLoc <= 0.38 and bear and not spike
+
+rejUp    = lWR >= 0.35 and lWick > cBody * 0.5 and cRng >= atr * 0.3
+rejDown  = uWR >= 0.35 and uWick > cBody * 0.5 and cRng >= atr * 0.3
+
+volSurge = volume > volAvg * i_volMult
+mBull    = close > high[1] and bull
+mBear    = close < low[1]  and bear
+
+g4Long  = (dispBull or (rejUp   and mBull)) and volSurge
+g4Short = (dispBear or (rejDown and mBear)) and volSurge
+
+// ================================================================
+// F. REGIME — Gate 3 (MANDATORY)
+// ================================================================
+chopH  = ta.highest(high, i_chopBars)
+chopL  = ta.lowest(low,   i_chopBars)
+isChop = (chopH - chopL) < atr * i_chopMult
+
+g3Long  = not isChop and atrExp and isActive
+g3Short = not isChop and atrExp and isActive
+
+// ================================================================
+// G. RSI ZONE — Gate 5 (MANDATORY)
+// ================================================================
+rsiOB    = rsi > 68
+rsiOS    = rsi < 32
+rsiBull  = rsi >= 45 and rsi <= 65
+rsiBear  = rsi >= 35 and rsi <= 55
+
+g5Long  = rsiBull and not rsiOB
+g5Short = rsiBear and not rsiOS
+
+// ================================================================
+// H. VWAP — Gate 2 (MANDATORY)
+// ================================================================
+abvVwap  = close > vwap
+blwVwap  = close < vwap
+vwapDist = math.abs(close - vwap) / atr
+nearVwap = vwapDist <= 1.0
+vwapFar  = vwapDist > 3.5
+vwapRecU = close > vwap and close[1] <= vwap
+vwapRecD = close < vwap and close[1] >= vwap
+vwapRejU = low < vwap and close > vwap and rejUp
+vwapRejD = high > vwap and close < vwap and rejDown
+
+g2Long  = abvVwap and not vwapFar
+g2Short = blwVwap and not vwapFar
+
+// ================================================================
+// I. LTF STRUCTURE
+// ================================================================
+abvF      = close > emaF
+blwF      = close < emaF
+abvS      = close > emaS
+blwS      = close < emaS
+abvT      = close > emaT
+blwT      = close < emaT
+bullStack = emaF > emaS and emaS > emaT
+bearStack = emaF < emaS and emaS < emaT
+emaFBull  = emaF > emaF[2]
+emaFBear  = emaF < emaF[2]
+nearEmaF  = math.abs(close - emaF) <= atr * 0.5
+
+pivH = ta.pivothigh(high, 4, 4)
+pivL = ta.pivotlow(low,   4, 4)
+var float sh0 = na
+var float sl0 = na
+if not na(pivH)
+    sh0 := pivH
+if not na(pivL)
+    sl0 := pivL
+refH = ta.highest(high, 10)
+refL = ta.lowest(low,   10)
+sweepL = low < refL and close > refL and bull and not spike
+sweepH = high > refH and close < refH and bear and not spike
+var int swpLBar = na
+var int swpHBar = na
+if sweepL
+    swpLBar := bar_index
+if sweepH
+    swpHBar := bar_index
+swpLA = not na(swpLBar) ? bar_index - swpLBar : 999
+swpHA = not na(swpHBar) ? bar_index - swpHBar : 999
+
+// ================================================================
+// J. 4 FOCUSED SETUP TYPES
+// ================================================================
+s1L = g1Long  and bullStack and nearEmaF and abvS  and (dispBull or (rejUp   and mBull)) and emaFBull
+s1S = g1Short and bearStack and nearEmaF and blwS  and (dispBear or (rejDown and mBear)) and emaFBear
+
+s2L = g1Long  and (vwapRecU or vwapRejU) and abvF
+s2S = g1Short and (vwapRecD or vwapRejD) and blwF
+
+s3L = g1Long  and dispBull and bullStack and abvT and emaFBull
+s3S = g1Short and dispBear and bearStack and blwT and emaFBear
+
+s4L = sweepL and swpLA <= 2 and dispBull and (htfBull or htfBullMom)
+s4S = sweepH and swpHA <= 2 and dispBear and (htfBear or htfBearMom)
+
+anyL = s1L or s2L or s3L or s4L
+anyS = s1S or s2S or s3S or s4S
+
+f_setupNameL() => s1L ? "PB-EMA" : s2L ? "VWAP" : s3L ? "MOM" : s4L ? "SWEEP" : "---"
+f_setupNameS() => s1S ? "PB-EMA" : s2S ? "VWAP" : s3S ? "MOM" : s4S ? "SWEEP" : "---"
+
+// ================================================================
+// K. SCORING
+// ================================================================
+f_lScore() =>
+    s = 0
+    s += s1L ? 28 : s2L ? 26 : s3L ? 24 : s4L ? 22 : 0
+    s += g1Long and htfBullMom ? 15 : g1Long ? 8 : 0
+    s += bullStack ? 10 : abvT ? 5 : 0
+    s += dispBull ? 12 : rejUp ? 8 : 0
+    s += volSurge ? 8 : 0
+    s += rsiBull ? 7 : 0
+    s += abvVwap and not vwapFar ? 8 : 0
+    s += nearVwap ? 4 : 0
+    s += sessBonus
+    s += swpLA <= 3 ? 5 : 0
+    s += isChop ? -20 : 0
+    s += not atrExp ? -12 : 0
+    s += rsiOB ? -20 : 0
+    s += blwVwap ? -12 : 0
+    s += vwapFar ? -10 : 0
+    s += spike or spike[1] ? -25 : 0
+    math.min(math.max(s, 0), 100)
+
+f_sScore() =>
+    s = 0
+    s += s1S ? 28 : s2S ? 26 : s3S ? 24 : s4S ? 22 : 0
+    s += g1Short and htfBearMom ? 15 : g1Short ? 8 : 0
+    s += bearStack ? 10 : blwT ? 5 : 0
+    s += dispBear ? 12 : rejDown ? 8 : 0
+    s += volSurge ? 8 : 0
+    s += rsiBear ? 7 : 0
+    s += blwVwap and not vwapFar ? 8 : 0
+    s += nearVwap ? 4 : 0
+    s += sessBonus
+    s += swpHA <= 3 ? 5 : 0
+    s += isChop ? -20 : 0
+    s += not atrExp ? -12 : 0
+    s += rsiOS ? -20 : 0
+    s += abvVwap ? -12 : 0
+    s += vwapFar ? -10 : 0
+    s += spike or spike[1] ? -25 : 0
+    math.min(math.max(s, 0), 100)
+
+lScore = anyL ? f_lScore() : 0
+sScore = anyS ? f_sScore() : 0
+
+thresh  = i_minTier == "A+" ? 85 : i_minTier == "A" ? 72 : 60
+f_tier(sc) => sc >= 85 ? "A+" : sc >= 72 ? "A" : "B+"
+
+// ================================================================
+// L. TICK-BASED SL/TP
+// ================================================================
+tickPts  = i_tickSz
+slPts    = float(i_slTks)  * tickPts
+tp1Pts   = float(i_tp1Tks) * tickPts
+tp2Pts   = float(i_tp2Tks) * tickPts
+tp3Pts   = float(i_tp3Tks) * tickPts
+tp4Pts   = float(i_tp4Tks) * tickPts
+
+longSL   = close - slPts
+shortSL  = close + slPts
+lTP1     = close + tp1Pts
+lTP2     = close + tp2Pts
+lTP3     = close + tp3Pts
+lTP4     = close + tp4Pts
+sTP1     = close - tp1Pts
+sTP2     = close - tp2Pts
+sTP3     = close - tp3Pts
+sTP4     = close - tp4Pts
+
+mgcM     = 10.0
+lRisk    = slPts * mgcM * i_contracts
+lRew1    = tp1Pts * mgcM * i_contracts
+
+// ================================================================
+// M. FINAL SIGNAL GATE — ALL 5 GATES MANDATORY
+// ================================================================
+var int lastBar = na
+coolOK   = na(lastBar) or (bar_index - lastBar) >= i_cooldown
+
+longSig  = barstate.isconfirmed and anyL and g1Long  and g2Long  and g3Long  and g4Long  and g5Long  and lScore >= thresh and coolOK and not spike
+shortSig = barstate.isconfirmed and anyS and g1Short and g2Short and g3Short and g4Short and g5Short and sScore >= thresh and coolOK and not spike
+
+if i_showAll
+    longSig  := barstate.isconfirmed and anyL and lScore >= 50 and coolOK and not spike
+    shortSig := barstate.isconfirmed and anyS and sScore >= 50 and coolOK and not spike
+
+if longSig or shortSig
+    lastBar := bar_index
+
+// ================================================================
+// N. PLOTS
+// ================================================================
+plot(emaF, "EMA Fast",  color.new(#00BCD4, 0), 1)
+plot(emaS, "EMA Slow",  color.new(#FF5252, 0), 1)
+plot(emaT, "EMA Trend", color.new(#9E9E9E,30), 1)
+plot(i_showVwap ? vwap   : na, "VWAP",    color.new(#FF9800,15), 1)
+plot(i_showVwap ? vwapU1 : na, "VWAP+1σ", color.new(#4FC3F7,55), 1)
+plot(i_showVwap ? vwapD1 : na, "VWAP-1σ", color.new(#4FC3F7,55), 1)
+plot(i_showVwap ? vwapU2 : na, "VWAP+2σ", color.new(#CE93D8,50), 1)
+plot(i_showVwap ? vwapD2 : na, "VWAP-2σ", color.new(#CE93D8,50), 1)
+
+plotshape(longSig,  "Long",  shape.triangleup,   location.belowbar, color.new(#00FF88,0), size=size.normal)
+plotshape(shortSig, "Short", shape.triangledown, location.abovebar, color.new(#FF3333,0), size=size.normal)
+bgcolor(longSig  ? color.new(#00C896,91) : na)
+bgcolor(shortSig ? color.new(#FF3D5A,91) : na)
+
+// ================================================================
+// Q. ALERTS
+// ================================================================
+alertcondition(longSig  and lScore>=85, "MGC BUY A+",  "MGC v3 BUY A+ — All 5 gates confirmed")
+alertcondition(shortSig and sScore>=85, "MGC SELL A+", "MGC v3 SELL A+ — All 5 gates confirmed")
+alertcondition(longSig,                 "MGC BUY A",   "MGC v3 BUY A — All 5 gates confirmed")
+alertcondition(shortSig,                "MGC SELL A",  "MGC v3 SELL A — All 5 gates confirmed")
