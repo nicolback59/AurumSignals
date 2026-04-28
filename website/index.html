@@ -1,0 +1,519 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NQ Signal Pro — Dashboard</title>
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --surface: #13161e;
+      --surface2: #1a1e2a;
+      --border: #252a38;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #eab308;
+      --blue: #3b82f6;
+      --purple: #a855f7;
+      --font: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      min-height: 100vh;
+    }
+    a { color: var(--blue); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+
+    /* ── Nav ── */
+    nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      gap: 32px;
+      height: 52px;
+    }
+    .nav-brand {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+      letter-spacing: 0.05em;
+    }
+    .nav-brand span { color: var(--blue); }
+    .nav-links { display: flex; gap: 4px; }
+    .nav-links a {
+      padding: 6px 14px;
+      border-radius: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      transition: all 0.15s;
+    }
+    .nav-links a.active, .nav-links a:hover {
+      background: var(--surface2);
+      color: var(--text);
+      text-decoration: none;
+    }
+    .nav-links a.active { color: var(--blue); }
+    .nav-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    #clock { color: var(--muted); font-size: 11px; }
+
+    /* ── Layout ── */
+    .page { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+
+    /* ── Section headings ── */
+    .section-title {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    /* ── Risk banner ── */
+    #risk-banner {
+      display: none;
+      background: #7f1d1d;
+      border: 1px solid #b91c1c;
+      border-radius: 8px;
+      padding: 12px 16px;
+      margin-bottom: 20px;
+      color: #fca5a5;
+      font-size: 12px;
+    }
+
+    /* ── Instrument status cards ── */
+    .inst-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 12px;
+      margin-bottom: 24px;
+    }
+    .inst-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .inst-card.halted { border-color: #7f1d1d; }
+    .inst-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .inst-name { font-size: 20px; font-weight: 700; letter-spacing: 0.05em; }
+    .status-pill {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      padding: 3px 10px;
+      border-radius: 999px;
+    }
+    .pill-active { background: #14532d; color: #4ade80; }
+    .pill-halted { background: #7f1d1d; color: #fca5a5; }
+    .pill-waiting { background: #1e3a5f; color: #93c5fd; }
+
+    .stat-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .stat-box {
+      background: var(--surface2);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .stat-label { font-size: 9px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 3px; }
+    .stat-val { font-size: 16px; font-weight: 700; }
+    .stat-val.green { color: var(--green); }
+    .stat-val.red { color: var(--red); }
+    .stat-val.yellow { color: var(--yellow); }
+    .stat-val.blue { color: var(--blue); }
+    .stat-val.muted { color: var(--muted); }
+
+    .trades-bar-wrap { margin-top: 6px; }
+    .trades-bar-label {
+      display: flex;
+      justify-content: space-between;
+      font-size: 10px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    .trades-bar { height: 4px; background: var(--surface2); border-radius: 2px; }
+    .trades-bar-fill { height: 100%; border-radius: 2px; background: var(--blue); transition: width 0.4s; }
+
+    .halt-reason {
+      margin-top: 10px;
+      font-size: 10px;
+      color: #fca5a5;
+      background: rgba(127,29,29,0.4);
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+
+    /* ── Global drawdown ── */
+    .global-bar-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+    .global-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 8px;
+    }
+    .global-label { font-size: 11px; color: var(--muted); }
+    .global-val { font-size: 14px; font-weight: 700; }
+    .dd-bar { height: 6px; background: var(--surface2); border-radius: 3px; }
+    .dd-bar-fill { height: 100%; border-radius: 3px; background: var(--green); transition: width 0.4s, background 0.4s; }
+    .dd-bar-fill.warn { background: var(--yellow); }
+    .dd-bar-fill.danger { background: var(--red); }
+
+    /* ── Signal feed ── */
+    .signal-feed { display: flex; flex-direction: column; gap: 10px; }
+    .signal-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px 16px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 14px;
+      align-items: start;
+    }
+    .signal-card:hover { border-color: #334155; }
+    .signal-dir {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      flex-shrink: 0;
+    }
+    .dir-long { background: #14532d; color: #4ade80; }
+    .dir-short { background: #7f1d1d; color: #fca5a5; }
+
+    .signal-body { min-width: 0; }
+    .signal-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
+    .signal-inst { font-size: 14px; font-weight: 700; }
+    .signal-setup {
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: var(--surface2);
+      color: var(--muted);
+    }
+    .signal-grade {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+    .grade-aplus { background: #14532d; color: #4ade80; }
+    .grade-a { background: #1e3a5f; color: #93c5fd; }
+    .grade-b { background: #3b2a1e; color: #fbbf24; }
+
+    .signal-levels {
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .level-item strong { color: var(--text); }
+
+    .score-bar-wrap { margin-top: 6px; }
+    .score-bar { height: 3px; background: var(--surface2); border-radius: 2px; }
+    .score-bar-fill { height: 100%; border-radius: 2px; background: var(--blue); }
+
+    .signal-meta { text-align: right; flex-shrink: 0; }
+    .signal-time { font-size: 10px; color: var(--muted); }
+    .signal-score { font-size: 18px; font-weight: 700; color: var(--blue); margin-top: 4px; }
+
+    /* ── Empty state ── */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--muted);
+    }
+    .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.4; }
+    .empty-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
+    .empty-sub { font-size: 11px; }
+
+    /* ── Loading ── */
+    .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 12px; }
+
+    /* ── Responsive ── */
+    @media (max-width: 640px) {
+      .inst-grid { grid-template-columns: 1fr; }
+      .stat-row { grid-template-columns: repeat(3, 1fr); }
+      nav { padding: 0 14px; gap: 16px; }
+    }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-brand">NQ<span>Pro</span></div>
+  <div class="nav-links">
+    <a href="index.html" class="active">Dashboard</a>
+    <a href="performance.html">Performance</a>
+    <a href="journal.html">Journal</a>
+  </div>
+  <div class="nav-right">
+    <span id="clock"></span>
+  </div>
+</nav>
+
+<div class="page">
+
+  <div id="risk-banner"></div>
+
+  <!-- Instrument status -->
+  <div class="section-title">Instrument Status</div>
+  <div class="inst-grid" id="inst-grid">
+    <div class="loading">Loading…</div>
+  </div>
+
+  <!-- Global drawdown -->
+  <div class="global-bar-wrap" id="global-wrap" style="display:none">
+    <div class="global-row">
+      <span class="global-label">GLOBAL DRAWDOWN TODAY</span>
+      <span class="global-val" id="global-val">0t</span>
+    </div>
+    <div class="dd-bar">
+      <div class="dd-bar-fill" id="dd-fill" style="width:0%"></div>
+    </div>
+    <div style="display:flex; justify-content:space-between; margin-top:4px; font-size:9px; color:var(--muted)">
+      <span>0t</span>
+      <span id="dd-limit-label">Limit: −1000t</span>
+    </div>
+  </div>
+
+  <!-- Recent signals -->
+  <div class="section-title">Recent Signals</div>
+  <div class="signal-feed" id="signal-feed">
+    <div class="loading">Loading…</div>
+  </div>
+
+</div>
+
+<script>
+  const API = 'https://nq-signal-pro.onrender.com';
+
+  // ── Clock ──────────────────────────────────────────────────────────────────
+  function updateClock() {
+    const now = new Date();
+    const utc = now.toUTCString().replace(' GMT', ' UTC').slice(0, -4);
+    document.getElementById('clock').textContent = utc.slice(-12);
+  }
+  updateClock();
+  setInterval(updateClock, 1000);
+
+  // ── Fetch helpers ──────────────────────────────────────────────────────────
+  async function apiFetch(path) {
+    const r = await fetch(API + path);
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }
+
+  function fmt(v, dec = 1) {
+    if (v == null) return '—';
+    return typeof v === 'number' ? v.toFixed(dec) : v;
+  }
+
+  function fmtTime(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false }) + ' UTC';
+  }
+
+  function relTime(iso) {
+    if (!iso) return '';
+    const diff = (Date.now() - new Date(iso)) / 1000;
+    if (diff < 60) return `${Math.round(diff)}s ago`;
+    if (diff < 3600) return `${Math.round(diff/60)}m ago`;
+    if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
+    return `${Math.round(diff/86400)}d ago`;
+  }
+
+  function colorTicks(t) {
+    if (t > 0) return 'green';
+    if (t < 0) return 'red';
+    return 'muted';
+  }
+
+  // ── Risk status ────────────────────────────────────────────────────────────
+  async function loadStatus() {
+    let data;
+    try { data = await apiFetch('/performance/status'); }
+    catch (e) { document.getElementById('inst-grid').innerHTML = '<div style="color:var(--red);padding:20px">Failed to load status</div>'; return; }
+
+    const grid = document.getElementById('inst-grid');
+    grid.innerHTML = '';
+
+    let anyHalted = false;
+    const instruments = data.instruments || {};
+
+    for (const [inst, s] of Object.entries(instruments)) {
+      const halted = !s.is_active;
+      if (halted) anyHalted = true;
+
+      const wr = s.win_rate_today != null ? s.win_rate_today.toFixed(1) + '%' : '—';
+      const ticks = s.pnl_ticks_today || 0;
+      const barPct = Math.min((s.trades_today / s.trades_limit) * 100, 100);
+
+      const card = document.createElement('div');
+      card.className = 'inst-card' + (halted ? ' halted' : '');
+      card.innerHTML = `
+        <div class="inst-header">
+          <div class="inst-name">${inst}</div>
+          <span class="status-pill ${halted ? 'pill-halted' : s.trades_today === 0 ? 'pill-waiting' : 'pill-active'}">
+            ${halted ? 'HALTED' : s.trades_today === 0 ? 'WAITING' : 'ACTIVE'}
+          </span>
+        </div>
+        <div class="stat-row">
+          <div class="stat-box">
+            <div class="stat-label">Record</div>
+            <div class="stat-val">${s.wins_today}<span style="color:var(--muted);font-size:11px">W</span> ${s.losses_today}<span style="color:var(--muted);font-size:11px">L</span> ${s.be_today}<span style="color:var(--muted);font-size:11px">BE</span></div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Win Rate</div>
+            <div class="stat-val ${s.win_rate_today == null ? 'muted' : s.win_rate_today >= 60 ? 'green' : s.win_rate_today >= 45 ? 'yellow' : 'red'}">${wr}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Ticks P&L</div>
+            <div class="stat-val ${colorTicks(ticks)}">${ticks >= 0 ? '+' : ''}${ticks.toFixed(0)}t</div>
+          </div>
+        </div>
+        <div class="stat-row">
+          <div class="stat-box">
+            <div class="stat-label">Consec L</div>
+            <div class="stat-val ${s.consecutive_losses >= 3 ? 'red' : s.consecutive_losses >= 2 ? 'yellow' : 'muted'}">${s.consecutive_losses}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">P&L $</div>
+            <div class="stat-val ${colorTicks(s.pnl_dollars_today)}">${s.pnl_dollars_today >= 0 ? '+' : ''}$${Math.abs(s.pnl_dollars_today).toFixed(0)}</div>
+          </div>
+          <div class="stat-box">
+            <div class="stat-label">Trades</div>
+            <div class="stat-val blue">${s.trades_today}/${s.trades_limit}</div>
+          </div>
+        </div>
+        <div class="trades-bar-wrap">
+          <div class="trades-bar-label">
+            <span>Daily Trades</span>
+            <span>${s.trades_today} / ${s.trades_limit}</span>
+          </div>
+          <div class="trades-bar"><div class="trades-bar-fill" style="width:${barPct}%"></div></div>
+        </div>
+        ${halted ? `<div class="halt-reason">⚠ ${s.halt_reason}</div>` : ''}
+      `;
+      grid.appendChild(card);
+    }
+
+    // Global drawdown
+    const globalWrap = document.getElementById('global-wrap');
+    globalWrap.style.display = 'block';
+    const gTicks = data.global_pnl_ticks || 0;
+    const limit = data.global_drawdown_limit || 1000;
+    document.getElementById('global-val').textContent = (gTicks >= 0 ? '+' : '') + gTicks.toFixed(0) + 't';
+    document.getElementById('global-val').className = 'global-val ' + colorTicks(gTicks);
+    document.getElementById('dd-limit-label').textContent = `Limit: −${limit}t`;
+    const ddPct = Math.min(Math.abs(Math.min(gTicks, 0)) / limit * 100, 100);
+    const fill = document.getElementById('dd-fill');
+    fill.style.width = ddPct + '%';
+    fill.className = 'dd-bar-fill' + (ddPct > 80 ? ' danger' : ddPct > 50 ? ' warn' : '');
+
+    if (anyHalted) {
+      const banner = document.getElementById('risk-banner');
+      banner.style.display = 'block';
+      banner.textContent = '⚠  One or more instruments are HALTED. No new trades will be taken until the next trading day.';
+    }
+  }
+
+  // ── Signal feed ────────────────────────────────────────────────────────────
+  async function loadSignals() {
+    let data;
+    try { data = await apiFetch('/signals?limit=20'); }
+    catch (e) { document.getElementById('signal-feed').innerHTML = '<div style="color:var(--red);padding:20px">Failed to load signals</div>'; return; }
+
+    const feed = document.getElementById('signal-feed');
+    if (!data || data.length === 0) {
+      feed.innerHTML = `
+        <div class="empty-state">
+          <div class="empty-icon">◎</div>
+          <div class="empty-title">WAITING FOR SIGNALS</div>
+          <div class="empty-sub">No signals received yet. TradingView will push alerts when setups fire.</div>
+        </div>`;
+      return;
+    }
+
+    feed.innerHTML = '';
+    for (const sig of data) {
+      const isLong = sig.direction === 'LONG';
+      const grade = sig.grade || '';
+      let gradeCls = 'grade-b';
+      if (grade === 'A+') gradeCls = 'grade-aplus';
+      else if (grade === 'A') gradeCls = 'grade-a';
+
+      const score = sig.score != null ? sig.score : null;
+      const scorePct = score != null ? Math.min(score / 10 * 100, 100) : 0;
+
+      const card = document.createElement('div');
+      card.className = 'signal-card';
+      card.innerHTML = `
+        <div class="signal-dir ${isLong ? 'dir-long' : 'dir-short'}">${isLong ? 'L' : 'S'}</div>
+        <div class="signal-body">
+          <div class="signal-top">
+            <span class="signal-inst">${sig.instrument}</span>
+            <span class="signal-setup">${sig.setup_type || 'SIGNAL'}</span>
+            ${grade ? `<span class="signal-grade ${gradeCls}">${grade}</span>` : ''}
+          </div>
+          <div class="signal-levels">
+            <span>Entry <strong>${fmt(sig.entry_price, 2)}</strong></span>
+            <span>SL <strong style="color:var(--red)">${fmt(sig.sl_price, 2)}</strong></span>
+            <span>TP1 <strong style="color:var(--green)">${fmt(sig.tp1_price, 2)}</strong></span>
+            ${sig.tp2_price ? `<span>TP2 <strong style="color:var(--green)">${fmt(sig.tp2_price, 2)}</strong></span>` : ''}
+            ${sig.tp3_price ? `<span>TP3 <strong style="color:var(--green)">${fmt(sig.tp3_price, 2)}</strong></span>` : ''}
+          </div>
+          ${score != null ? `
+          <div class="score-bar-wrap">
+            <div class="score-bar"><div class="score-bar-fill" style="width:${scorePct}%"></div></div>
+          </div>` : ''}
+        </div>
+        <div class="signal-meta">
+          <div class="signal-time">${relTime(sig.signal_time || sig.created_at)}</div>
+          ${score != null ? `<div class="signal-score">${score.toFixed(1)}</div>` : ''}
+        </div>
+      `;
+      feed.appendChild(card);
+    }
+  }
+
+  // ── Init ───────────────────────────────────────────────────────────────────
+  loadStatus();
+  loadSignals();
+  setInterval(loadStatus, 30000);
+  setInterval(loadSignals, 30000);
+</script>
+</body>
+</html>

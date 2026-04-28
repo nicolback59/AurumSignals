@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>NQ Signal Pro — Trade Journal</title>
+  <style>
+    :root {
+      --bg: #0d0f14;
+      --surface: #13161e;
+      --surface2: #1a1e2a;
+      --border: #252a38;
+      --text: #e2e8f0;
+      --muted: #64748b;
+      --green: #22c55e;
+      --red: #ef4444;
+      --yellow: #eab308;
+      --blue: #3b82f6;
+      --font: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; min-height: 100vh; }
+    a { color: var(--blue); text-decoration: none; }
+
+    nav {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      gap: 32px;
+      height: 52px;
+    }
+    .nav-brand { font-size: 15px; font-weight: 700; letter-spacing: 0.05em; }
+    .nav-brand span { color: var(--blue); }
+    .nav-links { display: flex; gap: 4px; }
+    .nav-links a {
+      padding: 6px 14px; border-radius: 6px; color: var(--muted); font-size: 12px; transition: all 0.15s;
+    }
+    .nav-links a.active, .nav-links a:hover { background: var(--surface2); color: var(--text); text-decoration: none; }
+    .nav-links a.active { color: var(--blue); }
+
+    .page { max-width: 1300px; margin: 0 auto; padding: 24px 16px; }
+
+    .section-title {
+      font-size: 10px; font-weight: 600; letter-spacing: 0.12em;
+      text-transform: uppercase; color: var(--muted); margin-bottom: 12px;
+    }
+
+    /* ── Summary bar ── */
+    .summary-bar {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 20px;
+    }
+    .summary-chip {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 10px 16px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      min-width: 90px;
+    }
+    .chip-label { font-size: 9px; color: var(--muted); letter-spacing: 0.1em; text-transform: uppercase; margin-bottom: 4px; }
+    .chip-val { font-size: 18px; font-weight: 700; }
+
+    /* ── Filter bar ── */
+    .filter-bar {
+      display: flex; gap: 8px; margin-bottom: 20px; flex-wrap: wrap; align-items: center;
+    }
+    .filter-bar select, .filter-bar input {
+      background: var(--surface); border: 1px solid var(--border); color: var(--text);
+      padding: 8px 12px; border-radius: 8px; font-family: var(--font); font-size: 12px;
+    }
+    .filter-bar select:focus, .filter-bar input:focus { outline: none; border-color: var(--blue); }
+    .filter-bar input { width: 160px; }
+    .filter-btn {
+      padding: 8px 16px; border-radius: 8px; border: 1px solid var(--border);
+      background: var(--surface2); color: var(--text); font-family: var(--font); font-size: 12px;
+      cursor: pointer; transition: all 0.15s;
+    }
+    .filter-btn:hover { border-color: var(--blue); color: var(--blue); }
+    .count-badge {
+      margin-left: auto;
+      font-size: 11px;
+      color: var(--muted);
+      padding: 4px 0;
+    }
+
+    /* ── Table ── */
+    .table-wrap {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      overflow-x: auto;
+    }
+    table { width: 100%; border-collapse: collapse; min-width: 780px; }
+    thead th {
+      background: var(--surface2);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--muted);
+      padding: 10px 14px;
+      text-align: left;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+    }
+    thead th:hover { color: var(--text); }
+    thead th .sort-arrow { margin-left: 4px; opacity: 0.5; }
+    thead th.sorted .sort-arrow { opacity: 1; color: var(--blue); }
+    tbody td {
+      padding: 10px 14px;
+      font-size: 12px;
+      border-bottom: 1px solid var(--border);
+      white-space: nowrap;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    tbody tr:hover td { background: var(--surface2); }
+
+    /* ── Direction badge ── */
+    .dir-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .dir-long { background: #14532d; color: #4ade80; }
+    .dir-short { background: #7f1d1d; color: #fca5a5; }
+
+    /* ── Exit reason badge ── */
+    .exit-badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+    }
+    .exit-tp { background: #14532d; color: #4ade80; }
+    .exit-sl { background: #7f1d1d; color: #fca5a5; }
+    .exit-be { background: #1e3a5f; color: #93c5fd; }
+    .exit-exp { background: #2a2a1e; color: #fbbf24; }
+
+    .green { color: var(--green); }
+    .red { color: var(--red); }
+    .yellow { color: var(--yellow); }
+    .blue { color: var(--blue); }
+    .muted { color: var(--muted); }
+
+    /* ── Pagination ── */
+    .pagination {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      margin-top: 20px;
+      flex-wrap: wrap;
+    }
+    .page-btn {
+      padding: 6px 12px;
+      border-radius: 6px;
+      border: 1px solid var(--border);
+      background: var(--surface);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .page-btn:hover, .page-btn.active { border-color: var(--blue); color: var(--blue); }
+    .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .page-info { font-size: 11px; color: var(--muted); }
+
+    .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 12px; }
+    .empty-state { text-align: center; padding: 60px 20px; color: var(--muted); }
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-brand">NQ<span>Pro</span></div>
+  <div class="nav-links">
+    <a href="index.html">Dashboard</a>
+    <a href="performance.html">Performance</a>
+    <a href="journal.html" class="active">Journal</a>
+  </div>
+</nav>
+
+<div class="page">
+
+  <!-- Summary chips -->
+  <div class="summary-bar" id="summary-bar"></div>
+
+  <!-- Filters -->
+  <div class="filter-bar">
+    <select id="f-inst" onchange="applyFilters()">
+      <option value="">All Instruments</option>
+      <option value="MNQ">MNQ</option>
+      <option value="MGC">MGC</option>
+    </select>
+    <select id="f-dir" onchange="applyFilters()">
+      <option value="">All Directions</option>
+      <option value="LONG">Long</option>
+      <option value="SHORT">Short</option>
+    </select>
+    <select id="f-status" onchange="applyFilters()">
+      <option value="CLOSED">Closed Trades</option>
+      <option value="OPEN">Open Trades</option>
+      <option value="">All</option>
+    </select>
+    <select id="f-exit" onchange="applyFilters()">
+      <option value="">Any Exit</option>
+      <option value="TP1">TP1</option>
+      <option value="TP2">TP2</option>
+      <option value="TP3">TP3</option>
+      <option value="TP4">TP4</option>
+      <option value="SL">SL</option>
+      <option value="BE">BE</option>
+      <option value="EXPIRED">Expired</option>
+    </select>
+    <select id="f-result" onchange="applyFilters()">
+      <option value="">Any Result</option>
+      <option value="win">Wins</option>
+      <option value="loss">Losses</option>
+      <option value="be">Breakeven</option>
+    </select>
+    <button class="filter-btn" onclick="resetFilters()">Reset</button>
+    <span class="count-badge" id="count-badge"></span>
+  </div>
+
+  <!-- Table -->
+  <div class="table-wrap">
+    <table id="journal-table">
+      <thead>
+        <tr>
+          <th onclick="sortBy('id')">#<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('instrument')">Inst<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('direction')">Dir<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('entry_price')">Entry<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('exit_price')">Exit<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('exit_reason')">Result<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('pnl_ticks')">Ticks<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('pnl_dollars')">P&L ($)<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('opened_at')">Opened<span class="sort-arrow">↕</span></th>
+          <th onclick="sortBy('closed_at')">Closed<span class="sort-arrow">↕</span></th>
+        </tr>
+      </thead>
+      <tbody id="journal-body">
+        <tr><td colspan="10" class="loading">Loading…</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="pagination" id="pagination"></div>
+
+</div>
+
+<script>
+  const API = 'https://nq-signal-pro.onrender.com';
+  let allTrades = [];
+  let filtered = [];
+  let sortField = 'opened_at';
+  let sortDir = -1; // -1 = desc
+  let page = 1;
+  const PAGE_SIZE = 50;
+
+  async function apiFetch(path) {
+    const r = await fetch(API + path);
+    if (!r.ok) throw new Error(r.status);
+    return r.json();
+  }
+
+  function fmtDate(iso) {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit', timeZone: 'UTC' })
+      + ' ' + d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false });
+  }
+
+  function fmtPrice(v) {
+    if (v == null) return '—';
+    return v.toFixed(2);
+  }
+
+  function exitBadge(reason) {
+    if (!reason) return '<span class="muted">—</span>';
+    let cls = 'exit-exp';
+    if (['TP1','TP2','TP3','TP4'].includes(reason)) cls = 'exit-tp';
+    else if (reason === 'SL') cls = 'exit-sl';
+    else if (reason === 'BE') cls = 'exit-be';
+    return `<span class="exit-badge ${cls}">${reason}</span>`;
+  }
+
+  // ── Load all trades (up to 200) ───────────────────────────────────────────
+  async function loadTrades() {
+    try {
+      const status = document.getElementById('f-status').value;
+      const statusParam = status ? `&status=${status}` : '';
+      const data = await apiFetch(`/performance/trades?limit=200${statusParam}`);
+      allTrades = data;
+      applyFilters();
+      renderSummary();
+    } catch (e) {
+      document.getElementById('journal-body').innerHTML = `<tr><td colspan="10" style="color:var(--red);padding:20px">Failed to load trades: ${e.message}</td></tr>`;
+    }
+  }
+
+  // ── Summary chips ─────────────────────────────────────────────────────────
+  function renderSummary() {
+    const closed = allTrades.filter(t => t.status === 'CLOSED');
+    const wins = closed.filter(t => t.is_win).length;
+    const losses = closed.filter(t => !t.is_win && t.exit_reason !== 'BE').length;
+    const bes = closed.filter(t => t.exit_reason === 'BE').length;
+    const decided = wins + losses;
+    const wr = decided > 0 ? (wins / decided * 100).toFixed(1) : '—';
+    const totalPnl = closed.reduce((s, t) => s + (t.pnl_dollars || 0), 0);
+    const totalTicks = closed.reduce((s, t) => s + (t.pnl_ticks || 0), 0);
+
+    const wrColor = decided === 0 ? 'muted' : parseFloat(wr) >= 60 ? 'green' : parseFloat(wr) >= 45 ? 'yellow' : 'red';
+    const pnlColor = totalPnl >= 0 ? 'green' : 'red';
+    const ticksColor = totalTicks >= 0 ? 'green' : 'red';
+
+    document.getElementById('summary-bar').innerHTML = `
+      <div class="summary-chip">
+        <div class="chip-label">Total</div>
+        <div class="chip-val blue">${closed.length}</div>
+      </div>
+      <div class="summary-chip">
+        <div class="chip-label">W / L / BE</div>
+        <div class="chip-val" style="font-size:14px"><span class="green">${wins}</span> <span class="muted">/</span> <span class="red">${losses}</span> <span class="muted">/</span> <span class="blue">${bes}</span></div>
+      </div>
+      <div class="summary-chip">
+        <div class="chip-label">Win Rate</div>
+        <div class="chip-val ${wrColor}">${wr}${decided > 0 ? '%' : ''}</div>
+      </div>
+      <div class="summary-chip">
+        <div class="chip-label">Ticks</div>
+        <div class="chip-val ${ticksColor}">${totalTicks >= 0 ? '+' : ''}${totalTicks.toFixed(0)}t</div>
+      </div>
+      <div class="summary-chip">
+        <div class="chip-label">P&L</div>
+        <div class="chip-val ${pnlColor}">${totalPnl >= 0 ? '+' : ''}$${Math.abs(totalPnl).toFixed(0)}</div>
+      </div>
+      <div class="summary-chip">
+        <div class="chip-label">Open</div>
+        <div class="chip-val blue">${allTrades.filter(t => t.status === 'OPEN').length}</div>
+      </div>
+    `;
+  }
+
+  // ── Filter ─────────────────────────────────────────────────────────────────
+  function applyFilters() {
+    const inst = document.getElementById('f-inst').value;
+    const dir = document.getElementById('f-dir').value;
+    const status = document.getElementById('f-status').value;
+    const exit = document.getElementById('f-exit').value;
+    const result = document.getElementById('f-result').value;
+
+    filtered = allTrades.filter(t => {
+      if (inst && t.instrument !== inst) return false;
+      if (dir && t.direction !== dir) return false;
+      if (status && t.status !== status) return false;
+      if (exit && t.exit_reason !== exit) return false;
+      if (result === 'win' && !t.is_win) return false;
+      if (result === 'loss' && (t.is_win || t.exit_reason === 'BE')) return false;
+      if (result === 'be' && t.exit_reason !== 'BE') return false;
+      return true;
+    });
+
+    page = 1;
+    sortAndRender();
+  }
+
+  // ── Sort ───────────────────────────────────────────────────────────────────
+  function sortBy(field) {
+    if (sortField === field) {
+      sortDir *= -1;
+    } else {
+      sortField = field;
+      sortDir = -1;
+    }
+    // Update header arrows
+    document.querySelectorAll('thead th').forEach(th => th.classList.remove('sorted'));
+    const headers = document.querySelectorAll('thead th');
+    const fields = ['id','instrument','direction','entry_price','exit_price','exit_reason','pnl_ticks','pnl_dollars','opened_at','closed_at'];
+    const idx = fields.indexOf(field);
+    if (idx >= 0) headers[idx].classList.add('sorted');
+
+    sortAndRender();
+  }
+
+  function sortAndRender() {
+    filtered.sort((a, b) => {
+      let av = a[sortField], bv = b[sortField];
+      if (av == null) av = sortDir > 0 ? Infinity : -Infinity;
+      if (bv == null) bv = sortDir > 0 ? Infinity : -Infinity;
+      if (typeof av === 'string') return sortDir * av.localeCompare(bv);
+      return sortDir * (av - bv);
+    });
+    renderPage();
+  }
+
+  // ── Render ─────────────────────────────────────────────────────────────────
+  function renderPage() {
+    const start = (page - 1) * PAGE_SIZE;
+    const end = start + PAGE_SIZE;
+    const slice = filtered.slice(start, end);
+
+    document.getElementById('count-badge').textContent = `${filtered.length} trade${filtered.length !== 1 ? 's' : ''}`;
+
+    if (slice.length === 0) {
+      document.getElementById('journal-body').innerHTML = `<tr><td colspan="10"><div class="empty-state">No trades match these filters</div></td></tr>`;
+      renderPagination();
+      return;
+    }
+
+    document.getElementById('journal-body').innerHTML = slice.map(t => {
+      const dirCls = t.direction === 'LONG' ? 'dir-long' : 'dir-short';
+      const tickColor = (t.pnl_ticks || 0) >= 0 ? 'green' : 'red';
+      const pnlColor = (t.pnl_dollars || 0) >= 0 ? 'green' : 'red';
+      const ticks = t.pnl_ticks != null ? ((t.pnl_ticks >= 0 ? '+' : '') + t.pnl_ticks.toFixed(1) + 't') : '—';
+      const pnl = t.pnl_dollars != null ? ((t.pnl_dollars >= 0 ? '+' : '') + '$' + Math.abs(t.pnl_dollars).toFixed(2)) : '—';
+
+      return `<tr>
+        <td class="muted">${t.id}</td>
+        <td><strong>${t.instrument}</strong></td>
+        <td><span class="dir-badge ${dirCls}">${t.direction === 'LONG' ? 'L' : 'S'}</span></td>
+        <td>${fmtPrice(t.entry_price)}</td>
+        <td>${t.status === 'OPEN' ? '<span class="blue">OPEN</span>' : fmtPrice(t.exit_price)}</td>
+        <td>${t.status === 'OPEN' ? '<span class="muted">—</span>' : exitBadge(t.exit_reason)}</td>
+        <td class="${tickColor}">${t.status === 'OPEN' ? '—' : ticks}</td>
+        <td class="${pnlColor}">${t.status === 'OPEN' ? '—' : pnl}</td>
+        <td class="muted">${fmtDate(t.opened_at)}</td>
+        <td class="muted">${t.status === 'OPEN' ? '<span class="blue">In Progress</span>' : fmtDate(t.closed_at)}</td>
+      </tr>`;
+    }).join('');
+
+    renderPagination();
+  }
+
+  // ── Pagination ─────────────────────────────────────────────────────────────
+  function renderPagination() {
+    const total = Math.ceil(filtered.length / PAGE_SIZE);
+    const pag = document.getElementById('pagination');
+    if (total <= 1) { pag.innerHTML = ''; return; }
+
+    let html = `<button class="page-btn" onclick="goPage(${page-1})" ${page===1?'disabled':''}>← Prev</button>`;
+    html += `<span class="page-info">Page ${page} of ${total}</span>`;
+    html += `<button class="page-btn" onclick="goPage(${page+1})" ${page===total?'disabled':''}>Next →</button>`;
+    pag.innerHTML = html;
+  }
+
+  function goPage(p) {
+    const total = Math.ceil(filtered.length / PAGE_SIZE);
+    if (p < 1 || p > total) return;
+    page = p;
+    renderPage();
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+
+  function resetFilters() {
+    document.getElementById('f-inst').value = '';
+    document.getElementById('f-dir').value = '';
+    document.getElementById('f-status').value = 'CLOSED';
+    document.getElementById('f-exit').value = '';
+    document.getElementById('f-result').value = '';
+    applyFilters();
+  }
+
+  // ── Status filter triggers reload ──────────────────────────────────────────
+  document.getElementById('f-status').addEventListener('change', () => {
+    allTrades = [];
+    loadTrades();
+  });
+
+  loadTrades();
+</script>
+</body>
+</html>
