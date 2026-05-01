@@ -3,517 +3,330 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NQ Signal Pro — Dashboard</title>
+  <title>NQ Signal Engine — Live</title>
   <style>
     :root {
-      --bg: #0d0f14;
-      --surface: #13161e;
-      --surface2: #1a1e2a;
-      --border: #252a38;
-      --text: #e2e8f0;
-      --muted: #64748b;
-      --green: #22c55e;
-      --red: #ef4444;
-      --yellow: #eab308;
-      --blue: #3b82f6;
-      --purple: #a855f7;
-      --font: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+      --bg: #0d0f14; --surface: #13161e; --surface2: #1a1e2a;
+      --border: #252a38; --text: #e2e8f0; --muted: #64748b;
+      --green: #22c55e; --red: #ef4444; --yellow: #eab308;
+      --blue: #3b82f6; --purple: #a855f7; --orange: #f97316;
+      --font: 'SF Mono','Fira Code','Consolas',monospace;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg);
-      color: var(--text);
-      font-family: var(--font);
-      font-size: 13px;
-      min-height: 100vh;
-    }
-    a { color: var(--blue); text-decoration: none; }
-    a:hover { text-decoration: underline; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;min-height:100vh}
+    a{color:var(--blue);text-decoration:none}
+    a:hover{text-decoration:underline}
 
-    /* ── Nav ── */
-    nav {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 0 24px;
-      display: flex;
-      align-items: center;
-      gap: 32px;
-      height: 52px;
-    }
-    .nav-brand {
-      font-size: 15px;
-      font-weight: 700;
-      color: var(--text);
-      letter-spacing: 0.05em;
-    }
-    .nav-brand span { color: var(--blue); }
-    .nav-links { display: flex; gap: 4px; }
-    .nav-links a {
-      padding: 6px 14px;
-      border-radius: 6px;
-      color: var(--muted);
-      font-size: 12px;
-      transition: all 0.15s;
-    }
-    .nav-links a.active, .nav-links a:hover {
-      background: var(--surface2);
-      color: var(--text);
-      text-decoration: none;
-    }
-    .nav-links a.active { color: var(--blue); }
-    .nav-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
-    #clock { color: var(--muted); font-size: 11px; }
+    nav{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;gap:32px;height:52px}
+    .nav-brand{font-size:15px;font-weight:700;letter-spacing:.05em}
+    .nav-brand span{color:var(--blue)}
+    .nav-tag{font-size:9px;background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.3);color:var(--blue);padding:2px 6px;border-radius:3px;margin-left:8px;vertical-align:middle}
+    .nav-links{display:flex;gap:4px}
+    .nav-links a{padding:6px 14px;border-radius:6px;color:var(--muted);font-size:12px;transition:.15s}
+    .nav-links a.active,.nav-links a:hover{background:var(--surface2);color:var(--text);text-decoration:none}
+    .nav-links a.active{color:var(--blue)}
+    .nav-right{margin-left:auto;display:flex;align-items:center;gap:12px}
+    #clock{color:var(--muted);font-size:11px}
+    .engine-pill{display:flex;align-items:center;gap:6px;font-size:10px;padding:3px 10px;border-radius:20px;border:1px solid}
+    .engine-pill.scanning{color:var(--green);border-color:rgba(34,197,94,.3);background:rgba(34,197,94,.08)}
+    .engine-pill.closed{color:var(--muted);border-color:var(--border);background:transparent}
+    .engine-pill.halted{color:var(--red);border-color:rgba(239,68,68,.3);background:rgba(239,68,68,.08)}
+    .pulse{width:6px;height:6px;border-radius:50%;background:currentColor;animation:blink 1.4s infinite}
+    @keyframes blink{0%,100%{opacity:1}50%{opacity:.2}}
 
-    /* ── Layout ── */
-    .page { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
+    .page{max-width:1200px;margin:0 auto;padding:24px 16px}
+    .section-title{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
 
-    /* ── Section headings ── */
-    .section-title {
-      font-size: 10px;
-      font-weight: 600;
-      letter-spacing: 0.12em;
-      text-transform: uppercase;
-      color: var(--muted);
-      margin-bottom: 12px;
-    }
+    /* Engine status row */
+    .engine-row{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-bottom:24px}
+    .engine-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px}
+    .engine-card-label{font-size:10px;color:var(--muted);text-transform:uppercase;letter-spacing:.1em;margin-bottom:6px}
+    .engine-card-value{font-size:20px;font-weight:700}
+    .engine-card-sub{font-size:10px;color:var(--muted);margin-top:4px}
 
-    /* ── Risk banner ── */
-    #risk-banner {
-      display: none;
-      background: #7f1d1d;
-      border: 1px solid #b91c1c;
-      border-radius: 8px;
-      padding: 12px 16px;
-      margin-bottom: 20px;
-      color: #fca5a5;
-      font-size: 12px;
-    }
+    /* Brain panel */
+    .brain-panel{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px;margin-bottom:24px}
+    .brain-header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+    .brain-icon{font-size:16px}
+    .brain-title{font-size:13px;font-weight:600}
+    .brain-sub{font-size:10px;color:var(--muted);margin-left:auto}
+    .insight-list{display:flex;flex-direction:column;gap:8px}
+    .insight{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:6px;border:1px solid}
+    .insight.INSIGHT{background:rgba(59,130,246,.06);border-color:rgba(59,130,246,.2)}
+    .insight.WARNING{background:rgba(239,68,68,.06);border-color:rgba(239,68,68,.2)}
+    .insight.SUGGESTION{background:rgba(234,179,8,.06);border-color:rgba(234,179,8,.2)}
+    .insight.PARAM_UPDATE{background:rgba(168,85,247,.06);border-color:rgba(168,85,247,.2)}
+    .insight-type{font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;white-space:nowrap;margin-top:1px}
+    .insight.INSIGHT .insight-type{background:rgba(59,130,246,.2);color:var(--blue)}
+    .insight.WARNING .insight-type{background:rgba(239,68,68,.2);color:var(--red)}
+    .insight.SUGGESTION .insight-type{background:rgba(234,179,8,.2);color:var(--yellow)}
+    .insight.PARAM_UPDATE .insight-type{background:rgba(168,85,247,.2);color:var(--purple)}
+    .insight-msg{font-size:11px;color:var(--text);line-height:1.5}
+    .insight-time{font-size:9px;color:var(--muted);white-space:nowrap;margin-left:auto;padding-top:2px}
+    .no-insights{text-align:center;color:var(--muted);padding:20px;font-size:11px}
 
-    /* ── Instrument status cards ── */
-    .inst-grid {
-      display: grid;
-      grid-template-columns: repeat(2, 1fr);
-      gap: 12px;
-      margin-bottom: 24px;
-    }
-    .inst-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px;
-    }
-    .inst-card.halted { border-color: #7f1d1d; }
-    .inst-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 14px;
-    }
-    .inst-name { font-size: 20px; font-weight: 700; letter-spacing: 0.05em; }
-    .status-pill {
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      padding: 3px 10px;
-      border-radius: 999px;
-    }
-    .pill-active { background: #14532d; color: #4ade80; }
-    .pill-halted { background: #7f1d1d; color: #fca5a5; }
-    .pill-waiting { background: #1e3a5f; color: #93c5fd; }
+    /* Signal cards */
+    .signals-grid{display:flex;flex-direction:column;gap:10px}
+    .sig-card{background:var(--surface);border:1px solid var(--border);border-radius:8px;overflow:hidden}
+    .sig-card.LONG{border-left:3px solid var(--green)}
+    .sig-card.SHORT{border-left:3px solid var(--red)}
+    .sig-head{display:flex;align-items:center;gap:8px;padding:10px 14px 9px;border-bottom:1px solid var(--border)}
+    .dir-badge{font-size:11px;font-weight:700;padding:3px 10px;border-radius:4px}
+    .dir-badge.LONG{background:rgba(34,197,94,.12);color:var(--green);border:1px solid rgba(34,197,94,.25)}
+    .dir-badge.SHORT{background:rgba(239,68,68,.12);color:var(--red);border:1px solid rgba(239,68,68,.25)}
+    .grade-badge{font-size:10px;font-weight:700;padding:2px 7px;border-radius:4px}
+    .grade-badge.ap{background:rgba(234,179,8,.12);color:var(--yellow);border:1px solid rgba(234,179,8,.25)}
+    .grade-badge.a{background:rgba(59,130,246,.12);color:var(--blue);border:1px solid rgba(59,130,246,.25)}
+    .setup-badge{font-size:9px;padding:2px 7px;border-radius:4px;background:rgba(168,85,247,.1);color:var(--purple);border:1px solid rgba(168,85,247,.2)}
+    .sig-time{margin-left:auto;font-size:10px;color:var(--muted)}
+    .sig-body{display:grid;grid-template-columns:1fr 1fr 1fr;padding:12px 14px;gap:16px}
+    .lvl-group label{font-size:9px;color:var(--muted);display:block;margin-bottom:2px}
+    .lvl-group span{font-size:13px;font-weight:600}
+    .lvl-group span.entry{color:var(--text)}
+    .lvl-group span.sl{color:var(--red)}
+    .lvl-group span.tp1{color:#4ade80}
+    .lvl-group span.tp2{color:#60a5fa}
+    .lvl-group span.tp3{color:var(--purple)}
+    .factor-col{display:flex;flex-direction:column;gap:4px}
+    .factor{display:flex;align-items:center;gap:6px;font-size:10px;color:var(--muted)}
+    .factor.on{color:var(--text)}
+    .f-dot{width:6px;height:6px;border-radius:50%;background:var(--border);flex-shrink:0}
+    .factor.on .f-dot{background:var(--green)}
+    .score-col{display:flex;flex-direction:column;justify-content:center;gap:8px}
+    .score-num{font-size:28px;font-weight:700;color:var(--text)}
+    .score-label{font-size:9px;color:var(--muted)}
+    .score-bar-bg{background:var(--surface2);border-radius:3px;height:5px;margin-top:4px;overflow:hidden}
+    .score-bar-fill{height:100%;border-radius:3px;background:linear-gradient(90deg,var(--blue),var(--purple));transition:width .4s}
+    .empty-state{text-align:center;color:var(--muted);padding:60px 20px}
+    .empty-state h3{font-size:14px;margin-bottom:8px;color:var(--text)}
+    .empty-state p{font-size:11px;line-height:1.7}
 
-    .stat-row {
-      display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 8px;
-      margin-bottom: 10px;
+    @media(max-width:768px){
+      .engine-row{grid-template-columns:repeat(2,1fr)}
+      .sig-body{grid-template-columns:1fr 1fr}
     }
-    .stat-box {
-      background: var(--surface2);
-      border-radius: 6px;
-      padding: 8px 10px;
-    }
-    .stat-label { font-size: 9px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 3px; }
-    .stat-val { font-size: 16px; font-weight: 700; }
-    .stat-val.green { color: var(--green); }
-    .stat-val.red { color: var(--red); }
-    .stat-val.yellow { color: var(--yellow); }
-    .stat-val.blue { color: var(--blue); }
-    .stat-val.muted { color: var(--muted); }
-
-    .trades-bar-wrap { margin-top: 6px; }
-    .trades-bar-label {
-      display: flex;
-      justify-content: space-between;
-      font-size: 10px;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }
-    .trades-bar { height: 4px; background: var(--surface2); border-radius: 2px; }
-    .trades-bar-fill { height: 100%; border-radius: 2px; background: var(--blue); transition: width 0.4s; }
-
-    .halt-reason {
-      margin-top: 10px;
-      font-size: 10px;
-      color: #fca5a5;
-      background: rgba(127,29,29,0.4);
-      border-radius: 4px;
-      padding: 6px 8px;
-    }
-
-    /* ── Global drawdown ── */
-    .global-bar-wrap {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px;
-      margin-bottom: 24px;
-    }
-    .global-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      margin-bottom: 8px;
-    }
-    .global-label { font-size: 11px; color: var(--muted); }
-    .global-val { font-size: 14px; font-weight: 700; }
-    .dd-bar { height: 6px; background: var(--surface2); border-radius: 3px; }
-    .dd-bar-fill { height: 100%; border-radius: 3px; background: var(--green); transition: width 0.4s, background 0.4s; }
-    .dd-bar-fill.warn { background: var(--yellow); }
-    .dd-bar-fill.danger { background: var(--red); }
-
-    /* ── Signal feed ── */
-    .signal-feed { display: flex; flex-direction: column; gap: 10px; }
-    .signal-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 14px 16px;
-      display: grid;
-      grid-template-columns: auto 1fr auto;
-      gap: 14px;
-      align-items: start;
-    }
-    .signal-card:hover { border-color: #334155; }
-    .signal-dir {
-      width: 38px;
-      height: 38px;
-      border-radius: 8px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 13px;
-      font-weight: 800;
-      letter-spacing: 0.04em;
-      flex-shrink: 0;
-    }
-    .dir-long { background: #14532d; color: #4ade80; }
-    .dir-short { background: #7f1d1d; color: #fca5a5; }
-
-    .signal-body { min-width: 0; }
-    .signal-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 6px; }
-    .signal-inst { font-size: 14px; font-weight: 700; }
-    .signal-setup {
-      font-size: 9px;
-      letter-spacing: 0.08em;
-      text-transform: uppercase;
-      padding: 2px 7px;
-      border-radius: 4px;
-      background: var(--surface2);
-      color: var(--muted);
-    }
-    .signal-grade {
-      font-size: 10px;
-      font-weight: 700;
-      padding: 2px 7px;
-      border-radius: 4px;
-    }
-    .grade-aplus { background: #14532d; color: #4ade80; }
-    .grade-a { background: #1e3a5f; color: #93c5fd; }
-    .grade-b { background: #3b2a1e; color: #fbbf24; }
-
-    .signal-levels {
-      display: flex;
-      gap: 14px;
-      flex-wrap: wrap;
-      font-size: 11px;
-      color: var(--muted);
-    }
-    .level-item strong { color: var(--text); }
-
-    .score-bar-wrap { margin-top: 6px; }
-    .score-bar { height: 3px; background: var(--surface2); border-radius: 2px; }
-    .score-bar-fill { height: 100%; border-radius: 2px; background: var(--blue); }
-
-    .signal-meta { text-align: right; flex-shrink: 0; }
-    .signal-time { font-size: 10px; color: var(--muted); }
-    .signal-score { font-size: 18px; font-weight: 700; color: var(--blue); margin-top: 4px; }
-
-    /* ── Empty state ── */
-    .empty-state {
-      text-align: center;
-      padding: 60px 20px;
-      color: var(--muted);
-    }
-    .empty-icon { font-size: 40px; margin-bottom: 12px; opacity: 0.4; }
-    .empty-title { font-size: 14px; font-weight: 600; margin-bottom: 6px; }
-    .empty-sub { font-size: 11px; }
-
-    /* ── Loading ── */
-    .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 12px; }
-
-    /* ── Responsive ── */
-    @media (max-width: 640px) {
-      .inst-grid { grid-template-columns: 1fr; }
-      .stat-row { grid-template-columns: repeat(3, 1fr); }
-      nav { padding: 0 14px; gap: 16px; }
+    @media(max-width:480px){
+      .engine-row{grid-template-columns:1fr}
+      .sig-body{grid-template-columns:1fr}
     }
   </style>
 </head>
 <body>
 
 <nav>
-  <div class="nav-brand">NQ<span>Pro</span></div>
+  <div class="nav-brand">NQ <span>Signal Engine</span><span class="nav-tag">AUTONOMOUS</span></div>
   <div class="nav-links">
-    <a href="index.html" class="active">Dashboard</a>
+    <a href="index.html" class="active">Live</a>
     <a href="performance.html">Performance</a>
     <a href="journal.html">Journal</a>
   </div>
   <div class="nav-right">
-    <span id="clock"></span>
+    <div class="engine-pill closed" id="engine-pill"><span class="pulse"></span><span id="engine-status-text">Connecting…</span></div>
+    <div id="clock"></div>
   </div>
 </nav>
 
 <div class="page">
 
-  <div id="risk-banner"></div>
-
-  <!-- Instrument status -->
-  <div class="section-title">Instrument Status</div>
-  <div class="inst-grid" id="inst-grid">
-    <div class="loading">Loading…</div>
+  <!-- ENGINE STATS ROW -->
+  <div class="section-title">Engine Status</div>
+  <div class="engine-row">
+    <div class="engine-card">
+      <div class="engine-card-label">Signals Today</div>
+      <div class="engine-card-value" id="stat-today">-</div>
+      <div class="engine-card-sub">generated by engine</div>
+    </div>
+    <div class="engine-card">
+      <div class="engine-card-label">Win Rate</div>
+      <div class="engine-card-value" style="color:var(--green)" id="stat-wr">-</div>
+      <div class="engine-card-sub" id="stat-wr-sub">all-time</div>
+    </div>
+    <div class="engine-card">
+      <div class="engine-card-label">Open Trades</div>
+      <div class="engine-card-value" style="color:var(--yellow)" id="stat-open">-</div>
+      <div class="engine-card-sub">paper positions</div>
+    </div>
+    <div class="engine-card">
+      <div class="engine-card-label">Engine Version</div>
+      <div class="engine-card-value" style="color:var(--purple)" id="stat-ver">v1</div>
+      <div class="engine-card-sub" id="stat-ver-sub">no adjustments yet</div>
+    </div>
   </div>
 
-  <!-- Global drawdown -->
-  <div class="global-bar-wrap" id="global-wrap" style="display:none">
-    <div class="global-row">
-      <span class="global-label">GLOBAL DRAWDOWN TODAY</span>
-      <span class="global-val" id="global-val">0t</span>
+  <!-- BRAIN / LEARNING PANEL -->
+  <div class="brain-panel">
+    <div class="brain-header">
+      <span class="brain-icon">🧠</span>
+      <span class="brain-title">Learning Brain</span>
+      <span class="brain-sub">Updated daily at 4 AM UTC — engine adjusts itself based on closed trades</span>
     </div>
-    <div class="dd-bar">
-      <div class="dd-bar-fill" id="dd-fill" style="width:0%"></div>
-    </div>
-    <div style="display:flex; justify-content:space-between; margin-top:4px; font-size:9px; color:var(--muted)">
-      <span>0t</span>
-      <span id="dd-limit-label">Limit: −1000t</span>
+    <div class="insight-list" id="insights-list">
+      <div class="no-insights">Insights appear here after the first 5 trades close. The engine analyses win rates, setup performance, and session quality every night.</div>
     </div>
   </div>
 
-  <!-- Recent signals -->
+  <!-- RECENT SIGNALS -->
   <div class="section-title">Recent Signals</div>
-  <div class="signal-feed" id="signal-feed">
-    <div class="loading">Loading…</div>
+  <div class="signals-grid" id="signals-feed">
+    <div class="empty-state">
+      <h3>Engine is warming up</h3>
+      <p>The engine scans NQ futures every 5 minutes during market hours.<br>
+      First signal will appear here automatically when conditions align.</p>
+    </div>
   </div>
 
 </div>
 
 <script>
-  const API = 'https://nq-signal-pro.onrender.com';
+const API = 'https://nq-signal-pro.onrender.com';
+const fmt = (v, d=2) => v != null ? Number(v).toFixed(d) : '—';
+const ago = ts => {
+  if (!ts) return '';
+  const s = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (s < 60) return Math.floor(s) + 's ago';
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+};
 
-  // ── Clock ──────────────────────────────────────────────────────────────────
-  function updateClock() {
-    const now = new Date();
-    const utc = now.toUTCString().replace(' GMT', ' UTC').slice(0, -4);
-    document.getElementById('clock').textContent = utc.slice(-12);
+// Clock
+function updateClock() {
+  const now = new Date();
+  const et = now.toLocaleTimeString('en-US', {timeZone:'America/New_York', hour12:false});
+  const utc = now.toLocaleTimeString('en-US', {hour12:false, timeZone:'UTC'});
+  document.getElementById('clock').textContent = `ET ${et}  UTC ${utc}`;
+}
+setInterval(updateClock, 1000);
+updateClock();
+
+// Engine status pill
+function isMarketHours() {
+  const et = new Date().toLocaleString('en-US', {timeZone: 'America/New_York', hour12: false});
+  const d = new Date(et);
+  const day = d.getDay();
+  const h = d.getHours();
+  return day >= 1 && day <= 5 && h >= 8 && h < 17;
+}
+function updateEnginePill(halted) {
+  const pill = document.getElementById('engine-pill');
+  const txt  = document.getElementById('engine-status-text');
+  pill.className = 'engine-pill';
+  if (halted) {
+    pill.classList.add('halted');
+    txt.textContent = 'HALTED';
+  } else if (isMarketHours()) {
+    pill.classList.add('scanning');
+    txt.textContent = 'SCANNING';
+  } else {
+    pill.classList.add('closed');
+    txt.textContent = 'MARKET CLOSED';
   }
-  updateClock();
-  setInterval(updateClock, 1000);
+}
 
-  // ── Fetch helpers ──────────────────────────────────────────────────────────
-  async function apiFetch(path) {
-    const r = await fetch(API + path);
-    if (!r.ok) throw new Error(r.status);
-    return r.json();
-  }
-
-  function fmt(v, dec = 1) {
-    if (v == null) return '—';
-    return typeof v === 'number' ? v.toFixed(dec) : v;
-  }
-
-  function fmtTime(iso) {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', timeZone: 'UTC', hour12: false }) + ' UTC';
-  }
-
-  function relTime(iso) {
-    if (!iso) return '';
-    const diff = (Date.now() - new Date(iso)) / 1000;
-    if (diff < 60) return `${Math.round(diff)}s ago`;
-    if (diff < 3600) return `${Math.round(diff/60)}m ago`;
-    if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
-    return `${Math.round(diff/86400)}d ago`;
-  }
-
-  function colorTicks(t) {
-    if (t > 0) return 'green';
-    if (t < 0) return 'red';
-    return 'muted';
-  }
-
-  // ── Risk status ────────────────────────────────────────────────────────────
-  async function loadStatus() {
-    let data;
-    try { data = await apiFetch('/performance/status'); }
-    catch (e) { document.getElementById('inst-grid').innerHTML = '<div style="color:var(--red);padding:20px">Failed to load status</div>'; return; }
-
-    const grid = document.getElementById('inst-grid');
-    grid.innerHTML = '';
-
-    let anyHalted = false;
-    const instruments = data.instruments || {};
-
-    for (const [inst, s] of Object.entries(instruments)) {
-      const halted = !s.is_active;
-      if (halted) anyHalted = true;
-
-      const wr = s.win_rate_today != null ? s.win_rate_today.toFixed(1) + '%' : '—';
-      const ticks = s.pnl_ticks_today || 0;
-      const barPct = Math.min((s.trades_today / s.trades_limit) * 100, 100);
-
-      const card = document.createElement('div');
-      card.className = 'inst-card' + (halted ? ' halted' : '');
-      card.innerHTML = `
-        <div class="inst-header">
-          <div class="inst-name">${inst}</div>
-          <span class="status-pill ${halted ? 'pill-halted' : s.trades_today === 0 ? 'pill-waiting' : 'pill-active'}">
-            ${halted ? 'HALTED' : s.trades_today === 0 ? 'WAITING' : 'ACTIVE'}
-          </span>
-        </div>
-        <div class="stat-row">
-          <div class="stat-box">
-            <div class="stat-label">Record</div>
-            <div class="stat-val">${s.wins_today}<span style="color:var(--muted);font-size:11px">W</span> ${s.losses_today}<span style="color:var(--muted);font-size:11px">L</span> ${s.be_today}<span style="color:var(--muted);font-size:11px">BE</span></div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-label">Win Rate</div>
-            <div class="stat-val ${s.win_rate_today == null ? 'muted' : s.win_rate_today >= 60 ? 'green' : s.win_rate_today >= 45 ? 'yellow' : 'red'}">${wr}</div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-label">Ticks P&L</div>
-            <div class="stat-val ${colorTicks(ticks)}">${ticks >= 0 ? '+' : ''}${ticks.toFixed(0)}t</div>
-          </div>
-        </div>
-        <div class="stat-row">
-          <div class="stat-box">
-            <div class="stat-label">Consec L</div>
-            <div class="stat-val ${s.consecutive_losses >= 3 ? 'red' : s.consecutive_losses >= 2 ? 'yellow' : 'muted'}">${s.consecutive_losses}</div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-label">P&L $</div>
-            <div class="stat-val ${colorTicks(s.pnl_dollars_today)}">${s.pnl_dollars_today >= 0 ? '+' : ''}$${Math.abs(s.pnl_dollars_today).toFixed(0)}</div>
-          </div>
-          <div class="stat-box">
-            <div class="stat-label">Trades</div>
-            <div class="stat-val blue">${s.trades_today}/${s.trades_limit}</div>
-          </div>
-        </div>
-        <div class="trades-bar-wrap">
-          <div class="trades-bar-label">
-            <span>Daily Trades</span>
-            <span>${s.trades_today} / ${s.trades_limit}</span>
-          </div>
-          <div class="trades-bar"><div class="trades-bar-fill" style="width:${barPct}%"></div></div>
-        </div>
-        ${halted ? `<div class="halt-reason">⚠ ${s.halt_reason}</div>` : ''}
-      `;
-      grid.appendChild(card);
+// Fetch & render insights
+async function loadInsights() {
+  try {
+    const [ins, eng] = await Promise.all([
+      fetch(API + '/performance/insights?limit=6').then(r=>r.json()),
+      fetch(API + '/performance/engine-state').then(r=>r.json()),
+    ]);
+    const list = document.getElementById('insights-list');
+    if (!ins.length) return;
+    list.innerHTML = ins.map(i => `
+      <div class="insight ${i.log_type}">
+        <span class="insight-type">${i.log_type.replace('_',' ')}</span>
+        <span class="insight-msg">${i.message}</span>
+        <span class="insight-time">${ago(i.created_at)}</span>
+      </div>`).join('');
+    // Engine version card
+    if (eng.version > 0) {
+      document.getElementById('stat-ver').textContent = 'v' + eng.version;
+      document.getElementById('stat-ver-sub').textContent = eng.reason ? eng.reason.split(';')[0].trim() : 'parameters adjusted';
     }
+  } catch(e) { console.error('insights', e); }
+}
 
-    // Global drawdown
-    const globalWrap = document.getElementById('global-wrap');
-    globalWrap.style.display = 'block';
-    const gTicks = data.global_pnl_ticks || 0;
-    const limit = data.global_drawdown_limit || 1000;
-    document.getElementById('global-val').textContent = (gTicks >= 0 ? '+' : '') + gTicks.toFixed(0) + 't';
-    document.getElementById('global-val').className = 'global-val ' + colorTicks(gTicks);
-    document.getElementById('dd-limit-label').textContent = `Limit: −${limit}t`;
-    const ddPct = Math.min(Math.abs(Math.min(gTicks, 0)) / limit * 100, 100);
-    const fill = document.getElementById('dd-fill');
-    fill.style.width = ddPct + '%';
-    fill.className = 'dd-bar-fill' + (ddPct > 80 ? ' danger' : ddPct > 50 ? ' warn' : '');
-
-    if (anyHalted) {
-      const banner = document.getElementById('risk-banner');
-      banner.style.display = 'block';
-      banner.textContent = '⚠  One or more instruments are HALTED. No new trades will be taken until the next trading day.';
-    }
-  }
-
-  // ── Signal feed ────────────────────────────────────────────────────────────
-  async function loadSignals() {
-    let data;
-    try { data = await apiFetch('/signals?limit=20'); }
-    catch (e) { document.getElementById('signal-feed').innerHTML = '<div style="color:var(--red);padding:20px">Failed to load signals</div>'; return; }
-
-    const feed = document.getElementById('signal-feed');
-    if (!data || data.length === 0) {
-      feed.innerHTML = `
-        <div class="empty-state">
-          <div class="empty-icon">◎</div>
-          <div class="empty-title">WAITING FOR SIGNALS</div>
-          <div class="empty-sub">No signals received yet. TradingView will push alerts when setups fire.</div>
+// Fetch & render signals
+async function loadSignals() {
+  try {
+    const data = await fetch(API + '/signals?limit=20').then(r=>r.json());
+    const feed = document.getElementById('signals-feed');
+    if (!data.length) return;
+    feed.innerHTML = data.map(s => {
+      const isLong = s.direction === 'LONG';
+      const isAp   = s.grade === 'A+';
+      const gates  = s.gates || {};
+      return `
+        <div class="sig-card ${s.direction}">
+          <div class="sig-head">
+            <span class="dir-badge ${s.direction}">${isLong ? '▲' : '▼'} ${s.direction}</span>
+            <span class="grade-badge ${isAp ? 'ap' : 'a'}">${s.grade || 'A'}</span>
+            ${s.setup_type ? `<span class="setup-badge">${s.setup_type}</span>` : ''}
+            <span class="sig-time">${ago(s.signal_time)}</span>
+          </div>
+          <div class="sig-body">
+            <div>
+              <div class="lvl-group"><label>ENTRY</label><span class="entry">${fmt(s.entry_price)}</span></div>
+              <div style="margin-top:8px">
+                <div class="lvl-group"><label>STOP</label><span class="sl">${fmt(s.sl_price)}</span></div>
+              </div>
+              <div style="margin-top:8px">
+                <div class="lvl-group"><label>TP1 / TP2 / TP3</label>
+                  <span class="tp1">${fmt(s.tp1_price)}</span> /
+                  <span class="tp2">${fmt(s.tp2_price)}</span> /
+                  <span class="tp3">${fmt(s.tp3_price)}</span>
+                </div>
+              </div>
+            </div>
+            <div class="factor-col">
+              <div style="font-size:9px;color:var(--muted);margin-bottom:4px">FACTORS</div>
+              <div class="factor ${gates.F1_HTF ? 'on' : ''}"><span class="f-dot"></span>F1 HTF Bias</div>
+              <div class="factor ${gates.F2_OTE ? 'on' : ''}"><span class="f-dot"></span>F2 OTE Zone</div>
+              <div class="factor ${gates.F3_STDV ? 'on' : ''}"><span class="f-dot"></span>F3 STDV Band</div>
+              <div class="factor ${gates.F4_Confirm ? 'on' : ''}"><span class="f-dot"></span>F4 Confirm</div>
+            </div>
+            <div class="score-col">
+              <div>
+                <div class="score-label">SCORE</div>
+                <div class="score-num">${s.score != null ? Math.round(s.score) : '—'}</div>
+                <div class="score-bar-bg"><div class="score-bar-fill" style="width:${Math.min(s.score||0,100)}%"></div></div>
+              </div>
+            </div>
+          </div>
         </div>`;
-      return;
+    }).join('');
+  } catch(e) { console.error('signals', e); }
+}
+
+// Fetch stats
+async function loadStats() {
+  try {
+    const [status, perf] = await Promise.all([
+      fetch(API + '/performance/status').then(r=>r.json()),
+      fetch(API + '/performance').then(r=>r.json()),
+    ]);
+    const isHalted = Object.values(status).some(v => v && v.is_halted);
+    updateEnginePill(isHalted);
+
+    const openCount = Object.values(status).reduce((a, v) => a + (v && v.open_trades != null ? v.open_trades : 0), 0);
+    document.getElementById('stat-open').textContent = openCount;
+
+    const todayCount = Object.values(status).reduce((a, v) => a + (v && v.trades_today != null ? v.trades_today : 0), 0);
+    document.getElementById('stat-today').textContent = todayCount;
+
+    if (perf && perf.win_rate != null) {
+      document.getElementById('stat-wr').textContent = perf.win_rate.toFixed(1) + '%';
+      document.getElementById('stat-wr-sub').textContent = `${perf.total_trades || 0} trades total`;
     }
+  } catch(e) { updateEnginePill(false); console.error('stats', e); }
+}
 
-    feed.innerHTML = '';
-    for (const sig of data) {
-      const isLong = sig.direction === 'LONG';
-      const grade = sig.grade || '';
-      let gradeCls = 'grade-b';
-      if (grade === 'A+') gradeCls = 'grade-aplus';
-      else if (grade === 'A') gradeCls = 'grade-a';
+async function refresh() {
+  await Promise.all([loadStats(), loadSignals(), loadInsights()]);
+}
 
-      const score = sig.score != null ? sig.score : null;
-      const scorePct = score != null ? Math.min(score / 10 * 100, 100) : 0;
-
-      const card = document.createElement('div');
-      card.className = 'signal-card';
-      card.innerHTML = `
-        <div class="signal-dir ${isLong ? 'dir-long' : 'dir-short'}">${isLong ? 'L' : 'S'}</div>
-        <div class="signal-body">
-          <div class="signal-top">
-            <span class="signal-inst">${sig.instrument}</span>
-            <span class="signal-setup">${sig.setup_type || 'SIGNAL'}</span>
-            ${grade ? `<span class="signal-grade ${gradeCls}">${grade}</span>` : ''}
-          </div>
-          <div class="signal-levels">
-            <span>Entry <strong>${fmt(sig.entry_price, 2)}</strong></span>
-            <span>SL <strong style="color:var(--red)">${fmt(sig.sl_price, 2)}</strong></span>
-            <span>TP1 <strong style="color:var(--green)">${fmt(sig.tp1_price, 2)}</strong></span>
-            ${sig.tp2_price ? `<span>TP2 <strong style="color:var(--green)">${fmt(sig.tp2_price, 2)}</strong></span>` : ''}
-            ${sig.tp3_price ? `<span>TP3 <strong style="color:var(--green)">${fmt(sig.tp3_price, 2)}</strong></span>` : ''}
-          </div>
-          ${score != null ? `
-          <div class="score-bar-wrap">
-            <div class="score-bar"><div class="score-bar-fill" style="width:${scorePct}%"></div></div>
-          </div>` : ''}
-        </div>
-        <div class="signal-meta">
-          <div class="signal-time">${relTime(sig.signal_time || sig.created_at)}</div>
-          ${score != null ? `<div class="signal-score">${score.toFixed(1)}</div>` : ''}
-        </div>
-      `;
-      feed.appendChild(card);
-    }
-  }
-
-  // ── Init ───────────────────────────────────────────────────────────────────
-  loadStatus();
-  loadSignals();
-  setInterval(loadStatus, 30000);
-  setInterval(loadSignals, 30000);
+refresh();
+setInterval(refresh, 30000);
 </script>
 </body>
 </html>

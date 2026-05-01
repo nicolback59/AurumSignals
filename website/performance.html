@@ -3,521 +3,236 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>NQ Signal Pro — Performance</title>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <title>NQ Signal Engine — Performance</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4/dist/chart.umd.min.js"></script>
   <style>
-    :root {
-      --bg: #0d0f14;
-      --surface: #13161e;
-      --surface2: #1a1e2a;
-      --border: #252a38;
-      --text: #e2e8f0;
-      --muted: #64748b;
-      --green: #22c55e;
-      --red: #ef4444;
-      --yellow: #eab308;
-      --blue: #3b82f6;
-      --purple: #a855f7;
-      --font: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    :root{
+      --bg:#0d0f14;--surface:#13161e;--surface2:#1a1e2a;
+      --border:#252a38;--text:#e2e8f0;--muted:#64748b;
+      --green:#22c55e;--red:#ef4444;--yellow:#eab308;
+      --blue:#3b82f6;--purple:#a855f7;--orange:#f97316;
+      --font:'SF Mono','Fira Code','Consolas',monospace;
     }
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: var(--bg); color: var(--text); font-family: var(--font); font-size: 13px; min-height: 100vh; }
-    a { color: var(--blue); text-decoration: none; }
+    *{box-sizing:border-box;margin:0;padding:0}
+    body{background:var(--bg);color:var(--text);font-family:var(--font);font-size:13px;min-height:100vh}
+    a{color:var(--blue);text-decoration:none}
+    nav{background:var(--surface);border-bottom:1px solid var(--border);padding:0 24px;display:flex;align-items:center;gap:32px;height:52px}
+    .nav-brand{font-size:15px;font-weight:700;letter-spacing:.05em}
+    .nav-brand span{color:var(--blue)}
+    .nav-tag{font-size:9px;background:rgba(59,130,246,.15);border:1px solid rgba(59,130,246,.3);color:var(--blue);padding:2px 6px;border-radius:3px;margin-left:8px;vertical-align:middle}
+    .nav-links{display:flex;gap:4px}
+    .nav-links a{padding:6px 14px;border-radius:6px;color:var(--muted);font-size:12px;transition:.15s}
+    .nav-links a.active,.nav-links a:hover{background:var(--surface2);color:var(--text);text-decoration:none}
+    .nav-links a.active{color:var(--blue)}
+    .page{max-width:1200px;margin:0 auto;padding:24px 16px}
+    .section-title{font-size:10px;font-weight:600;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px}
+    .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:24px}
+    .card{background:var(--surface);border:1px solid var(--border);border-radius:8px;padding:16px}
+    .stat-row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid var(--border)}
+    .stat-row:last-child{border-bottom:none}
+    .stat-label{color:var(--muted);font-size:11px}
+    .stat-val{font-weight:600}
 
-    nav {
-      background: var(--surface);
-      border-bottom: 1px solid var(--border);
-      padding: 0 24px;
-      display: flex;
-      align-items: center;
-      gap: 32px;
-      height: 52px;
-    }
-    .nav-brand { font-size: 15px; font-weight: 700; letter-spacing: 0.05em; }
-    .nav-brand span { color: var(--blue); }
-    .nav-links { display: flex; gap: 4px; }
-    .nav-links a {
-      padding: 6px 14px; border-radius: 6px; color: var(--muted); font-size: 12px; transition: all 0.15s;
-    }
-    .nav-links a.active, .nav-links a:hover { background: var(--surface2); color: var(--text); text-decoration: none; }
-    .nav-links a.active { color: var(--blue); }
+    /* Learning brain */
+    .brain-card{background:var(--surface);border:1px solid rgba(168,85,247,.25);border-radius:8px;padding:16px;margin-bottom:24px}
+    .brain-header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+    .brain-title{font-size:13px;font-weight:600}
+    .brain-sub{font-size:10px;color:var(--muted);margin-left:auto}
+    .param-row{display:flex;gap:6px;align-items:center;margin-bottom:6px;font-size:11px}
+    .param-key{color:var(--muted);min-width:140px}
+    .param-val{color:var(--purple);font-weight:600}
+    .version-badge{font-size:9px;padding:2px 7px;border-radius:3px;background:rgba(168,85,247,.15);color:var(--purple);border:1px solid rgba(168,85,247,.3)}
+    .insight-list{display:flex;flex-direction:column;gap:8px;margin-top:12px}
+    .insight{display:flex;gap:10px;align-items:flex-start;padding:10px 12px;border-radius:6px;border:1px solid}
+    .insight.INSIGHT{background:rgba(59,130,246,.06);border-color:rgba(59,130,246,.2)}
+    .insight.WARNING{background:rgba(239,68,68,.06);border-color:rgba(239,68,68,.2)}
+    .insight.SUGGESTION{background:rgba(234,179,8,.06);border-color:rgba(234,179,8,.2)}
+    .insight.PARAM_UPDATE{background:rgba(168,85,247,.06);border-color:rgba(168,85,247,.2)}
+    .insight-type{font-size:9px;font-weight:700;padding:2px 6px;border-radius:3px;white-space:nowrap}
+    .insight.INSIGHT .insight-type{background:rgba(59,130,246,.2);color:var(--blue)}
+    .insight.WARNING .insight-type{background:rgba(239,68,68,.2);color:var(--red)}
+    .insight.SUGGESTION .insight-type{background:rgba(234,179,8,.2);color:var(--yellow)}
+    .insight.PARAM_UPDATE .insight-type{background:rgba(168,85,247,.2);color:var(--purple)}
+    .insight-msg{font-size:11px;line-height:1.5}
+    .insight-time{font-size:9px;color:var(--muted);white-space:nowrap;margin-left:auto}
 
-    .page { max-width: 1200px; margin: 0 auto; padding: 24px 16px; }
-
-    .section-title {
-      font-size: 10px; font-weight: 600; letter-spacing: 0.12em;
-      text-transform: uppercase; color: var(--muted); margin-bottom: 12px;
-    }
-
-    /* ── Filter bar ── */
-    .filter-bar {
-      display: flex; gap: 8px; margin-bottom: 24px; flex-wrap: wrap; align-items: center;
-    }
-    .filter-bar select {
-      background: var(--surface); border: 1px solid var(--border); color: var(--text);
-      padding: 8px 12px; border-radius: 8px; font-family: var(--font); font-size: 12px;
-      cursor: pointer;
-    }
-    .filter-bar select:focus { outline: none; border-color: var(--blue); }
-
-    /* ── Stat grid ── */
-    .stat-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 12px;
-      margin-bottom: 24px;
-    }
-    .stat-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 16px;
-    }
-    .stat-card .label { font-size: 10px; color: var(--muted); letter-spacing: 0.08em; text-transform: uppercase; margin-bottom: 6px; }
-    .stat-card .value { font-size: 26px; font-weight: 700; }
-    .stat-card .sub { font-size: 10px; color: var(--muted); margin-top: 4px; }
-    .green { color: var(--green); }
-    .red { color: var(--red); }
-    .yellow { color: var(--yellow); }
-    .blue { color: var(--blue); }
-    .muted { color: var(--muted); }
-
-    /* ── TP Hits ── */
-    .tp-grid {
-      display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 10px;
-      margin-bottom: 24px;
-    }
-    .tp-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 14px;
-      text-align: center;
-    }
-    .tp-label { font-size: 10px; color: var(--muted); margin-bottom: 6px; letter-spacing: 0.06em; }
-    .tp-count { font-size: 22px; font-weight: 700; color: var(--green); }
-    .tp-rate { font-size: 11px; color: var(--muted); margin-top: 3px; }
-
-    /* ── Chart ── */
-    .chart-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 20px;
-      margin-bottom: 24px;
-    }
-    .chart-card canvas { max-height: 260px; }
-
-    /* ── Tables ── */
-    .table-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      overflow: hidden;
-      margin-bottom: 24px;
-    }
-    .table-card table { width: 100%; border-collapse: collapse; }
-    .table-card th {
-      background: var(--surface2);
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      text-transform: uppercase;
-      color: var(--muted);
-      padding: 10px 14px;
-      text-align: left;
-    }
-    .table-card td {
-      padding: 10px 14px;
-      font-size: 12px;
-      border-bottom: 1px solid var(--border);
-    }
-    .table-card tr:last-child td { border-bottom: none; }
-    .table-card tr:hover td { background: var(--surface2); }
-
-    /* ── Insight cards ── */
-    .insight-list { display: flex; flex-direction: column; gap: 8px; margin-bottom: 24px; }
-    .insight-card {
-      background: var(--surface);
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 12px 14px;
-      display: flex;
-      gap: 12px;
-      align-items: start;
-    }
-    .insight-type {
-      font-size: 9px;
-      font-weight: 700;
-      letter-spacing: 0.1em;
-      padding: 3px 8px;
-      border-radius: 4px;
-      white-space: nowrap;
-      flex-shrink: 0;
-    }
-    .type-warning { background: #7f1d1d; color: #fca5a5; }
-    .type-insight { background: #14532d; color: #4ade80; }
-    .type-suggestion { background: #1e3a5f; color: #93c5fd; }
-    .insight-msg { font-size: 12px; line-height: 1.5; color: var(--text); }
-    .insight-time { font-size: 10px; color: var(--muted); white-space: nowrap; flex-shrink: 0; }
-
-    .empty-state {
-      text-align: center; padding: 40px; color: var(--muted);
-    }
-    .loading { text-align: center; padding: 40px; color: var(--muted); font-size: 12px; }
-
-    .win-bar { height: 6px; background: var(--surface2); border-radius: 3px; margin-top: 6px; }
-    .win-bar-fill { height: 100%; border-radius: 3px; background: var(--green); transition: width 0.4s; }
-
-    @media (max-width: 768px) {
-      .stat-grid { grid-template-columns: repeat(2, 1fr); }
-      .tp-grid { grid-template-columns: repeat(2, 1fr); }
-    }
-    @media (max-width: 480px) {
-      .stat-grid { grid-template-columns: 1fr 1fr; }
-    }
+    table{width:100%;border-collapse:collapse}
+    th{font-size:9px;text-transform:uppercase;letter-spacing:.1em;color:var(--muted);padding:8px 10px;text-align:left;border-bottom:1px solid var(--border)}
+    td{padding:8px 10px;border-bottom:1px solid var(--border);font-size:11px}
+    tr:last-child td{border-bottom:none}
+    tr:hover td{background:var(--surface2)}
+    @media(max-width:768px){.grid2{grid-template-columns:1fr}}
   </style>
 </head>
 <body>
-
 <nav>
-  <div class="nav-brand">NQ<span>Pro</span></div>
+  <div class="nav-brand">NQ <span>Signal Engine</span><span class="nav-tag">AUTONOMOUS</span></div>
   <div class="nav-links">
-    <a href="index.html">Dashboard</a>
+    <a href="index.html">Live</a>
     <a href="performance.html" class="active">Performance</a>
     <a href="journal.html">Journal</a>
   </div>
 </nav>
-
 <div class="page">
 
-  <div class="filter-bar">
-    <select id="inst-filter" onchange="loadAll()">
-      <option value="">All Instruments</option>
-      <option value="MNQ">MNQ</option>
-      <option value="MGC">MGC</option>
-    </select>
+  <!-- LEARNING BRAIN -->
+  <div class="section-title">Learning Brain</div>
+  <div class="brain-card">
+    <div class="brain-header">
+      <span style="font-size:16px">🧠</span>
+      <span class="brain-title">Adaptive Engine State</span>
+      <span class="brain-sub">Engine auto-adjusts parameters nightly based on closed trade outcomes</span>
+    </div>
+    <div id="engine-params">
+      <div style="color:var(--muted);font-size:11px">Loading engine state…</div>
+    </div>
+    <div class="insight-list" id="insights-list"></div>
   </div>
 
-  <!-- Summary stats -->
-  <div class="section-title">All-Time Stats</div>
-  <div class="stat-grid" id="stat-grid">
-    <div class="loading">Loading…</div>
+  <!-- SUMMARY STATS -->
+  <div class="section-title">All-Time Performance</div>
+  <div class="grid2">
+    <div class="card">
+      <div class="stat-row"><span class="stat-label">Total Signals</span><span class="stat-val" id="p-total">-</span></div>
+      <div class="stat-row"><span class="stat-label">Wins</span><span class="stat-val" style="color:var(--green)" id="p-wins">-</span></div>
+      <div class="stat-row"><span class="stat-label">Losses</span><span class="stat-val" style="color:var(--red)" id="p-losses">-</span></div>
+      <div class="stat-row"><span class="stat-label">Win Rate</span><span class="stat-val" style="color:var(--yellow)" id="p-wr">-</span></div>
+      <div class="stat-row"><span class="stat-label">Profit Factor</span><span class="stat-val" id="p-pf">-</span></div>
+    </div>
+    <div class="card">
+      <div class="stat-row"><span class="stat-label">Avg Win (pts)</span><span class="stat-val" style="color:var(--green)" id="p-avgw">-</span></div>
+      <div class="stat-row"><span class="stat-label">Avg Loss (pts)</span><span class="stat-val" style="color:var(--red)" id="p-avgl">-</span></div>
+      <div class="stat-row"><span class="stat-label">Best Setup</span><span class="stat-val" style="color:var(--blue)" id="p-best">-</span></div>
+      <div class="stat-row"><span class="stat-label">Total Ticks P&L</span><span class="stat-val" id="p-ticks">-</span></div>
+    </div>
   </div>
 
-  <!-- TP hits -->
-  <div class="section-title">Take Profit Hit Rates</div>
-  <div class="tp-grid" id="tp-grid">
-    <div class="loading">Loading…</div>
+  <!-- EQUITY CURVE -->
+  <div class="section-title">Equity Curve</div>
+  <div class="card" style="margin-bottom:24px">
+    <canvas id="equity-chart" height="80"></canvas>
   </div>
 
-  <!-- Equity curve -->
-  <div class="section-title">Equity Curve ($)</div>
-  <div class="chart-card">
-    <canvas id="equity-chart"></canvas>
+  <!-- SETUP BREAKDOWN -->
+  <div class="section-title">By Setup</div>
+  <div class="card" style="margin-bottom:24px">
+    <table><thead><tr><th>Setup</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>P&L ($)</th></tr></thead>
+    <tbody id="setup-table"></tbody></table>
   </div>
 
-  <!-- By setup -->
-  <div class="section-title">Performance by Setup</div>
-  <div class="table-card" id="setup-table">
-    <div class="loading">Loading…</div>
-  </div>
-
-  <!-- By session -->
-  <div class="section-title">Performance by Session</div>
-  <div class="table-card" id="session-table">
-    <div class="loading">Loading…</div>
-  </div>
-
-  <!-- Insights -->
-  <div class="section-title">Optimization Insights</div>
-  <div class="insight-list" id="insight-list">
-    <div class="loading">Loading…</div>
+  <!-- SESSION BREAKDOWN -->
+  <div class="section-title">By Session</div>
+  <div class="card">
+    <table><thead><tr><th>Session</th><th>Trades</th><th>Wins</th><th>Losses</th><th>Win Rate</th></tr></thead>
+    <tbody id="session-table"></tbody></table>
   </div>
 
 </div>
-
 <script>
-  const API = 'https://nq-signal-pro.onrender.com';
-  let equityChart = null;
+const API = 'https://nq-signal-pro.onrender.com';
+const ago = ts => {
+  if (!ts) return '';
+  const s = (Date.now() - new Date(ts).getTime()) / 1000;
+  if (s < 3600) return Math.floor(s/60) + 'm ago';
+  if (s < 86400) return Math.floor(s/3600) + 'h ago';
+  return Math.floor(s/86400) + 'd ago';
+};
 
-  async function apiFetch(path) {
-    const r = await fetch(API + path);
-    if (!r.ok) throw new Error(r.status);
-    return r.json();
-  }
+async function load() {
+  try {
+    const [perf, bySetup, bySession, equity, insights, engState] = await Promise.all([
+      fetch(API + '/performance').then(r=>r.json()),
+      fetch(API + '/performance/by-setup').then(r=>r.json()),
+      fetch(API + '/performance/by-session').then(r=>r.json()),
+      fetch(API + '/performance/equity-curve').then(r=>r.json()),
+      fetch(API + '/performance/insights?limit=10').then(r=>r.json()),
+      fetch(API + '/performance/engine-state').then(r=>r.json()),
+    ]);
 
-  function fmt(v, dec = 1) {
-    if (v == null) return '—';
-    return typeof v === 'number' ? v.toFixed(dec) : String(v);
-  }
+    // Stats
+    document.getElementById('p-total').textContent   = perf.total_trades || 0;
+    document.getElementById('p-wins').textContent    = perf.wins || 0;
+    document.getElementById('p-losses').textContent  = perf.losses || 0;
+    document.getElementById('p-wr').textContent      = perf.win_rate != null ? perf.win_rate.toFixed(1)+'%' : '-';
+    document.getElementById('p-pf').textContent      = perf.profit_factor != null ? perf.profit_factor.toFixed(2) : '-';
+    document.getElementById('p-avgw').textContent    = perf.avg_win_points != null ? perf.avg_win_points.toFixed(1) : '-';
+    document.getElementById('p-avgl').textContent    = perf.avg_loss_points != null ? perf.avg_loss_points.toFixed(1) : '-';
+    document.getElementById('p-best').textContent    = perf.best_setup || '-';
+    document.getElementById('p-ticks').textContent   = perf.total_ticks != null ? (perf.total_ticks > 0 ? '+' : '') + perf.total_ticks.toFixed(0) : '-';
 
-  function relTime(iso) {
-    if (!iso) return '';
-    const diff = (Date.now() - new Date(iso)) / 1000;
-    if (diff < 60) return `${Math.round(diff)}s ago`;
-    if (diff < 3600) return `${Math.round(diff/60)}m ago`;
-    if (diff < 86400) return `${Math.round(diff/3600)}h ago`;
-    return `${Math.round(diff/86400)}d ago`;
-  }
+    // Engine state
+    const params = engState.current_params || {};
+    const ver = engState.version || 0;
+    const epEl = document.getElementById('engine-params');
+    if (ver === 0) {
+      epEl.innerHTML = `<div class="param-row"><span class="param-key">Status</span><span class="param-val">Default parameters (no adjustments yet)</span></div>`;
+    } else {
+      epEl.innerHTML = `
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+          <span class="version-badge">v${ver}</span>
+          <span style="font-size:10px;color:var(--muted)">${engState.last_updated ? ago(engState.last_updated) : ''}</span>
+        </div>
+        ${(engState.description || []).map(d => `<div class="param-row"><span class="param-key">&#x2713;</span><span style="font-size:11px">${d}</span></div>`).join('')}
+        ${engState.reason ? `<div style="font-size:10px;color:var(--muted);margin-top:6px">Last change: ${engState.reason}</div>` : ''}
+      `;
+    }
 
-  function getInst() {
-    return document.getElementById('inst-filter').value;
-  }
+    // Insights
+    const iList = document.getElementById('insights-list');
+    if (insights.length) {
+      iList.innerHTML = insights.map(i => `
+        <div class="insight ${i.log_type}">
+          <span class="insight-type">${i.log_type.replace('_',' ')}</span>
+          <span class="insight-msg">${i.message}</span>
+          <span class="insight-time">${ago(i.created_at)}</span>
+        </div>`).join('');
+    }
 
-  // ── Summary stats ──────────────────────────────────────────────────────────
-  async function loadStats() {
-    const inst = getInst();
-    let data;
-    try { data = await apiFetch('/performance' + (inst ? `?instrument=${inst}` : '')); }
-    catch (e) { document.getElementById('stat-grid').innerHTML = '<div style="color:var(--red);padding:20px">Failed to load stats</div>'; return; }
-
-    const wr = data.win_rate || 0;
-    const wrColor = wr >= 60 ? 'green' : wr >= 45 ? 'yellow' : 'red';
-    const pf = data.profit_factor;
-    const pfColor = pf == null ? 'muted' : pf >= 2 ? 'green' : pf >= 1 ? 'yellow' : 'red';
-    const ticks = data.total_ticks || 0;
-    const pnl = data.total_pnl_dollars || 0;
-
-    document.getElementById('stat-grid').innerHTML = `
-      <div class="stat-card">
-        <div class="label">Win Rate</div>
-        <div class="value ${wrColor}">${fmt(wr)}%</div>
-        <div class="sub">${data.wins}W / ${data.losses}L / ${data.be_count}BE</div>
-        <div class="win-bar"><div class="win-bar-fill" style="width:${Math.min(wr,100)}%"></div></div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Total Trades</div>
-        <div class="value blue">${data.total_trades}</div>
-        <div class="sub">Decided: ${data.wins + data.losses}</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Profit Factor</div>
-        <div class="value ${pfColor}">${pf != null ? fmt(pf, 2) : '—'}</div>
-        <div class="sub">Gross profit / loss ratio</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Total P&L</div>
-        <div class="value ${pnl >= 0 ? 'green' : 'red'}">${pnl >= 0 ? '+' : ''}$${Math.abs(pnl).toFixed(0)}</div>
-        <div class="sub">${ticks >= 0 ? '+' : ''}${ticks.toFixed(0)} ticks</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Avg Win</div>
-        <div class="value green">${fmt(data.avg_win_pts, 2)} pts</div>
-        <div class="sub">Points per winning trade</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Avg Loss</div>
-        <div class="value red">${fmt(data.avg_loss_pts, 2)} pts</div>
-        <div class="sub">Points per losing trade</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Best Setup</div>
-        <div class="value blue" style="font-size:16px">${data.best_setup || '—'}</div>
-        <div class="sub">${data.best_setup ? fmt(data.setup_win_rates[data.best_setup]) + '% win rate' : 'Need more data'}</div>
-      </div>
-      <div class="stat-card">
-        <div class="label">Worst Setup</div>
-        <div class="value yellow" style="font-size:16px">${data.worst_setup || '—'}</div>
-        <div class="sub">${data.worst_setup ? fmt(data.setup_win_rates[data.worst_setup]) + '% win rate' : 'Need more data'}</div>
-      </div>
-    `;
-
-    // TP hits
-    const total = data.total_trades || 1;
-    document.getElementById('tp-grid').innerHTML = `
-      <div class="tp-card">
-        <div class="tp-label">TP1 Hits</div>
-        <div class="tp-count">${data.tp1_hits}</div>
-        <div class="tp-rate">${((data.tp1_hits / total) * 100).toFixed(1)}% of trades</div>
-      </div>
-      <div class="tp-card">
-        <div class="tp-label">TP2 Hits</div>
-        <div class="tp-count">${data.tp2_hits}</div>
-        <div class="tp-rate">${((data.tp2_hits / total) * 100).toFixed(1)}% of trades</div>
-      </div>
-      <div class="tp-card">
-        <div class="tp-label">TP3 Hits</div>
-        <div class="tp-count">${data.tp3_hits}</div>
-        <div class="tp-rate">${((data.tp3_hits / total) * 100).toFixed(1)}% of trades</div>
-      </div>
-      <div class="tp-card">
-        <div class="tp-label">TP4 Hits</div>
-        <div class="tp-count">${data.tp4_hits}</div>
-        <div class="tp-rate">${((data.tp4_hits / total) * 100).toFixed(1)}% of trades</div>
-      </div>
-    `;
-  }
-
-  // ── Equity curve ───────────────────────────────────────────────────────────
-  async function loadEquity() {
-    const inst = getInst();
-    let data;
-    try { data = await apiFetch('/performance/equity-curve' + (inst ? `?instrument=${inst}` : '')); }
-    catch (e) { return; }
-
-    const points = data.equity_curve || [];
-    if (points.length === 0) return;
-
-    const labels = points.map(p => {
-      if (!p.date) return '';
-      const d = new Date(p.date);
-      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-    });
-    const values = points.map(p => p.pnl_dollars);
-
-    const ctx = document.getElementById('equity-chart').getContext('2d');
-    if (equityChart) equityChart.destroy();
-
-    const lastVal = values[values.length - 1] || 0;
-    const lineColor = lastVal >= 0 ? '#22c55e' : '#ef4444';
-
-    equityChart = new Chart(ctx, {
-      type: 'line',
-      data: {
-        labels,
-        datasets: [{
-          label: 'Cumulative P&L ($)',
-          data: values,
-          borderColor: lineColor,
-          backgroundColor: lineColor + '18',
-          fill: true,
-          tension: 0.3,
-          pointRadius: points.length < 50 ? 3 : 0,
-          pointBackgroundColor: lineColor,
-          borderWidth: 2,
-        }]
-      },
-      options: {
-        responsive: true,
-        plugins: {
-          legend: { display: false },
-          tooltip: {
-            backgroundColor: '#1a1e2a',
-            borderColor: '#252a38',
-            borderWidth: 1,
-            titleColor: '#94a3b8',
-            bodyColor: '#e2e8f0',
-            callbacks: {
-              label: ctx => `$${ctx.parsed.y.toFixed(2)}`
-            }
-          }
+    // Equity chart
+    const pts = (equity.equity_curve || []);
+    if (pts.length) {
+      const ctx = document.getElementById('equity-chart').getContext('2d');
+      new Chart(ctx, {
+        type: 'line',
+        data: {
+          labels: pts.map((p,i) => i+1),
+          datasets: [{
+            data: pts.map(p => p.pnl_dollars),
+            borderColor: '#3b82f6',
+            backgroundColor: 'rgba(59,130,246,0.08)',
+            borderWidth: 2,
+            pointRadius: 0,
+            fill: true,
+            tension: 0.3,
+          }],
         },
-        scales: {
-          x: {
-            grid: { color: '#252a38' },
-            ticks: { color: '#64748b', maxTicksLimit: 12, font: { family: 'monospace', size: 10 } }
+        options: {
+          plugins: {legend:{display:false}},
+          scales: {
+            x: {display:false},
+            y: {grid:{color:'#252a38'},ticks:{color:'#64748b',font:{size:10}},border:{color:'#252a38'}},
           },
-          y: {
-            grid: { color: '#252a38' },
-            ticks: { color: '#64748b', font: { family: 'monospace', size: 10 }, callback: v => '$' + v }
-          }
-        }
-      }
-    });
-  }
-
-  // ── By setup ───────────────────────────────────────────────────────────────
-  async function loadSetup() {
-    const inst = getInst();
-    let data;
-    try { data = await apiFetch('/performance/by-setup' + (inst ? `?instrument=${inst}` : '')); }
-    catch (e) { document.getElementById('setup-table').innerHTML = '<div style="color:var(--red);padding:20px">Failed to load</div>'; return; }
-
-    if (!data || data.length === 0) {
-      document.getElementById('setup-table').innerHTML = '<div class="empty-state">No setup data yet</div>';
-      return;
+        },
+      });
     }
 
-    let rows = data.sort((a, b) => b.win_rate - a.win_rate).map(s => {
-      const wrColor = s.win_rate >= 60 ? 'var(--green)' : s.win_rate >= 45 ? 'var(--yellow)' : 'var(--red)';
-      const pnlColor = s.pnl_dollars >= 0 ? 'var(--green)' : 'var(--red)';
-      return `<tr>
-        <td><strong>${s.setup}</strong></td>
-        <td>${s.total}</td>
-        <td style="color:var(--green)">${s.wins}</td>
-        <td style="color:var(--red)">${s.losses}</td>
-        <td style="color:${wrColor};font-weight:700">${s.win_rate}%</td>
-        <td style="color:${pnlColor}">${s.pnl_dollars >= 0 ? '+' : ''}$${s.pnl_dollars.toFixed(0)}</td>
-      </tr>`;
+    // Setup table
+    document.getElementById('setup-table').innerHTML = bySetup.map(s => {
+      const wr = s.win_rate;
+      const col = wr >= 60 ? 'var(--green)' : wr >= 45 ? 'var(--yellow)' : 'var(--red)';
+      return `<tr><td>${s.setup}</td><td>${s.total}</td><td style="color:var(--green)">${s.wins}</td><td style="color:var(--red)">${s.losses}</td><td style="color:${col}">${wr.toFixed(1)}%</td><td style="color:${s.pnl_dollars>=0?'var(--green)':'var(--red)'}">${s.pnl_dollars>=0?'+':''}$${s.pnl_dollars.toFixed(0)}</td></tr>`;
     }).join('');
 
-    document.getElementById('setup-table').innerHTML = `
-      <table>
-        <thead><tr>
-          <th>Setup</th><th>Total</th><th>Wins</th><th>Losses</th><th>Win Rate</th><th>P&L ($)</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
-  }
-
-  // ── By session ─────────────────────────────────────────────────────────────
-  async function loadSession() {
-    const inst = getInst();
-    let data;
-    try { data = await apiFetch('/performance/by-session' + (inst ? `?instrument=${inst}` : '')); }
-    catch (e) { document.getElementById('session-table').innerHTML = '<div style="color:var(--red);padding:20px">Failed to load</div>'; return; }
-
-    if (!data || data.length === 0) {
-      document.getElementById('session-table').innerHTML = '<div class="empty-state">No session data yet</div>';
-      return;
-    }
-
-    const rows = data.map(s => {
-      const wrColor = s.win_rate >= 60 ? 'var(--green)' : s.win_rate >= 45 ? 'var(--yellow)' : 'var(--red)';
-      return `<tr>
-        <td><strong>${s.session}</strong></td>
-        <td>${s.total}</td>
-        <td style="color:var(--green)">${s.wins}</td>
-        <td style="color:var(--red)">${s.losses}</td>
-        <td style="color:${wrColor};font-weight:700">${s.total > 0 ? s.win_rate + '%' : '—'}</td>
-      </tr>`;
+    // Session table
+    document.getElementById('session-table').innerHTML = bySession.map(s => {
+      const wr = s.win_rate;
+      const col = wr >= 60 ? 'var(--green)' : wr >= 45 ? 'var(--yellow)' : 'var(--red)';
+      return `<tr><td>${s.session}</td><td>${s.total}</td><td style="color:var(--green)">${s.wins}</td><td style="color:var(--red)">${s.losses}</td><td style="color:${col}">${s.total>0?wr.toFixed(1)+'%':'-'}</td></tr>`;
     }).join('');
 
-    document.getElementById('session-table').innerHTML = `
-      <table>
-        <thead><tr>
-          <th>Session</th><th>Total</th><th>Wins</th><th>Losses</th><th>Win Rate</th>
-        </tr></thead>
-        <tbody>${rows}</tbody>
-      </table>`;
-  }
-
-  // ── Insights ───────────────────────────────────────────────────────────────
-  async function loadInsights() {
-    let data;
-    try { data = await apiFetch('/performance/insights'); }
-    catch (e) { document.getElementById('insight-list').innerHTML = '<div style="color:var(--red);padding:20px">Failed to load</div>'; return; }
-
-    const list = document.getElementById('insight-list');
-    if (!data || data.length === 0) {
-      list.innerHTML = '<div class="empty-state">No insights yet. The optimization loop runs daily at 4 AM UTC after 5+ trades.</div>';
-      return;
-    }
-
-    list.innerHTML = data.map(ins => {
-      const typeClass = ins.log_type === 'WARNING' ? 'type-warning' : ins.log_type === 'INSIGHT' ? 'type-insight' : 'type-suggestion';
-      return `
-        <div class="insight-card">
-          <span class="insight-type ${typeClass}">${ins.log_type}</span>
-          <div class="insight-msg">${ins.message}</div>
-          <span class="insight-time">${relTime(ins.created_at)}</span>
-        </div>`;
-    }).join('');
-  }
-
-  // ── Load all ───────────────────────────────────────────────────────────────
-  async function loadAll() {
-    document.getElementById('stat-grid').innerHTML = '<div class="loading">Loading…</div>';
-    document.getElementById('tp-grid').innerHTML = '<div class="loading">Loading…</div>';
-    document.getElementById('setup-table').innerHTML = '<div class="loading">Loading…</div>';
-    document.getElementById('session-table').innerHTML = '<div class="loading">Loading…</div>';
-    await Promise.all([loadStats(), loadEquity(), loadSetup(), loadSession(), loadInsights()]);
-  }
-
-  loadAll();
+  } catch(e) { console.error(e); }
+}
+load();
 </script>
 </body>
 </html>
