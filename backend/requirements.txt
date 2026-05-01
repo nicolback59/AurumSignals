@@ -4,8 +4,7 @@ uvicorn[standard]==0.32.1
 
 # Database
 sqlalchemy==2.0.36
-# For PostgreSQL on Render (leave out if using SQLite only):
-# psycopg2-binary==2.9.10
+psycopg2-binary==2.9.10
 
 # Config
 pydantic-settings==2.6.1
@@ -18,8 +17,8 @@ apscheduler==3.10.4
 
 # Market data (free OHLCV for trade resolution + backtesting)
 yfinance==0.2.48
-pandas==2.2.3
-numpy==1.26.4
+pandas>=2.2.3
+numpy>=2.2.0
 
 # Timezone
 pytz==2024.2
