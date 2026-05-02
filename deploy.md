@@ -138,6 +138,108 @@ sudo certbot --nginx -d yourdomain.com
 
 ---
 
+## Backtesting + Self-Improving Strategy
+
+The system runs continuous backtests in the background and iteratively adjusts its
+own strategy parameters — no manual tuning required.
+
+### How the backtest loop works
+
+```
+Every 4 hours (per instrument):
+  1. Fetch up to 3,000 1m bars from Alpaca  (paginated — maximises history)
+  2. Run full signal engine over all bars    (backtest-engine.js)
+  3. Resolve each signal outcome: TP1 hit first = WIN, SL hit first = LOSS
+  4. Compute win rate, Sharpe ratio, profit factor, max drawdown
+  5. Neighbourhood search: test 15 parameter perturbations
+  6. If best candidate beats current by ≥5% win rate AND ≥0.1 Sharpe:
+       → Save as SHADOW (not yet live)
+  7. Next cycle: re-validate shadow on fresh bars
+       → PROMOTE to active if still better
+       → DISCARD if no longer better
+```
+
+### Safeguards (strategy-params.js)
+
+| Rule | Value | Purpose |
+|------|-------|---------|
+| Min trades in backtest | 20 | Won't adjust on thin samples |
+| Min win-rate improvement | +5 pp | Meaningful signal, not noise |
+| Min Sharpe improvement | +0.10 | Risk-adjusted, not just lucky |
+| Cooldown between revisions | 6 h | Prevents thrashing |
+| Shadow validation cycle | 1 cycle | Confirms on fresh data |
+| Hard parameter bounds | per param | Prevents degenerate configs |
+| Win-rate floor | 45% | Never accepts losing strategy |
+
+### Instruments backtested
+
+| Instrument | Alpaca symbol | Default SL |
+|-----------|---------------|-----------|
+| MNQ (Micro NQ) | `@MNQ.C.0` | 25 pts |
+| MGC (Micro Gold) | `@MGC.C.0` | 15 pts |
+
+Override symbols via `SCANNER_BT_MNQ` and `SCANNER_BT_MGC` env vars.
+
+### Environment variables for backtesting
+
+| Variable | Default | Notes |
+|----------|---------|-------|
+| `BACKTEST_INTERVAL_H` | `4` | Hours between backtest cycles |
+| `BACKTEST_BARS` | `3000` | Bars of history per instrument |
+| `SCANNER_BT_MNQ` | `@MNQ.C.0` | Alpaca symbol for MNQ backtest |
+| `SCANNER_BT_MGC` | `@MGC.C.0` | Alpaca symbol for MGC backtest |
+
+### Accelerating learning
+
+To maximize learning speed:
+- Lower `BACKTEST_INTERVAL_H` to `1` — runs backtests every hour
+- Increase `BACKTEST_BARS` to `5000` — uses ~83 hours of history
+- The backtest engine uses cooldown=1 (not 3) so it finds more signals per run
+
+### Backtest dashboard
+
+Available at `/backtest` (or `https://<your-domain>/backtest`):
+
+- **Live market ticker tape** (TradingView, free, real-time NQ + GC)
+- **Win rate chart** — MNQ and MGC performance over time
+- **Backtest activity** — trades tested per run
+- **Strategy revision timeline** — what changed, when, and why
+- **Active parameters** — current live config per instrument
+- **Learning stats** — per-setup win rates + adaptive score deltas
+
+### API endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /api/backtest/runs` | All backtest run history |
+| `GET /api/backtest/revisions` | Strategy revision log |
+| `GET /api/backtest/summary` | Aggregated stats per instrument |
+| `GET /api/strategy/params` | Current active parameters |
+| `GET /api/market/prices` | Latest price per scanned symbol |
+| `GET /api/learning` | Adaptive score deltas + regime |
+
+---
+
+## Real-Time Market Data
+
+**Recommendation: use TradingView's free embeddable widgets** rather than
+integrating Alpaca data directly on the website.
+
+| Approach | Cost | Effort | Quality |
+|----------|------|--------|---------|
+| TradingView widgets ✅ | Free | Zero | Full interactive charts, streaming |
+| Alpaca REST polling | Free | Medium | Price only, 60s delay |
+| Alpaca WebSocket | Free | High | Real-time but raw data |
+
+The backtest dashboard already embeds:
+- **Ticker tape** — real-time NQ1!, GC1!, MNQ1!, MGC1! with % change
+- **Mini charts** — NQ and GC interactive 1-day charts
+
+These require no API keys, no backend work, and are automatically updated
+by TradingView's infrastructure.
+
+---
+
 ## Continuous 24/7 Scanner
 
 The scanner runs independently of TradingView. It polls Alpaca for fresh 1m and

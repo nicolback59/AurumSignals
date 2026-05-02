@@ -1,24 +1,34 @@
 'use strict';
 
-const Database           = require('better-sqlite3');
-const path               = require('path');
-const fs                 = require('fs');
-const { computeSignal }  = require('./signal-engine');
+const Database            = require('better-sqlite3');
+const path                = require('path');
+const fs                  = require('fs');
+const { computeSignal }   = require('./signal-engine');
 const { getAdaptiveMinScore, getMarketRegime } = require('./learning');
+const { runBacktest }     = require('./backtest-engine');
+const { getParams, saveBacktestRun, proposeRevision, evaluateShadow } = require('./strategy-params');
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const DB_PATH       = process.env.DB_PATH         || path.join(__dirname, 'signals.db');
-const NTFY_URL      = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
-const NTFY_TOPIC    = process.env.NTFY_TOPIC      || '';
-const NTFY_TOKEN    = process.env.NTFY_TOKEN      || '';
-const ALPACA_KEY    = process.env.ALPACA_KEY       || '';
-const ALPACA_SECRET = process.env.ALPACA_SECRET    || '';
-// Alpaca continuous NQ futures contract — verify symbol at docs.alpaca.markets
-const SYMBOL        = process.env.SCANNER_SYMBOL   || '@NQ.C.0';
-const SCAN_INTERVAL = (parseInt(process.env.SCAN_INTERVAL || '60')) * 1000;
-const COOLDOWN      = parseInt(process.env.SCANNER_COOLDOWN  || '3');
-const RTH_ONLY      = process.env.SCANNER_RTH_ONLY === 'true';  // default: 24/7
-const BASE_SCORE    = parseInt(process.env.SCANNER_MIN_SCORE || '16');
+const DB_PATH        = process.env.DB_PATH          || path.join(__dirname, 'signals.db');
+const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
+const NTFY_TOPIC     = process.env.NTFY_TOPIC       || '';
+const NTFY_TOKEN     = process.env.NTFY_TOKEN       || '';
+const ALPACA_KEY     = process.env.ALPACA_KEY        || '';
+const ALPACA_SECRET  = process.env.ALPACA_SECRET     || '';
+// Live scanner symbol (NQ E-mini for signals)
+const SYMBOL         = process.env.SCANNER_SYMBOL    || '@NQ.C.0';
+const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL    || '60')  * 1000;
+const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN || '3');
+const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
+const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '16');
+// Backtest symbols per instrument
+const BT_SYMBOLS = {
+  MNQ: process.env.SCANNER_BT_MNQ || '@MNQ.C.0',
+  MGC: process.env.SCANNER_BT_MGC || '@MGC.C.0',
+};
+// Backtest schedule (hours between cycles)
+const BT_INTERVAL_H  = parseFloat(process.env.BACKTEST_INTERVAL_H  || '4');
+const BT_BARS        = parseInt(process.env.BACKTEST_BARS           || '3000');
 
 // ── Database ──────────────────────────────────────────────────────────────────
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
@@ -33,6 +43,18 @@ const insertSignal = db.prepare(`
   VALUES
     (@ticker, @timeframe, @direction, @grade, @setup, @entry, @sl, @tp1, @tp2, @tp3,
      @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session, @raw_payload)
+`);
+
+const upsertPrice = db.prepare(`
+  INSERT INTO market_snapshots (symbol, price, open_price, change_pct, high_24h, low_24h, snapped_at)
+  VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+  ON CONFLICT(symbol) DO UPDATE SET
+    price      = excluded.price,
+    open_price = excluded.open_price,
+    change_pct = excluded.change_pct,
+    high_24h   = excluded.high_24h,
+    low_24h    = excluded.low_24h,
+    snapped_at = excluded.snapped_at
 `);
 
 // ── ntfy ──────────────────────────────────────────────────────────────────────
@@ -54,7 +76,7 @@ function sendNtfy(s) {
   ].filter(Boolean).join('\n');
   const headers = {
     'Content-Type': 'text/plain',
-    'Title':    `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker}`,
+    'Title': `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker}`,
     'Priority': priority,
     'Tags':     tags,
   };
@@ -64,87 +86,99 @@ function sendNtfy(s) {
 }
 
 // ── Market data (Alpaca) ──────────────────────────────────────────────────────
-async function fetchBars(timeframe, limit) {
+async function fetchBarsForSymbol(symbol, timeframe, limit) {
   const url = `https://data.alpaca.markets/v1beta1/futures/bars`
-    + `?symbols=${encodeURIComponent(SYMBOL)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
+    + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
   const res = await fetch(url, {
     headers: {
       'APCA-API-KEY-ID':     ALPACA_KEY,
       'APCA-API-SECRET-KEY': ALPACA_SECRET,
     },
   });
-  if (!res.ok) {
-    const text = await res.text();
-    throw new Error(`Alpaca ${res.status}: ${text.slice(0, 200)}`);
-  }
+  if (!res.ok) throw new Error(`Alpaca ${res.status}: ${(await res.text()).slice(0, 200)}`);
   const json = await res.json();
-  return (json.bars?.[SYMBOL] ?? []).map(b => ({
+  return (json.bars?.[symbol] ?? []).map(b => ({
     timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
   }));
 }
 
+// Paginated fetch for more historical data (accelerates learning)
+async function fetchAllBars(symbol, timeframe, maxBars) {
+  let all = [], pageToken = null;
+  while (all.length < maxBars) {
+    const limit  = Math.min(1000, maxBars - all.length);
+    let url = `https://data.alpaca.markets/v1beta1/futures/bars`
+      + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
+    if (pageToken) url += `&page_token=${encodeURIComponent(pageToken)}`;
+    const res  = await fetch(url, { headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET } });
+    if (!res.ok) break;
+    const json = await res.json();
+    const bars = (json.bars?.[symbol] ?? []).map(b => ({ timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v }));
+    all.push(...bars);
+    pageToken = json.next_page_token ?? null;
+    if (!pageToken || bars.length === 0) break;
+  }
+  return all.slice(-maxBars);
+}
+
+// Save latest price snapshot for a symbol
+function savePrice(symbol, bars) {
+  if (!bars || bars.length < 2) return;
+  const last  = bars[bars.length - 1];
+  const first = bars[0];
+  const chg   = first.close > 0 ? ((last.close - first.close) / first.close) * 100 : 0;
+  const high  = Math.max(...bars.map(b => b.high));
+  const low   = Math.min(...bars.map(b => b.low));
+  upsertPrice.run(symbol, last.close, first.open, +chg.toFixed(3), high, low);
+}
+
 // ── Cooldown tracking ─────────────────────────────────────────────────────────
-let lastSignalTime = 0;   // epoch ms of last fired signal
+let lastSignalTime = 0;
 let scanCount      = 0;
 
-// ── Scan loop ─────────────────────────────────────────────────────────────────
+// ── Live signal scan ──────────────────────────────────────────────────────────
 async function scan() {
   scanCount++;
   try {
     const [bars1m, bars15m] = await Promise.all([
-      fetchBars('1Min',  120),
-      fetchBars('15Min',  60),
+      fetchBarsForSymbol(SYMBOL, '1Min',  120),
+      fetchBarsForSymbol(SYMBOL, '15Min',  60),
     ]);
+
+    if (bars1m.length >= 2) savePrice(SYMBOL, bars1m);
 
     if (bars1m.length < 60 || bars15m.length < 30) {
       console.log(`[${ts()}] Waiting for bars (${bars1m.length} 1m, ${bars15m.length} 15m)`);
       return;
     }
 
-    // Cooldown: skip if fewer than COOLDOWN bar-lengths since last signal
     const barMs = 60_000;
     if (Date.now() - lastSignalTime < COOLDOWN * barMs) return;
 
-    // Compute with a permissive floor; adaptive threshold applied below
     const signal = computeSignal(bars1m, bars15m, { rthOnly: RTH_ONLY, minScore: 12 });
     if (!signal) return;
 
-    // Apply adaptive + regime-aware minimum score
     const minScore = getAdaptiveMinScore(db, signal.setup, BASE_SCORE);
     if (signal.score < minScore) {
-      console.log(`[${ts()}] Suppressed ${signal.setup} (score=${signal.score} < adaptive min=${minScore})`);
+      console.log(`[${ts()}] Suppressed ${signal.setup} (score=${signal.score} < adaptive=${minScore})`);
       return;
     }
 
     lastSignalTime = Date.now();
 
     const info = insertSignal.run({
-      ticker:       signal.ticker,
-      timeframe:    signal.timeframe,
-      direction:    signal.direction,
-      grade:        signal.grade,
-      setup:        signal.setup,
-      entry:        signal.entry,
-      sl:           signal.sl,
-      tp1:          signal.tp1,
-      tp2:          signal.tp2,
-      tp3:          signal.tp3,
-      score:        signal.score,
-      win_prob_tp1: signal.win_prob_tp1,
-      win_prob_tp2: signal.win_prob_tp2,
-      win_prob_tp3: signal.win_prob_tp3,
-      htf_bias:     signal.htf_bias,
-      session:      signal.session,
-      raw_payload:  JSON.stringify(signal),
+      ticker: signal.ticker, timeframe: signal.timeframe, direction: signal.direction,
+      grade: signal.grade, setup: signal.setup, entry: signal.entry, sl: signal.sl,
+      tp1: signal.tp1, tp2: signal.tp2, tp3: signal.tp3, score: signal.score,
+      win_prob_tp1: signal.win_prob_tp1, win_prob_tp2: signal.win_prob_tp2,
+      win_prob_tp3: signal.win_prob_tp3, htf_bias: signal.htf_bias,
+      session: signal.session, raw_payload: JSON.stringify(signal),
     });
 
-    const regime = getMarketRegime(db);
     console.log(
       `[${ts()}] SIGNAL #${info.lastInsertRowid} | ${signal.direction} ${signal.grade} | ` +
-      `${signal.setup} | score=${signal.score}/${minScore} | entry=${signal.entry} | ` +
-      `session=${signal.session} | regime=${regime}`
+      `${signal.setup} | score=${signal.score}/${minScore} | entry=${signal.entry} | regime=${getMarketRegime(db)}`
     );
-
     sendNtfy(signal);
 
   } catch (err) {
@@ -152,17 +186,88 @@ async function scan() {
   }
 }
 
-function ts() {
-  return new Date().toISOString();
+// ── Backtest cycle ────────────────────────────────────────────────────────────
+async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
+  const symbol = BT_SYMBOLS[instrument];
+  if (!symbol) return;
+
+  try {
+    console.log(`[${ts()}] BACKTEST START: ${instrument} (${symbol}, ${BT_BARS} bars)`);
+
+    // First: evaluate any pending shadow revision (uses current bars to re-validate)
+    const pendingShadow = db.prepare(
+      `SELECT id FROM strategy_revisions WHERE instrument=? AND status='shadow' LIMIT 1`
+    ).get(instrument);
+
+    if (pendingShadow) {
+      const barsForShadow = await fetchAllBars(symbol, '1Min', BT_BARS);
+      if (barsForShadow.length >= 100) {
+        savePrice(symbol, barsForShadow);
+        const result = evaluateShadow(db, instrument, barsForShadow);
+        if (result?.promoted) {
+          console.log(`[${ts()}] REVISION PROMOTED: ${instrument} ${(result.before*100).toFixed(1)}% → ${(result.after*100).toFixed(1)}%`);
+        } else if (result) {
+          console.log(`[${ts()}] Shadow discarded for ${instrument}`);
+        }
+      }
+      return; // One action per cycle: shadow eval or propose, not both
+    }
+
+    // Fetch historical bars
+    const bars1m = await fetchAllBars(symbol, '1Min', BT_BARS);
+    if (bars1m.length < 100) {
+      console.log(`[${ts()}] BACKTEST SKIP: insufficient bars (${bars1m.length})`);
+      return;
+    }
+
+    savePrice(symbol, bars1m);
+
+    // Backtest with current params
+    const params  = getParams(db, instrument);
+    const { metrics } = runBacktest(bars1m, params, { cooldown: 1 });
+    metrics.barsScanned = bars1m.length;
+
+    const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
+    console.log(
+      `[${ts()}] BACKTEST DONE: ${instrument} | trades=${metrics.tradeCount} | ` +
+      `win=${(metrics.winRate*100).toFixed(1)}% | sharpe=${metrics.sharpe} | ` +
+      `pf=${metrics.profitFactor} | bars=${bars1m.length} | run#${runId}`
+    );
+
+    // Propose better params via neighborhood search
+    const best = proposeRevision(db, instrument, bars1m, runId);
+    if (best) {
+      console.log(
+        `[${ts()}] SHADOW CANDIDATE: ${instrument} win_rate ` +
+        `${(metrics.winRate*100).toFixed(1)}% → ${(best.metrics.winRate*100).toFixed(1)}%`
+      );
+    }
+
+  } catch (err) {
+    console.error(`[${ts()}] Backtest error (${instrument}):`, err.message);
+  }
 }
 
-// ── Start ─────────────────────────────────────────────────────────────────────
-console.log('NQ Signal Pro V3 — Scanner');
-console.log(`Symbol:   ${SYMBOL}`);
-console.log(`Interval: ${SCAN_INTERVAL / 1000}s | Cooldown: ${COOLDOWN} bars | RTH-only: ${RTH_ONLY}`);
-console.log(`Min score: ${BASE_SCORE} (adaptive learning active)`);
-if (!ALPACA_KEY)  console.warn('WARNING: ALPACA_KEY not set — market data disabled');
+function ts() { return new Date().toISOString(); }
+
+// ── Startup ───────────────────────────────────────────────────────────────────
+console.log('NQ Signal Pro V3 — Scanner + Backtest Engine');
+console.log(`Live symbol: ${SYMBOL} | Scan: every ${SCAN_INTERVAL/1000}s | RTH-only: ${RTH_ONLY}`);
+console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Instruments: MNQ, MGC`);
+if (!ALPACA_KEY)  console.warn('WARNING: ALPACA_KEY not set — all market data disabled');
 if (!NTFY_TOPIC)  console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
 
+// Warmup backtest on startup (staggered to avoid hammering Alpaca)
+if (ALPACA_KEY) {
+  setTimeout(() => runBacktestCycle('MNQ', 'startup'), 5_000);
+  setTimeout(() => runBacktestCycle('MGC', 'startup'), 35_000);
+}
+
+// Live scan
 scan();
 setInterval(scan, SCAN_INTERVAL);
+
+// Backtest cycle (MNQ and MGC staggered by half the interval)
+const BT_MS = BT_INTERVAL_H * 3_600_000;
+setInterval(() => runBacktestCycle('MNQ'), BT_MS);
+setInterval(() => runBacktestCycle('MGC'), BT_MS + BT_MS / 2);

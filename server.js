@@ -4,6 +4,7 @@ const Database = require('better-sqlite3');
 const path     = require('path');
 const fs       = require('fs');
 const { getLearningStats } = require('./learning');
+const { getParams }        = require('./strategy-params');
 
 const PORT           = process.env.PORT           || 3000;
 const DB_PATH        = process.env.DB_PATH        || path.join(__dirname, 'signals.db');
@@ -173,15 +174,77 @@ app.post('/api/outcome', (req, res) => {
 
 // ── LEARNING ──────────────────────────────────────────────────────────────────
 app.get('/api/learning', (req, res) => {
-  try {
-    res.json(getLearningStats(db));
-  } catch (err) {
-    res.status(500).json({ error: err.message });
+  try { res.json(getLearningStats(db)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── BACKTEST ──────────────────────────────────────────────────────────────────
+app.get('/api/backtest/runs', (req, res) => {
+  const instrument = (req.query.instrument || '').toUpperCase() || null;
+  const limit      = Math.min(Number(req.query.limit) || 100, 500);
+  const rows = db.prepare(
+    instrument
+      ? 'SELECT * FROM backtest_runs WHERE instrument=? ORDER BY run_at DESC LIMIT ?'
+      : 'SELECT * FROM backtest_runs ORDER BY run_at DESC LIMIT ?'
+  ).all(...(instrument ? [instrument, limit] : [limit]));
+  res.json(rows);
+});
+
+app.get('/api/backtest/revisions', (req, res) => {
+  const instrument = (req.query.instrument || '').toUpperCase() || null;
+  const limit      = Math.min(Number(req.query.limit) || 50, 200);
+  const rows = db.prepare(
+    instrument
+      ? 'SELECT * FROM strategy_revisions WHERE instrument=? ORDER BY revised_at DESC LIMIT ?'
+      : 'SELECT * FROM strategy_revisions ORDER BY revised_at DESC LIMIT ?'
+  ).all(...(instrument ? [instrument, limit] : [limit]));
+  res.json(rows);
+});
+
+app.get('/api/backtest/summary', (req, res) => {
+  const summary = db.prepare(`
+    SELECT instrument,
+           COUNT(*)                                              AS total_runs,
+           MAX(run_at)                                          AS last_run_at,
+           ROUND(AVG(win_rate)*100, 1)                          AS avg_win_pct,
+           ROUND(MAX(win_rate)*100, 1)                          AS best_win_pct,
+           SUM(trades_found)                                    AS total_trades_tested,
+           (SELECT COUNT(*) FROM strategy_revisions r WHERE r.instrument=b.instrument AND r.status='active') AS revisions_active
+    FROM backtest_runs b
+    GROUP BY instrument
+  `).all();
+  res.json(summary);
+});
+
+// ── STRATEGY PARAMS ───────────────────────────────────────────────────────────
+app.get('/api/strategy/params', (req, res) => {
+  const rows = db.prepare('SELECT * FROM strategy_params').all();
+  const result = {};
+  for (const row of rows) {
+    result[row.instrument] = {
+      ...JSON.parse(row.params_json),
+      updated_at: row.updated_at,
+      version:    row.version,
+    };
   }
+  // Fill in defaults for instruments not yet in DB
+  for (const inst of ['MNQ', 'MGC']) {
+    if (!result[inst]) result[inst] = { ...getParams(db, inst), version: 0 };
+  }
+  res.json(result);
+});
+
+// ── MARKET PRICES ─────────────────────────────────────────────────────────────
+app.get('/api/market/prices', (req, res) => {
+  const rows = db.prepare('SELECT * FROM market_snapshots').all();
+  const result = {};
+  for (const row of rows) result[row.symbol] = row;
+  res.json(result);
 });
 
 // ── STATIC ────────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
+app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
+app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest-dashboard.html')));
 
 app.listen(PORT, () => {
   console.log(`NQ Signal Pro V3  →  http://localhost:${PORT}`);
