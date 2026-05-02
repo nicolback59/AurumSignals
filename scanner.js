@@ -1,34 +1,46 @@
 'use strict';
 
-const Database            = require('better-sqlite3');
-const path                = require('path');
-const fs                  = require('fs');
-const { computeSignal }   = require('./signal-engine');
+const Database              = require('better-sqlite3');
+const path                  = require('path');
+const fs                    = require('fs');
+const { computeSignal }     = require('./signal-engine');
 const { getAdaptiveMinScore, getMarketRegime } = require('./learning');
-const { runBacktest }     = require('./backtest-engine');
-const { getParams, saveBacktestRun, proposeRevision, evaluateShadow } = require('./strategy-params');
+const { runBacktest }       = require('./backtest-engine');
+const {
+  getParams, saveBacktestRun, saveBacktestDetails,
+  proposeRevision, evaluateShadow, multiObjectiveScore,
+} = require('./strategy-params');
+const { runFullOptimizationCycle } = require('./strategy-optimizer');
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const DB_PATH        = process.env.DB_PATH          || path.join(__dirname, 'signals.db');
+const DB_PATH        = process.env.DB_PATH           || path.join(__dirname, 'signals.db');
 const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
-const NTFY_TOPIC     = process.env.NTFY_TOPIC       || '';
-const NTFY_TOKEN     = process.env.NTFY_TOKEN       || '';
-const ALPACA_KEY     = process.env.ALPACA_KEY        || '';
-const ALPACA_SECRET  = process.env.ALPACA_SECRET     || '';
-// Live scanner symbol (NQ E-mini for signals)
-const SYMBOL         = process.env.SCANNER_SYMBOL    || '@NQ.C.0';
-const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL    || '60')  * 1000;
-const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN || '3');
+const NTFY_TOPIC     = process.env.NTFY_TOPIC        || '';
+const NTFY_TOKEN     = process.env.NTFY_TOKEN        || '';
+const ALPACA_KEY     = process.env.ALPACA_KEY         || '';
+const ALPACA_SECRET  = process.env.ALPACA_SECRET      || '';
+const SYMBOL         = process.env.SCANNER_SYMBOL     || '@NQ.C.0';
+const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL     || '60')  * 1000;
+const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '3');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
 const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '16');
+
 // Backtest symbols per instrument
 const BT_SYMBOLS = {
   MNQ: process.env.SCANNER_BT_MNQ || '@MNQ.C.0',
   MGC: process.env.SCANNER_BT_MGC || '@MGC.C.0',
 };
-// Backtest schedule (hours between cycles)
+
+// Backtest schedule
 const BT_INTERVAL_H  = parseFloat(process.env.BACKTEST_INTERVAL_H  || '4');
-const BT_BARS        = parseInt(process.env.BACKTEST_BARS           || '3000');
+// Increased default from 3000 → 10000 bars for 250-trade statistical target
+const BT_BARS        = parseInt(process.env.BACKTEST_BARS           || '10000');
+// Full optimizer runs less frequently than quick revision checks
+const OPT_INTERVAL_H = parseFloat(process.env.OPTIMIZER_INTERVAL_H || '12');
+// Slippage assumption for backtests (per side, in price points)
+const BT_SLIPPAGE    = parseFloat(process.env.BT_SLIPPAGE           || '0.5');
+// Target trades per backtest cycle for statistical significance
+const BT_TARGET_TRADES = parseInt(process.env.BT_TARGET_TRADES      || '250');
 
 // ── Database ──────────────────────────────────────────────────────────────────
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
@@ -39,10 +51,12 @@ db.exec(schema);
 const insertSignal = db.prepare(`
   INSERT INTO signals
     (ticker, timeframe, direction, grade, setup, entry, sl, tp1, tp2, tp3,
-     score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session, raw_payload)
+     score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
+     trade_style, instrument, rr, raw_payload)
   VALUES
     (@ticker, @timeframe, @direction, @grade, @setup, @entry, @sl, @tp1, @tp2, @tp3,
-     @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session, @raw_payload)
+     @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
+     @trade_style, @instrument, @rr, @raw_payload)
 `);
 
 const upsertPrice = db.prepare(`
@@ -57,26 +71,28 @@ const upsertPrice = db.prepare(`
     snapped_at = excluded.snapped_at
 `);
 
-// ── ntfy ──────────────────────────────────────────────────────────────────────
+// ── ntfy push notifications ───────────────────────────────────────────────────
 function sendNtfy(s) {
   if (!NTFY_TOPIC) return;
   const arrow    = s.direction === 'LONG' ? '▲' : '▼';
   const priority = s.grade === 'A+' ? 'urgent' : 'high';
   const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
   const body = [
-    s.setup             ? `Setup:   ${s.setup}`          : null,
-    s.entry   != null   ? `Entry:   ${s.entry}`          : null,
-    s.sl      != null   ? `SL:      ${s.sl}`             : null,
-    s.tp1     != null   ? `TP1:     ${s.tp1}`            : null,
-    s.tp2     != null   ? `TP2:     ${s.tp2}`            : null,
-    s.tp3     != null   ? `TP3:     ${s.tp3}`            : null,
-    s.score   != null   ? `Score:   ${s.score}`          : null,
-    s.win_prob_tp1 != null ? `Win%:  ${s.win_prob_tp1}%` : null,
-    s.session           ? `Session: ${s.session}`        : null,
+    s.setup        ? `Setup:   ${s.setup}`              : null,
+    s.tradeStyle   ? `Style:   ${s.tradeStyle}`         : null,
+    s.entry != null? `Entry:   ${s.entry}`              : null,
+    s.sl    != null? `SL:      ${s.sl}`                 : null,
+    s.tp1   != null? `TP1:     ${s.tp1}`                : null,
+    s.tp2   != null? `TP2:     ${s.tp2}`                : null,
+    s.tp3   != null? `TP3:     ${s.tp3}`                : null,
+    s.rr    != null? `RR:      ${s.rr}`                 : null,
+    s.score != null? `Score:   ${s.score}`              : null,
+    s.win_prob_tp1 != null ? `Win%:  ${s.win_prob_tp1}%`: null,
+    s.session      ? `Session: ${s.session}`            : null,
   ].filter(Boolean).join('\n');
   const headers = {
     'Content-Type': 'text/plain',
-    'Title': `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker}`,
+    'Title':    `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker ?? s.instrument}`,
     'Priority': priority,
     'Tags':     tags,
   };
@@ -102,18 +118,20 @@ async function fetchBarsForSymbol(symbol, timeframe, limit) {
   }));
 }
 
-// Paginated fetch for more historical data (accelerates learning)
+// Paginated fetch for large historical datasets
 async function fetchAllBars(symbol, timeframe, maxBars) {
   let all = [], pageToken = null;
   while (all.length < maxBars) {
-    const limit  = Math.min(1000, maxBars - all.length);
+    const limit = Math.min(1000, maxBars - all.length);
     let url = `https://data.alpaca.markets/v1beta1/futures/bars`
       + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
     if (pageToken) url += `&page_token=${encodeURIComponent(pageToken)}`;
     const res  = await fetch(url, { headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET } });
     if (!res.ok) break;
     const json = await res.json();
-    const bars = (json.bars?.[symbol] ?? []).map(b => ({ timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v }));
+    const bars = (json.bars?.[symbol] ?? []).map(b => ({
+      timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
+    }));
     all.push(...bars);
     pageToken = json.next_page_token ?? null;
     if (!pageToken || bars.length === 0) break;
@@ -121,7 +139,6 @@ async function fetchAllBars(symbol, timeframe, maxBars) {
   return all.slice(-maxBars);
 }
 
-// Save latest price snapshot for a symbol
 function savePrice(symbol, bars) {
   if (!bars || bars.length < 2) return;
   const last  = bars[bars.length - 1];
@@ -155,29 +172,49 @@ async function scan() {
     const barMs = 60_000;
     if (Date.now() - lastSignalTime < COOLDOWN * barMs) return;
 
-    const signal = computeSignal(bars1m, bars15m, { rthOnly: RTH_ONLY, minScore: 12 });
+    // Live scan always uses MNQ instrument (NQ symbol data)
+    const signal = computeSignal(bars1m, bars15m, {
+      rthOnly:    RTH_ONLY,
+      minScore:   12,
+      instrument: 'MNQ',
+    });
     if (!signal) return;
 
-    const minScore = getAdaptiveMinScore(db, signal.setup, BASE_SCORE);
+    const minScore = getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, BASE_SCORE);
     if (signal.score < minScore) {
-      console.log(`[${ts()}] Suppressed ${signal.setup} (score=${signal.score} < adaptive=${minScore})`);
+      console.log(`[${ts()}] Suppressed ${signal.setup} ${signal.tradeStyle} (score=${signal.score} < adaptive=${minScore})`);
       return;
     }
 
     lastSignalTime = Date.now();
 
     const info = insertSignal.run({
-      ticker: signal.ticker, timeframe: signal.timeframe, direction: signal.direction,
-      grade: signal.grade, setup: signal.setup, entry: signal.entry, sl: signal.sl,
-      tp1: signal.tp1, tp2: signal.tp2, tp3: signal.tp3, score: signal.score,
-      win_prob_tp1: signal.win_prob_tp1, win_prob_tp2: signal.win_prob_tp2,
-      win_prob_tp3: signal.win_prob_tp3, htf_bias: signal.htf_bias,
-      session: signal.session, raw_payload: JSON.stringify(signal),
+      ticker:       signal.ticker,
+      timeframe:    signal.timeframe,
+      direction:    signal.direction,
+      grade:        signal.grade,
+      setup:        signal.setup,
+      entry:        signal.entry,
+      sl:           signal.sl,
+      tp1:          signal.tp1,
+      tp2:          signal.tp2,
+      tp3:          signal.tp3,
+      score:        signal.score,
+      win_prob_tp1: signal.win_prob_tp1,
+      win_prob_tp2: signal.win_prob_tp2,
+      win_prob_tp3: signal.win_prob_tp3,
+      htf_bias:     signal.htf_bias,
+      session:      signal.session,
+      trade_style:  signal.tradeStyle,
+      instrument:   signal.instrument,
+      rr:           signal.rr,
+      raw_payload:  JSON.stringify(signal),
     });
 
     console.log(
       `[${ts()}] SIGNAL #${info.lastInsertRowid} | ${signal.direction} ${signal.grade} | ` +
-      `${signal.setup} | score=${signal.score}/${minScore} | entry=${signal.entry} | regime=${getMarketRegime(db)}`
+      `${signal.setup} [${signal.tradeStyle}] | score=${signal.score}/${minScore} | ` +
+      `entry=${signal.entry} | rr=${signal.rr} | regime=${getMarketRegime(db)}`
     );
     sendNtfy(signal);
 
@@ -186,15 +223,15 @@ async function scan() {
   }
 }
 
-// ── Backtest cycle ────────────────────────────────────────────────────────────
+// ── Quick backtest cycle (revision check only) ────────────────────────────────
 async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
   const symbol = BT_SYMBOLS[instrument];
   if (!symbol) return;
 
   try {
-    console.log(`[${ts()}] BACKTEST START: ${instrument} (${symbol}, ${BT_BARS} bars)`);
+    console.log(`[${ts()}] BACKTEST START: ${instrument} (${symbol}, up to ${BT_BARS} bars, target ${BT_TARGET_TRADES} trades)`);
 
-    // First: evaluate any pending shadow revision (uses current bars to re-validate)
+    // Evaluate any pending shadow revision first
     const pendingShadow = db.prepare(
       `SELECT id FROM strategy_revisions WHERE instrument=? AND status='shadow' LIMIT 1`
     ).get(instrument);
@@ -203,17 +240,17 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
       const barsForShadow = await fetchAllBars(symbol, '1Min', BT_BARS);
       if (barsForShadow.length >= 100) {
         savePrice(symbol, barsForShadow);
-        const result = evaluateShadow(db, instrument, barsForShadow);
+        const result = evaluateShadow(db, instrument, barsForShadow,
+          { slippage: BT_SLIPPAGE });
         if (result?.promoted) {
           console.log(`[${ts()}] REVISION PROMOTED: ${instrument} ${(result.before*100).toFixed(1)}% → ${(result.after*100).toFixed(1)}%`);
         } else if (result) {
           console.log(`[${ts()}] Shadow discarded for ${instrument}`);
         }
       }
-      return; // One action per cycle: shadow eval or propose, not both
+      return; // one action per cycle
     }
 
-    // Fetch historical bars
     const bars1m = await fetchAllBars(symbol, '1Min', BT_BARS);
     if (bars1m.length < 100) {
       console.log(`[${ts()}] BACKTEST SKIP: insufficient bars (${bars1m.length})`);
@@ -222,24 +259,47 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
 
     savePrice(symbol, bars1m);
 
-    // Backtest with current params
-    const params  = getParams(db, instrument);
-    const { metrics } = runBacktest(bars1m, params, { cooldown: 1 });
+    // Backtest with current params + 250-trade auto-tune + slippage
+    const params = getParams(db, instrument);
+    const result = runBacktest(bars1m, params, {
+      targetTrades: BT_TARGET_TRADES,
+      slippage:     BT_SLIPPAGE,
+      walkForward:  true,
+    });
+    const { metrics } = result;
     metrics.barsScanned = bars1m.length;
 
     const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
+    saveBacktestDetails(db, runId, {
+      byRegime:               metrics.byRegime,
+      byStyle:                metrics.byStyle,
+      bySetup:                metrics.bySetup,
+      walkForwardConsistency: result.walkForward?.consistency ?? null,
+      walkForwardAvgWR:       result.walkForward?.avgWinRate  ?? null,
+      maxWinStreak:           metrics.maxWinStreak,
+      maxLossStreak:          metrics.maxLossStreak,
+      slippageUsed:           result.slippageUsed,
+      cooldownUsed:           result.cooldownUsed,
+      multiObjScore:          multiObjectiveScore(metrics),
+    });
+
     console.log(
-      `[${ts()}] BACKTEST DONE: ${instrument} | trades=${metrics.tradeCount} | ` +
+      `[${ts()}] BACKTEST DONE: ${instrument} | ` +
+      `trades=${metrics.tradeCount} (cd=${result.cooldownUsed}) | ` +
       `win=${(metrics.winRate*100).toFixed(1)}% | sharpe=${metrics.sharpe} | ` +
-      `pf=${metrics.profitFactor} | bars=${bars1m.length} | run#${runId}`
+      `pf=${metrics.profitFactor} | dd=${metrics.maxDrawdown}R | ` +
+      `consistency=${(metrics.regimeConsistency ?? 1).toFixed(2)} | ` +
+      `wf=${result.walkForward?.consistency ?? 'n/a'} | run#${runId}`
     );
 
-    // Propose better params via neighborhood search
-    const best = proposeRevision(db, instrument, bars1m, runId);
+    // Propose better params
+    const best = proposeRevision(db, instrument, bars1m, runId,
+      { cooldown: result.cooldownUsed, slippage: BT_SLIPPAGE });
     if (best) {
       console.log(
-        `[${ts()}] SHADOW CANDIDATE: ${instrument} win_rate ` +
-        `${(metrics.winRate*100).toFixed(1)}% → ${(best.metrics.winRate*100).toFixed(1)}%`
+        `[${ts()}] SHADOW CANDIDATE: ${instrument} ` +
+        `win ${(metrics.winRate*100).toFixed(1)}% → ${(best.metrics.winRate*100).toFixed(1)}% ` +
+        `score=${best.score}`
       );
     }
 
@@ -248,26 +308,66 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
   }
 }
 
+// ── Full optimizer cycle (less frequent, deeper search) ──────────────────────
+async function runOptimizerCycle(instrument) {
+  const symbol = BT_SYMBOLS[instrument];
+  if (!symbol) return;
+
+  try {
+    console.log(`[${ts()}] OPTIMIZER START: ${instrument}`);
+    const bars1m = await fetchAllBars(symbol, '1Min', BT_BARS);
+    if (bars1m.length < 500) return;
+
+    savePrice(symbol, bars1m);
+
+    const report = await runFullOptimizationCycle(db, instrument, bars1m, {
+      targetTrades:  BT_TARGET_TRADES,
+      slippage:      BT_SLIPPAGE,
+    });
+
+    console.log(report.summary);
+    console.log(
+      `[${ts()}] OPTIMIZER DONE: ${instrument} | ` +
+      `live=${(report.liveWinRate*100).toFixed(1)}% | ` +
+      `atTarget=${report.atTarget} | ` +
+      `promoted=${report.globalPromoted} | ` +
+      `wf-consistency=${report.walkForwardConsistency ?? 'n/a'}`
+    );
+
+  } catch (err) {
+    console.error(`[${ts()}] Optimizer error (${instrument}):`, err.message);
+  }
+}
+
 function ts() { return new Date().toISOString(); }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
-console.log('NQ Signal Pro V3 — Scanner + Backtest Engine');
+console.log('NQ Signal Pro V3 — Enhanced Scanner + Backtesting Framework');
 console.log(`Live symbol: ${SYMBOL} | Scan: every ${SCAN_INTERVAL/1000}s | RTH-only: ${RTH_ONLY}`);
-console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Instruments: MNQ, MGC`);
+console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
+console.log(`Optimizer: every ${OPT_INTERVAL_H}h | Instruments: MNQ (scalp/intraday/swing), MGC (scalp)`);
 if (!ALPACA_KEY)  console.warn('WARNING: ALPACA_KEY not set — all market data disabled');
 if (!NTFY_TOPIC)  console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
 
-// Warmup backtest on startup (staggered to avoid hammering Alpaca)
+// Warmup on startup (staggered to avoid rate-limiting)
 if (ALPACA_KEY) {
-  setTimeout(() => runBacktestCycle('MNQ', 'startup'), 5_000);
-  setTimeout(() => runBacktestCycle('MGC', 'startup'), 35_000);
+  setTimeout(() => runBacktestCycle('MNQ', 'startup'),   5_000);
+  setTimeout(() => runBacktestCycle('MGC', 'startup'),  35_000);
+  // Full optimizer runs 2 minutes after startup to let quick backtest complete first
+  setTimeout(() => runOptimizerCycle('MNQ'), 120_000);
+  setTimeout(() => runOptimizerCycle('MGC'), 180_000);
 }
 
 // Live scan
 scan();
 setInterval(scan, SCAN_INTERVAL);
 
-// Backtest cycle (MNQ and MGC staggered by half the interval)
-const BT_MS = BT_INTERVAL_H * 3_600_000;
+// Quick backtest cycles (shadow check + revision proposal)
+const BT_MS  = BT_INTERVAL_H  * 3_600_000;
 setInterval(() => runBacktestCycle('MNQ'), BT_MS);
 setInterval(() => runBacktestCycle('MGC'), BT_MS + BT_MS / 2);
+
+// Full optimizer cycles (less frequent, deeper 50-candidate genetic search)
+const OPT_MS = OPT_INTERVAL_H * 3_600_000;
+setInterval(() => runOptimizerCycle('MNQ'), OPT_MS);
+setInterval(() => runOptimizerCycle('MGC'), OPT_MS + OPT_MS / 3);

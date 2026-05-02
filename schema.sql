@@ -18,6 +18,9 @@ CREATE TABLE IF NOT EXISTS signals (
   win_prob_tp3 INTEGER,
   htf_bias     TEXT,
   session      TEXT,
+  trade_style  TEXT,          -- 'scalp' | 'intraday' | 'swing'
+  instrument   TEXT,          -- 'MNQ' | 'MGC' | 'NQ'
+  rr           REAL,          -- risk:reward ratio
   raw_payload  TEXT,
   received_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -34,25 +37,43 @@ CREATE TABLE IF NOT EXISTS outcomes (
   UNIQUE (signal_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_signals_received  ON signals(received_at DESC);
-CREATE INDEX IF NOT EXISTS idx_signals_direction ON signals(direction);
-CREATE INDEX IF NOT EXISTS idx_signals_grade     ON signals(grade);
+CREATE INDEX IF NOT EXISTS idx_signals_received    ON signals(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_direction   ON signals(direction);
+CREATE INDEX IF NOT EXISTS idx_signals_grade       ON signals(grade);
+CREATE INDEX IF NOT EXISTS idx_signals_trade_style ON signals(trade_style);
+CREATE INDEX IF NOT EXISTS idx_signals_instrument  ON signals(instrument);
 
--- Backtest run history
+-- Backtest run summary
 CREATE TABLE IF NOT EXISTS backtest_runs (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  instrument   TEXT    NOT NULL,
-  run_at       TEXT    NOT NULL DEFAULT (datetime('now')),
-  bars_tested  INTEGER,
-  trades_found INTEGER,
-  win_rate     REAL,
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  instrument    TEXT    NOT NULL,
+  run_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+  bars_tested   INTEGER,
+  trades_found  INTEGER,
+  win_rate      REAL,
   profit_factor REAL,
-  sharpe       REAL,
-  max_drawdown REAL,
-  params_json  TEXT,
-  triggered_by TEXT    DEFAULT 'scheduled'
+  sharpe        REAL,
+  max_drawdown  REAL,
+  params_json   TEXT,
+  triggered_by  TEXT    DEFAULT 'scheduled'
 );
 CREATE INDEX IF NOT EXISTS idx_backtest_runs ON backtest_runs(instrument, run_at DESC);
+
+-- Extended backtest detail (regime/style/setup breakdowns + walk-forward)
+CREATE TABLE IF NOT EXISTS backtest_details (
+  run_id                    INTEGER PRIMARY KEY REFERENCES backtest_runs(id),
+  regime_breakdown          TEXT,   -- JSON: { trending:{winRate,...}, ranging:{...}, ... }
+  style_breakdown           TEXT,   -- JSON: { scalp:{...}, intraday:{...}, swing:{...} }
+  setup_breakdown           TEXT,   -- JSON: { 'OTE PB':{...}, 'STDV REV':{...}, ... }
+  walk_forward_consistency  REAL,   -- 0–1 score from runWalkForward
+  walk_forward_avg_wr       REAL,
+  max_win_streak            INTEGER,
+  max_loss_streak           INTEGER,
+  slippage_used             REAL,
+  cooldown_used             INTEGER,
+  target_trades             INTEGER,
+  multi_obj_score           REAL    -- multiObjectiveScore()
+);
 
 -- Strategy revision log
 CREATE TABLE IF NOT EXISTS strategy_revisions (
@@ -76,6 +97,31 @@ CREATE TABLE IF NOT EXISTS strategy_params (
   updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
   version     INTEGER DEFAULT 1
 );
+
+-- Per-style strategy parameters (one row per instrument+style key)
+CREATE TABLE IF NOT EXISTS style_params (
+  key         TEXT    PRIMARY KEY,   -- e.g. 'MNQ_SCALP', 'MNQ_SWING', 'MGC_SCALP'
+  params_json TEXT    NOT NULL,
+  updated_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  version     INTEGER DEFAULT 1
+);
+
+-- Optimization run history (tracks each 50-candidate search cycle)
+CREATE TABLE IF NOT EXISTS optimization_runs (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  instrument          TEXT    NOT NULL,
+  trade_style         TEXT,
+  run_at              TEXT    NOT NULL DEFAULT (datetime('now')),
+  candidates_tested   INTEGER,
+  best_win_rate       REAL,
+  best_sharpe         REAL,
+  best_consistency    REAL,
+  best_multi_obj      REAL,
+  best_params_json    TEXT,
+  baseline_win_rate   REAL,
+  promoted            INTEGER DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_optim_runs ON optimization_runs(instrument, run_at DESC);
 
 -- Latest market price per symbol (single-row upsert)
 CREATE TABLE IF NOT EXISTS market_snapshots (
