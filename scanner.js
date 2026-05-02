@@ -270,6 +270,24 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
     metrics.barsScanned = bars1m.length;
 
     const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
+
+    // Persist losing/BE trades for the journal (capped at 100 per run to limit growth)
+    const lossTrades = result.signalLog.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').slice(0, 100);
+    if (lossTrades.length > 0) {
+      const insLoss = db.prepare(`
+        INSERT INTO backtest_trades
+          (run_id, instrument, bar_idx, timestamp, direction, setup, trade_style, regime, entry, sl, tp1, outcome, score)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      db.transaction(() => {
+        for (const t of lossTrades) {
+          insLoss.run(runId, instrument, t.bar ?? null, t.timestamp ?? null, t.direction,
+            t.setup ?? null, t.tradeStyle ?? null, t.regime ?? null,
+            t.entry ?? null, t.sl ?? null, t.tp1 ?? null, t.outcome, t.score ?? null);
+        }
+      })();
+    }
+
     saveBacktestDetails(db, runId, {
       byRegime:               metrics.byRegime,
       byStyle:                metrics.byStyle,

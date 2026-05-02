@@ -123,6 +123,27 @@ CREATE TABLE IF NOT EXISTS optimization_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_optim_runs ON optimization_runs(instrument, run_at DESC);
 
+-- Individual trades from backtest runs (LOSS + BE only, for journal)
+CREATE TABLE IF NOT EXISTS backtest_trades (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id      INTEGER NOT NULL REFERENCES backtest_runs(id),
+  instrument  TEXT    NOT NULL,
+  bar_idx     INTEGER,
+  timestamp   TEXT,
+  direction   TEXT,
+  setup       TEXT,
+  trade_style TEXT,
+  regime      TEXT,
+  entry       REAL,
+  sl          REAL,
+  tp1         REAL,
+  outcome     TEXT,    -- LOSS | BE
+  score       INTEGER,
+  note        TEXT,
+  noted_at    TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_bt_trades_run ON backtest_trades(run_id, outcome);
+
 -- Latest market price per symbol (single-row upsert)
 CREATE TABLE IF NOT EXISTS market_snapshots (
   symbol      TEXT    PRIMARY KEY,
