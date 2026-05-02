@@ -3,6 +3,7 @@
 const Database            = require('better-sqlite3');
 const path                = require('path');
 const fs                  = require('fs');
+const WebSocket           = require('ws');
 const { computeSignal }   = require('./signal-engine');
 const { getAdaptiveMinScore, getMarketRegime } = require('./learning');
 const { runBacktest }     = require('./backtest-engine');
@@ -15,18 +16,17 @@ const NTFY_TOPIC     = process.env.NTFY_TOPIC       || '';
 const NTFY_TOKEN     = process.env.NTFY_TOKEN       || '';
 const ALPACA_KEY     = process.env.ALPACA_KEY        || '';
 const ALPACA_SECRET  = process.env.ALPACA_SECRET     || '';
-// Live scanner symbol (NQ E-mini for signals)
 const SYMBOL         = process.env.SCANNER_SYMBOL    || '@NQ.C.0';
-const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL    || '60')  * 1000;
 const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN || '3');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
 const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '16');
+// Intrabar check debounce (ms) — run signal check at most this often on ticks
+const TICK_DEBOUNCE  = parseInt(process.env.TICK_DEBOUNCE_MS || '5000');
 // Backtest symbols per instrument
 const BT_SYMBOLS = {
   MNQ: process.env.SCANNER_BT_MNQ || '@MNQ.C.0',
   MGC: process.env.SCANNER_BT_MGC || '@MGC.C.0',
 };
-// Backtest schedule (hours between cycles)
 const BT_INTERVAL_H  = parseFloat(process.env.BACKTEST_INTERVAL_H  || '4');
 const BT_BARS        = parseInt(process.env.BACKTEST_BARS           || '3000');
 
@@ -85,8 +85,8 @@ function sendNtfy(s) {
     .catch(err => console.error('[ntfy]', err.message));
 }
 
-// ── Market data (Alpaca) ──────────────────────────────────────────────────────
-async function fetchBarsForSymbol(symbol, timeframe, limit) {
+// ── Market data (Alpaca REST — for warmup + backtest) ─────────────────────────
+async function fetchBarsRest(symbol, timeframe, limit) {
   const url = `https://data.alpaca.markets/v1beta1/futures/bars`
     + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
   const res = await fetch(url, {
@@ -102,15 +102,14 @@ async function fetchBarsForSymbol(symbol, timeframe, limit) {
   }));
 }
 
-// Paginated fetch for more historical data (accelerates learning)
 async function fetchAllBars(symbol, timeframe, maxBars) {
   let all = [], pageToken = null;
   while (all.length < maxBars) {
-    const limit  = Math.min(1000, maxBars - all.length);
+    const limit = Math.min(1000, maxBars - all.length);
     let url = `https://data.alpaca.markets/v1beta1/futures/bars`
       + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
     if (pageToken) url += `&page_token=${encodeURIComponent(pageToken)}`;
-    const res  = await fetch(url, { headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET } });
+    const res = await fetch(url, { headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET } });
     if (!res.ok) break;
     const json = await res.json();
     const bars = (json.bars?.[symbol] ?? []).map(b => ({ timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v }));
@@ -121,7 +120,6 @@ async function fetchAllBars(symbol, timeframe, maxBars) {
   return all.slice(-maxBars);
 }
 
-// Save latest price snapshot for a symbol
 function savePrice(symbol, bars) {
   if (!bars || bars.length < 2) return;
   const last  = bars[bars.length - 1];
@@ -132,58 +130,178 @@ function savePrice(symbol, bars) {
   upsertPrice.run(symbol, last.close, first.open, +chg.toFixed(3), high, low);
 }
 
-// ── Cooldown tracking ─────────────────────────────────────────────────────────
-let lastSignalTime = 0;
-let scanCount      = 0;
+// ── Bar buffer ────────────────────────────────────────────────────────────────
+// Keeps a rolling window of 1m and 15m bars fed by WebSocket events.
+const BUFFER_1M  = 200;  // enough for signal engine warmup
+const BUFFER_15M = 80;
 
-// ── Live signal scan ──────────────────────────────────────────────────────────
-async function scan() {
-  scanCount++;
-  try {
-    const [bars1m, bars15m] = await Promise.all([
-      fetchBarsForSymbol(SYMBOL, '1Min',  120),
-      fetchBarsForSymbol(SYMBOL, '15Min',  60),
-    ]);
+const bars1m  = [];   // newest at end
+const bars15m = [];
 
-    if (bars1m.length >= 2) savePrice(SYMBOL, bars1m);
-
-    if (bars1m.length < 60 || bars15m.length < 30) {
-      console.log(`[${ts()}] Waiting for bars (${bars1m.length} 1m, ${bars15m.length} 15m)`);
-      return;
-    }
-
-    const barMs = 60_000;
-    if (Date.now() - lastSignalTime < COOLDOWN * barMs) return;
-
-    const signal = computeSignal(bars1m, bars15m, { rthOnly: RTH_ONLY, minScore: 12 });
-    if (!signal) return;
-
-    const minScore = getAdaptiveMinScore(db, signal.setup, BASE_SCORE);
-    if (signal.score < minScore) {
-      console.log(`[${ts()}] Suppressed ${signal.setup} (score=${signal.score} < adaptive=${minScore})`);
-      return;
-    }
-
-    lastSignalTime = Date.now();
-
-    const info = insertSignal.run({
-      ticker: signal.ticker, timeframe: signal.timeframe, direction: signal.direction,
-      grade: signal.grade, setup: signal.setup, entry: signal.entry, sl: signal.sl,
-      tp1: signal.tp1, tp2: signal.tp2, tp3: signal.tp3, score: signal.score,
-      win_prob_tp1: signal.win_prob_tp1, win_prob_tp2: signal.win_prob_tp2,
-      win_prob_tp3: signal.win_prob_tp3, htf_bias: signal.htf_bias,
-      session: signal.session, raw_payload: JSON.stringify(signal),
-    });
-
-    console.log(
-      `[${ts()}] SIGNAL #${info.lastInsertRowid} | ${signal.direction} ${signal.grade} | ` +
-      `${signal.setup} | score=${signal.score}/${minScore} | entry=${signal.entry} | regime=${getMarketRegime(db)}`
-    );
-    sendNtfy(signal);
-
-  } catch (err) {
-    console.error(`[${ts()}] Scan error:`, err.message);
+function pushBar(arr, bar, maxLen) {
+  // Replace last bar if same timestamp (update), otherwise append
+  if (arr.length > 0 && arr[arr.length - 1].timestamp === bar.timestamp) {
+    arr[arr.length - 1] = bar;
+  } else {
+    arr.push(bar);
+    if (arr.length > maxLen) arr.shift();
   }
+}
+
+// Aggregate 1m bars into synthetic 15m bars after each closed 1m bar
+function rebuild15m() {
+  bars15m.length = 0;
+  for (let i = 0; i < bars1m.length; i++) {
+    const b = bars1m[i];
+    const ts = new Date(b.timestamp);
+    // Align to 15m boundary
+    const mins = ts.getUTCMinutes();
+    const floored = new Date(ts);
+    floored.setUTCMinutes(Math.floor(mins / 15) * 15, 0, 0);
+    const key = floored.toISOString();
+    const last = bars15m[bars15m.length - 1];
+    if (last && last.timestamp === key) {
+      last.high   = Math.max(last.high, b.high);
+      last.low    = Math.min(last.low,  b.low);
+      last.close  = b.close;
+      last.volume += b.volume;
+    } else {
+      bars15m.push({ timestamp: key, open: b.open, high: b.high, low: b.low, close: b.close, volume: b.volume });
+      if (bars15m.length > BUFFER_15M) bars15m.shift();
+    }
+  }
+}
+
+// ── Signal gating ─────────────────────────────────────────────────────────────
+let lastSignalTime  = 0;
+let lastTickCheck   = 0;
+
+function trySignal(source) {
+  if (bars1m.length < 60 || bars15m.length < 10) return;
+
+  const barMs = 60_000;
+  if (Date.now() - lastSignalTime < COOLDOWN * barMs) return;
+
+  const signal = computeSignal(bars1m, bars15m, { rthOnly: RTH_ONLY, minScore: 12 });
+  if (!signal) return;
+
+  const minScore = getAdaptiveMinScore(db, signal.setup, BASE_SCORE);
+  if (signal.score < minScore) {
+    console.log(`[${ts()}][${source}] Suppressed ${signal.setup} (score=${signal.score} < adaptive=${minScore})`);
+    return;
+  }
+
+  lastSignalTime = Date.now();
+
+  const info = insertSignal.run({
+    ticker: signal.ticker, timeframe: signal.timeframe, direction: signal.direction,
+    grade: signal.grade, setup: signal.setup, entry: signal.entry, sl: signal.sl,
+    tp1: signal.tp1, tp2: signal.tp2, tp3: signal.tp3, score: signal.score,
+    win_prob_tp1: signal.win_prob_tp1, win_prob_tp2: signal.win_prob_tp2,
+    win_prob_tp3: signal.win_prob_tp3, htf_bias: signal.htf_bias,
+    session: signal.session, raw_payload: JSON.stringify(signal),
+  });
+
+  console.log(
+    `[${ts()}][${source}] SIGNAL #${info.lastInsertRowid} | ${signal.direction} ${signal.grade} | ` +
+    `${signal.setup} | score=${signal.score}/${minScore} | entry=${signal.entry} | regime=${getMarketRegime(db)}`
+  );
+  sendNtfy(signal);
+}
+
+// ── Alpaca WebSocket streaming ────────────────────────────────────────────────
+const WS_URL = 'wss://stream.data.alpaca.markets/v1beta1/futures';
+let ws = null;
+let reconnectDelay = 2000;
+let connected = false;
+
+async function warmupBars() {
+  try {
+    console.log(`[${ts()}] Fetching warmup bars from REST…`);
+    const warmup1m  = await fetchBarsRest(SYMBOL, '1Min',  BUFFER_1M);
+    const warmup15m = await fetchBarsRest(SYMBOL, '15Min', BUFFER_15M);
+    for (const b of warmup1m)  pushBar(bars1m,  b, BUFFER_1M);
+    for (const b of warmup15m) pushBar(bars15m, b, BUFFER_15M);
+    if (warmup1m.length) savePrice(SYMBOL, warmup1m);
+    console.log(`[${ts()}] Warmup: ${bars1m.length} 1m bars, ${bars15m.length} 15m bars loaded`);
+  } catch (err) {
+    console.error(`[${ts()}] Warmup error:`, err.message);
+  }
+}
+
+function connectWS() {
+  if (!ALPACA_KEY) {
+    console.warn(`[${ts()}] ALPACA_KEY not set — WebSocket disabled`);
+    return;
+  }
+
+  ws = new WebSocket(WS_URL);
+
+  ws.on('open', () => {
+    console.log(`[${ts()}] WS connected`);
+    reconnectDelay = 2000;
+    ws.send(JSON.stringify({ action: 'auth', key: ALPACA_KEY, secret: ALPACA_SECRET }));
+  });
+
+  ws.on('message', raw => {
+    let msgs;
+    try { msgs = JSON.parse(raw); } catch { return; }
+    if (!Array.isArray(msgs)) msgs = [msgs];
+
+    for (const msg of msgs) {
+      if (msg.T === 'success' && msg.msg === 'authenticated') {
+        console.log(`[${ts()}] WS authenticated — subscribing to ${SYMBOL}`);
+        ws.send(JSON.stringify({
+          action: 'subscribe',
+          bars:        [SYMBOL],
+          updatedBars: [SYMBOL],
+        }));
+        connected = true;
+      }
+
+      if (msg.T === 'error') {
+        console.error(`[${ts()}] WS error msg [${msg.code}]: ${msg.msg}`);
+      }
+
+      // Closed 1m bar — run signal check immediately
+      if (msg.T === 'b' && msg.S === SYMBOL) {
+        const bar = { timestamp: msg.t, open: msg.o, high: msg.h, low: msg.l, close: msg.c, volume: msg.v };
+        pushBar(bars1m, bar, BUFFER_1M);
+        rebuild15m();
+        // Update price snapshot
+        if (bars1m.length >= 2) savePrice(SYMBOL, bars1m);
+        trySignal('bar');
+      }
+
+      // Intrabar tick update — debounced signal check
+      if (msg.T === 'u' && msg.S === SYMBOL) {
+        const bar = { timestamp: msg.t, open: msg.o, high: msg.h, low: msg.l, close: msg.c, volume: msg.v };
+        pushBar(bars1m, bar, BUFFER_1M);
+        rebuild15m();
+        // Update price snapshot on every tick so market prices API stays fresh
+        if (bars1m.length >= 2) savePrice(SYMBOL, bars1m);
+        const now = Date.now();
+        if (now - lastTickCheck >= TICK_DEBOUNCE) {
+          lastTickCheck = now;
+          trySignal('tick');
+        }
+      }
+    }
+  });
+
+  ws.on('close', (code, reason) => {
+    connected = false;
+    console.warn(`[${ts()}] WS closed (${code}): ${reason} — reconnecting in ${reconnectDelay / 1000}s`);
+    setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 2, 60_000);
+      connectWS();
+    }, reconnectDelay);
+  });
+
+  ws.on('error', err => {
+    console.error(`[${ts()}] WS error:`, err.message);
+    // close event will fire next and trigger reconnect
+  });
 }
 
 // ── Backtest cycle ────────────────────────────────────────────────────────────
@@ -194,7 +312,6 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
   try {
     console.log(`[${ts()}] BACKTEST START: ${instrument} (${symbol}, ${BT_BARS} bars)`);
 
-    // First: evaluate any pending shadow revision (uses current bars to re-validate)
     const pendingShadow = db.prepare(
       `SELECT id FROM strategy_revisions WHERE instrument=? AND status='shadow' LIMIT 1`
     ).get(instrument);
@@ -210,32 +327,29 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
           console.log(`[${ts()}] Shadow discarded for ${instrument}`);
         }
       }
-      return; // One action per cycle: shadow eval or propose, not both
-    }
-
-    // Fetch historical bars
-    const bars1m = await fetchAllBars(symbol, '1Min', BT_BARS);
-    if (bars1m.length < 100) {
-      console.log(`[${ts()}] BACKTEST SKIP: insufficient bars (${bars1m.length})`);
       return;
     }
 
-    savePrice(symbol, bars1m);
+    const bars1mBT = await fetchAllBars(symbol, '1Min', BT_BARS);
+    if (bars1mBT.length < 100) {
+      console.log(`[${ts()}] BACKTEST SKIP: insufficient bars (${bars1mBT.length})`);
+      return;
+    }
 
-    // Backtest with current params
+    savePrice(symbol, bars1mBT);
+
     const params  = getParams(db, instrument);
-    const { metrics } = runBacktest(bars1m, params, { cooldown: 1 });
-    metrics.barsScanned = bars1m.length;
+    const { metrics } = runBacktest(bars1mBT, params, { cooldown: 1 });
+    metrics.barsScanned = bars1mBT.length;
 
     const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
     console.log(
       `[${ts()}] BACKTEST DONE: ${instrument} | trades=${metrics.tradeCount} | ` +
       `win=${(metrics.winRate*100).toFixed(1)}% | sharpe=${metrics.sharpe} | ` +
-      `pf=${metrics.profitFactor} | bars=${bars1m.length} | run#${runId}`
+      `pf=${metrics.profitFactor} | bars=${bars1mBT.length} | run#${runId}`
     );
 
-    // Propose better params via neighborhood search
-    const best = proposeRevision(db, instrument, bars1m, runId);
+    const best = proposeRevision(db, instrument, bars1mBT, runId);
     if (best) {
       console.log(
         `[${ts()}] SHADOW CANDIDATE: ${instrument} win_rate ` +
@@ -252,20 +366,24 @@ function ts() { return new Date().toISOString(); }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 console.log('NQ Signal Pro V3 — Scanner + Backtest Engine');
-console.log(`Live symbol: ${SYMBOL} | Scan: every ${SCAN_INTERVAL/1000}s | RTH-only: ${RTH_ONLY}`);
+console.log(`Live symbol: ${SYMBOL} | Mode: WebSocket streaming | RTH-only: ${RTH_ONLY}`);
+console.log(`Tick debounce: ${TICK_DEBOUNCE}ms | Signal cooldown: ${COOLDOWN} bars`);
 console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Instruments: MNQ, MGC`);
 if (!ALPACA_KEY)  console.warn('WARNING: ALPACA_KEY not set — all market data disabled');
 if (!NTFY_TOPIC)  console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
 
-// Warmup backtest on startup (staggered to avoid hammering Alpaca)
+// Load historical bars first, then open WebSocket
 if (ALPACA_KEY) {
-  setTimeout(() => runBacktestCycle('MNQ', 'startup'), 5_000);
-  setTimeout(() => runBacktestCycle('MGC', 'startup'), 35_000);
-}
+  warmupBars().then(() => {
+    connectWS();
+    // Initial signal check once warmup completes
+    trySignal('startup');
+  });
 
-// Live scan
-scan();
-setInterval(scan, SCAN_INTERVAL);
+  // Warmup backtest on startup (staggered to avoid hammering Alpaca)
+  setTimeout(() => runBacktestCycle('MNQ', 'startup'), 10_000);
+  setTimeout(() => runBacktestCycle('MGC', 'startup'), 40_000);
+}
 
 // Backtest cycle (MNQ and MGC staggered by half the interval)
 const BT_MS = BT_INTERVAL_H * 3_600_000;
