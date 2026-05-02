@@ -58,6 +58,19 @@ const upsertPrice = db.prepare(`
 `);
 
 // ── ntfy ──────────────────────────────────────────────────────────────────────
+function sendNtfySystem(title, body, priority = 'default') {
+  if (!NTFY_TOPIC) return;
+  const headers = {
+    'Content-Type': 'text/plain',
+    'Title':    title,
+    'Priority': priority,
+    'Tags':     'warning',
+  };
+  if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
+  fetch(`${NTFY_URL}/${NTFY_TOPIC}`, { method: 'POST', headers, body })
+    .catch(err => console.error('[ntfy]', err.message));
+}
+
 function sendNtfy(s) {
   if (!NTFY_TOPIC) return;
   const arrow    = s.direction === 'LONG' ? '▲' : '▼';
@@ -172,15 +185,83 @@ function rebuild15m() {
   }
 }
 
-// ── Signal gating ─────────────────────────────────────────────────────────────
-let lastSignalTime  = 0;
-let lastTickCheck   = 0;
+// ── Risk controls ─────────────────────────────────────────────────────────────
+const DAILY_SIGNAL_LIMIT = 10;
+const LOSS_PAUSE_MS      = 30 * 60_000;  // 30 minutes
+
+let lastSignalTime      = 0;
+let lastTickCheck       = 0;
+let pauseUntil          = 0;    // suppress signals until this timestamp
+let lastPausedOutcomeId = 0;    // prevents re-triggering pause on same loss pair
+let dailyHaltDate       = '';   // 'YYYY-MM-DD' when daily limit was hit
+
+const qConsecutiveLosses = db.prepare(`
+  SELECT o.signal_id, o.result
+  FROM   outcomes o
+  JOIN   signals  s ON s.id = o.signal_id
+  ORDER  BY s.received_at DESC
+  LIMIT  2
+`);
+
+const qTodaySignals = db.prepare(`
+  SELECT COUNT(*) AS n FROM signals
+  WHERE  received_at >= date('now')
+`);
+
+function checkConsecutiveLosses() {
+  const rows = qConsecutiveLosses.all();
+  if (rows.length < 2) return 0;
+  return (rows[0].result === 'LOSS' && rows[1].result === 'LOSS')
+    ? rows[0].signal_id
+    : 0;
+}
 
 function trySignal(source) {
   if (bars1m.length < 60 || bars15m.length < 10) return;
 
-  const barMs = 60_000;
-  if (Date.now() - lastSignalTime < COOLDOWN * barMs) return;
+  const now = Date.now();
+
+  // ── Daily trade limit ──────────────────────────────────────────────────────
+  const today = new Date().toISOString().slice(0, 10);
+  if (qTodaySignals.get().n >= DAILY_SIGNAL_LIMIT) {
+    if (dailyHaltDate !== today) {
+      dailyHaltDate = today;
+      console.log(`[${ts()}] Daily limit (${DAILY_SIGNAL_LIMIT} signals) reached — halted for today`);
+      sendNtfySystem(
+        '🛑 Daily Limit Reached',
+        `${DAILY_SIGNAL_LIMIT} signals fired today.\nNo more signals until tomorrow (UTC midnight).`,
+        'high'
+      );
+    }
+    return;
+  }
+  if (dailyHaltDate === today) dailyHaltDate = ''; // new day, reset
+
+  // ── Consecutive-loss break ─────────────────────────────────────────────────
+  if (now < pauseUntil) {
+    if (source === 'bar') {
+      const remaining = Math.ceil((pauseUntil - now) / 60_000);
+      console.log(`[${ts()}] Paused after 2 losses — ${remaining}min remaining`);
+    }
+    return;
+  }
+  if (pauseUntil > 0) pauseUntil = 0; // break just ended
+
+  const lossId = checkConsecutiveLosses();
+  if (lossId && lossId !== lastPausedOutcomeId) {
+    lastPausedOutcomeId = lossId;
+    pauseUntil = now + LOSS_PAUSE_MS;
+    console.log(`[${ts()}] 2 consecutive losses — pausing signals for 30 minutes`);
+    sendNtfySystem(
+      '⏸ 30-Min Signal Pause',
+      '2 consecutive losses detected.\nPausing for 30 minutes to self-assess.\nSignals resume automatically.',
+      'high'
+    );
+    return;
+  }
+
+  // ── Bar cooldown ───────────────────────────────────────────────────────────
+  if (now - lastSignalTime < COOLDOWN * 60_000) return;
 
   const signal = computeSignal(bars1m, bars15m, { rthOnly: RTH_ONLY, minScore: 12 });
   if (!signal) return;
@@ -191,7 +272,7 @@ function trySignal(source) {
     return;
   }
 
-  lastSignalTime = Date.now();
+  lastSignalTime = now;
 
   const info = insertSignal.run({
     ticker: signal.ticker, timeframe: signal.timeframe, direction: signal.direction,
@@ -202,11 +283,22 @@ function trySignal(source) {
     session: signal.session, raw_payload: JSON.stringify(signal),
   });
 
+  const dayCount = qTodaySignals.get().n;
   console.log(
     `[${ts()}][${source}] SIGNAL #${info.lastInsertRowid} | ${signal.direction} ${signal.grade} | ` +
-    `${signal.setup} | score=${signal.score}/${minScore} | entry=${signal.entry} | regime=${getMarketRegime(db)}`
+    `${signal.setup} | score=${signal.score}/${minScore} | entry=${signal.entry} | ` +
+    `today=${dayCount}/${DAILY_SIGNAL_LIMIT} | regime=${getMarketRegime(db)}`
   );
   sendNtfy(signal);
+
+  // Notify when approaching daily limit
+  if (dayCount >= DAILY_SIGNAL_LIMIT - 1) {
+    sendNtfySystem(
+      '⚠️ Last Signal Today',
+      `Signal #${dayCount} of ${DAILY_SIGNAL_LIMIT} fired. Daily limit reached — halting until tomorrow.`,
+      'default'
+    );
+  }
 }
 
 // ── Alpaca WebSocket streaming ────────────────────────────────────────────────
