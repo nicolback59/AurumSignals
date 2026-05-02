@@ -7,6 +7,9 @@ const fs       = require('fs');
 const PORT           = process.env.PORT           || 3000;
 const DB_PATH        = process.env.DB_PATH        || path.join(__dirname, 'signals.db');
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
+const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
+const NTFY_TOPIC     = process.env.NTFY_TOPIC || '';
+const NTFY_TOKEN     = process.env.NTFY_TOKEN || '';
 
 const app = express();
 app.use(express.json({ limit: '64kb' }));
@@ -37,6 +40,38 @@ const upsertOutcome = db.prepare(`
     pnl_usd    = excluded.pnl_usd,
     notes      = excluded.notes
 `);
+
+// ── NTFY ─────────────────────────────────────────────────────────────────────
+function sendNtfy(s) {
+  if (!NTFY_TOPIC) return;
+
+  const arrow    = s.direction === 'LONG' ? '▲' : '▼';
+  const priority = s.grade === 'A+' ? 'urgent' : 'high';
+  const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
+
+  const body = [
+    s.setup             ? `Setup:   ${s.setup}`            : null,
+    s.entry   != null   ? `Entry:   ${s.entry}`            : null,
+    s.sl      != null   ? `SL:      ${s.sl}`               : null,
+    s.tp1     != null   ? `TP1:     ${s.tp1}`              : null,
+    s.tp2     != null   ? `TP2:     ${s.tp2}`              : null,
+    s.tp3     != null   ? `TP3:     ${s.tp3}`              : null,
+    s.score   != null   ? `Score:   ${s.score}`            : null,
+    s.win_prob_tp1 != null ? `Win%:  ${s.win_prob_tp1}%`   : null,
+    s.session           ? `Session: ${s.session}`          : null,
+  ].filter(Boolean).join('\n');
+
+  const headers = {
+    'Content-Type': 'text/plain',
+    'Title':    `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker}`,
+    'Priority': priority,
+    'Tags':     tags,
+  };
+  if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
+
+  fetch(`${NTFY_URL}/${NTFY_TOPIC}`, { method: 'POST', headers, body })
+    .catch(err => console.error('[ntfy] send failed:', err.message));
+}
 
 // ── WEBHOOK ──────────────────────────────────────────────────────────────────
 app.post('/webhook', (req, res) => {
@@ -83,6 +118,14 @@ app.post('/webhook', (req, res) => {
     });
     console.log(`[${new Date().toISOString()}] ${direction} ${grade} | setup=${b.setup||'?'} | score=${b.score||'?'} | id=${info.lastInsertRowid}`);
     res.json({ ok: true, id: info.lastInsertRowid });
+    sendNtfy({
+      ticker: b.ticker || 'NQ1!', direction, grade,
+      setup: b.setup || null,
+      entry: num(b.entry), sl: num(b.sl),
+      tp1: num(b.tp1), tp2: num(b.tp2), tp3: num(b.tp3),
+      score: num(b.score), win_prob_tp1: num(b.win_prob_tp1),
+      session: b.session || null,
+    });
   } catch (err) {
     console.error('DB insert error:', err.message);
     res.status(500).json({ error: 'Database error' });

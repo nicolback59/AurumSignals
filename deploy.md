@@ -34,11 +34,14 @@ git push -u origin claude/trading-signal-dashboard-TNxVH
 
 Railway dashboard → your service → **Variables**:
 
-| Variable         | Value                        | Notes                              |
-|------------------|------------------------------|------------------------------------|
-| `PORT`           | *(leave blank)*              | Railway injects this automatically |
-| `DB_PATH`        | `/data/signals.db`           | Points into the persistent volume  |
-| `WEBHOOK_SECRET` | `your-random-32-char-string` | Must match TradingView header      |
+| Variable         | Value                        | Notes                                        |
+|------------------|------------------------------|----------------------------------------------|
+| `PORT`           | *(leave blank)*              | Railway injects this automatically           |
+| `DB_PATH`        | `/data/signals.db`           | Points into the persistent volume            |
+| `WEBHOOK_SECRET` | `your-random-32-char-string` | Must match TradingView header                |
+| `NTFY_TOPIC`     | `your-ntfy-topic-name`       | Required to enable ntfy push notifications   |
+| `NTFY_TOKEN`     | `tk_xxxx...`                 | Only needed for private/access-token topics  |
+| `NTFY_URL`       | `https://ntfy.sh`            | Override if self-hosting ntfy                |
 
 Generate a secret:
 ```bash
@@ -102,6 +105,9 @@ npm install
 export PORT=3000
 export DB_PATH=/home/user/nq-signals.db
 export WEBHOOK_SECRET=your-secret-here
+export NTFY_TOPIC=your-ntfy-topic-name   # enables push notifications
+# export NTFY_TOKEN=tk_xxxx...           # only for private topics
+# export NTFY_URL=https://ntfy.sh        # override if self-hosting
 
 # Run with PM2
 npm install -g pm2
@@ -129,6 +135,65 @@ server {
 ```bash
 sudo certbot --nginx -d yourdomain.com
 ```
+
+---
+
+## ntfy Push Notifications
+
+Every incoming signal fires a push notification to your phone or desktop via [ntfy](https://ntfy.sh).
+
+### Setup (2 minutes)
+
+1. Install the **ntfy** app on iOS or Android (free, open source)
+2. Choose a topic name — something unique like `nq-signals-abc123`
+3. Subscribe to that topic in the app
+4. Set the `NTFY_TOPIC` environment variable on your server to the same name
+
+### Notification format
+
+Each alert shows:
+
+```
+▲ LONG A+  •  NQ1!
+Setup:   OTE+STDV
+Entry:   21050.25
+SL:      21025.25
+TP1:     21075.25
+TP2:     21100.25
+TP3:     21125.25
+Score:   28
+Win%:    74%
+Session: NY Open ★
+```
+
+- A+ signals arrive as **urgent** (max priority — bypasses Do Not Disturb)
+- A signals arrive as **high** priority
+- Green circle + chart emoji for LONG, red for SHORT
+
+### Private topics (optional)
+
+Public topics on ntfy.sh are readable by anyone who knows the name.
+For privacy, either:
+- Use a long random topic name (hard to guess), or
+- Create a free ntfy.sh account, set the topic to **access-token protected**,
+  and set `NTFY_TOKEN=tk_xxxx...` in your env vars
+
+### Self-hosted ntfy
+
+Set `NTFY_URL=https://ntfy.yourdomain.com` to use your own ntfy server.
+
+### Test the notification
+
+```bash
+curl -X POST https://<your-domain>/webhook \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: your-secret" \
+  -d '{"signal":"LONG","grade":"A+","setup":"OTE+STDV","ticker":"NQ1!",
+       "entry":21050.25,"sl":21025.25,"tp1":21075.25,"tp2":21100.25,"tp3":21125.25,
+       "score":28,"win_prob_tp1":74,"session":"NY Open ★"}'
+```
+
+Your phone should buzz within a second.
 
 ---
 
