@@ -3,8 +3,8 @@ const express  = require('express');
 const Database = require('better-sqlite3');
 const path     = require('path');
 const fs       = require('fs');
-const { getLearningStats } = require('./learning');
-const { getParams }        = require('./strategy-params');
+const { getLearningStats, getBacktestTrends } = require('./learning');
+const { getParams }                           = require('./strategy-params');
 
 const PORT           = process.env.PORT           || 3000;
 const DB_PATH        = process.env.DB_PATH        || path.join(__dirname, 'signals.db');
@@ -22,13 +22,27 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.exec(schema);
 
+// Additive migrations for existing databases
+const migrations = [
+  `ALTER TABLE signals ADD COLUMN instrument TEXT DEFAULT 'MNQ'`,
+  `ALTER TABLE signals ADD COLUMN trade_style TEXT DEFAULT 'scalp'`,
+  `ALTER TABLE backtest_runs ADD COLUMN is_win_rate REAL`,
+  `ALTER TABLE backtest_runs ADD COLUMN oos_win_rate REAL`,
+  `ALTER TABLE backtest_runs ADD COLUMN fitness REAL`,
+];
+for (const sql of migrations) {
+  try { db.exec(sql); } catch { /* column already exists */ }
+}
+
 const insertSignal = db.prepare(`
   INSERT INTO signals
-    (ticker, timeframe, direction, grade, setup, entry, sl, tp1, tp2, tp3,
-     score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session, raw_payload)
+    (ticker, instrument, timeframe, direction, grade, setup, trade_style,
+     entry, sl, tp1, tp2, tp3, score,
+     win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session, raw_payload)
   VALUES
-    (@ticker, @timeframe, @direction, @grade, @setup, @entry, @sl, @tp1, @tp2, @tp3,
-     @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session, @raw_payload)
+    (@ticker, @instrument, @timeframe, @direction, @grade, @setup, @trade_style,
+     @entry, @sl, @tp1, @tp2, @tp3, @score,
+     @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session, @raw_payload)
 `);
 
 const upsertOutcome = db.prepare(`
@@ -100,11 +114,13 @@ app.post('/webhook', (req, res) => {
 
   try {
     const info = insertSignal.run({
-      ticker:       b.ticker    || 'NQ1!',
-      timeframe:    b.timeframe || b.interval || null,
+      ticker:       b.ticker      || 'MNQ1!',
+      instrument:   b.instrument  || (b.ticker?.includes('GC') ? 'MGC' : 'MNQ'),
+      timeframe:    b.timeframe   || b.interval || null,
       direction,
       grade,
-      setup:        b.setup     || null,
+      setup:        b.setup       || null,
+      trade_style:  b.tradeStyle  || b.trade_style || 'scalp',
       entry:        num(b.entry),
       sl:           num(b.sl),
       tp1:          num(b.tp1),
@@ -114,8 +130,8 @@ app.post('/webhook', (req, res) => {
       win_prob_tp1: num(b.win_prob_tp1),
       win_prob_tp2: num(b.win_prob_tp2),
       win_prob_tp3: num(b.win_prob_tp3),
-      htf_bias:     b.htf_bias || null,
-      session:      b.session  || null,
+      htf_bias:     b.htf_bias   || null,
+      session:      b.session    || null,
       raw_payload:  raw,
     });
     console.log(`[${new Date().toISOString()}] ${direction} ${grade} | setup=${b.setup||'?'} | score=${b.score||'?'} | id=${info.lastInsertRowid}`);
@@ -208,12 +224,20 @@ app.get('/api/backtest/summary', (req, res) => {
            MAX(run_at)                                          AS last_run_at,
            ROUND(AVG(win_rate)*100, 1)                          AS avg_win_pct,
            ROUND(MAX(win_rate)*100, 1)                          AS best_win_pct,
+           ROUND(AVG(oos_win_rate)*100, 1)                      AS avg_oos_pct,
+           ROUND(MAX(oos_win_rate)*100, 1)                      AS best_oos_pct,
+           ROUND(AVG(fitness), 3)                               AS avg_fitness,
            SUM(trades_found)                                    AS total_trades_tested,
            (SELECT COUNT(*) FROM strategy_revisions r WHERE r.instrument=b.instrument AND r.status='active') AS revisions_active
     FROM backtest_runs b
     GROUP BY instrument
   `).all();
   res.json(summary);
+});
+
+app.get('/api/backtest/trends', (req, res) => {
+  try { res.json(getBacktestTrends(db)); }
+  catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── STRATEGY PARAMS ───────────────────────────────────────────────────────────

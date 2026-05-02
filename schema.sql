@@ -1,12 +1,15 @@
 -- NQ Signal Pro V3 — SQLite schema
+-- Safe to re-run: all CREATE statements use IF NOT EXISTS
 
 CREATE TABLE IF NOT EXISTS signals (
   id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  ticker       TEXT    NOT NULL DEFAULT 'NQ1!',
+  ticker       TEXT    NOT NULL DEFAULT 'MNQ1!',
+  instrument   TEXT    NOT NULL DEFAULT 'MNQ',
   timeframe    TEXT,
   direction    TEXT    NOT NULL CHECK(direction IN ('LONG','SHORT')),
   grade        TEXT             CHECK(grade IN ('A+','A','BE')),
   setup        TEXT,
+  trade_style  TEXT    DEFAULT 'scalp',
   entry        REAL,
   sl           REAL,
   tp1          REAL,
@@ -34,23 +37,28 @@ CREATE TABLE IF NOT EXISTS outcomes (
   UNIQUE (signal_id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_signals_received  ON signals(received_at DESC);
-CREATE INDEX IF NOT EXISTS idx_signals_direction ON signals(direction);
-CREATE INDEX IF NOT EXISTS idx_signals_grade     ON signals(grade);
+CREATE INDEX IF NOT EXISTS idx_signals_received   ON signals(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_signals_direction  ON signals(direction);
+CREATE INDEX IF NOT EXISTS idx_signals_grade      ON signals(grade);
+CREATE INDEX IF NOT EXISTS idx_signals_instrument ON signals(instrument);
+CREATE INDEX IF NOT EXISTS idx_signals_style      ON signals(trade_style);
 
 -- Backtest run history
 CREATE TABLE IF NOT EXISTS backtest_runs (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  instrument   TEXT    NOT NULL,
-  run_at       TEXT    NOT NULL DEFAULT (datetime('now')),
-  bars_tested  INTEGER,
-  trades_found INTEGER,
-  win_rate     REAL,
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  instrument    TEXT    NOT NULL,
+  run_at        TEXT    NOT NULL DEFAULT (datetime('now')),
+  bars_tested   INTEGER,
+  trades_found  INTEGER,
+  win_rate      REAL,
   profit_factor REAL,
-  sharpe       REAL,
-  max_drawdown REAL,
-  params_json  TEXT,
-  triggered_by TEXT    DEFAULT 'scheduled'
+  sharpe        REAL,
+  max_drawdown  REAL,
+  is_win_rate   REAL,    -- in-sample (first 70%) win rate
+  oos_win_rate  REAL,    -- out-of-sample (last 30%) win rate
+  fitness       REAL,    -- composite fitness score (0–1)
+  params_json   TEXT,
+  triggered_by  TEXT    DEFAULT 'scheduled'
 );
 CREATE INDEX IF NOT EXISTS idx_backtest_runs ON backtest_runs(instrument, run_at DESC);
 

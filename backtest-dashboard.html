@@ -271,10 +271,10 @@
       <div style="overflow-x:auto">
         <table class="tbl">
           <thead><tr>
-            <th>#</th><th>Instrument</th><th>Run At</th><th>Bars</th>
-            <th>Trades</th><th>Win %</th><th>Sharpe</th><th>P/F</th><th>By</th>
+            <th>#</th><th>Inst</th><th>Run At</th><th>Bars</th>
+            <th>Trades</th><th>IS Win%</th><th>OOS Win%</th><th>Fitness</th><th>Sharpe</th><th>By</th>
           </tr></thead>
-          <tbody id="runsBody"><tr><td colspan="9" class="empty">No backtest runs yet — scanner will run first backtest on startup</td></tr></tbody>
+          <tbody id="runsBody"><tr><td colspan="10" class="empty">No backtest runs yet — scanner will run first backtest on startup</td></tr></tbody>
         </table>
       </div>
     </div>
@@ -343,16 +343,35 @@ function buildWinRateChart(inst) {
   const mgcRuns = allRuns.filter(r => r.instrument === 'MGC').slice(-40).reverse();
 
   const datasets = [];
-  if (inst === 'MNQ' || inst === 'ALL') datasets.push({
-    label: 'MNQ Win %', borderColor: '#40c4ff', backgroundColor: 'rgba(64,196,255,.08)',
-    pointRadius: 3, pointHoverRadius: 5, tension: 0.3, fill: true,
-    data: mnqRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
-  });
-  if (inst === 'MGC' || inst === 'ALL') datasets.push({
-    label: 'MGC Win %', borderColor: '#ffd700', backgroundColor: 'rgba(255,215,0,.06)',
-    pointRadius: 3, pointHoverRadius: 5, tension: 0.3,
-    data: mgcRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
-  });
+  if (inst === 'MNQ' || inst === 'ALL') {
+    datasets.push({
+      label: 'MNQ IS %', borderColor: '#40c4ff', backgroundColor: 'rgba(64,196,255,.06)',
+      pointRadius: 2, tension: 0.3, fill: true,
+      data: mnqRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +((r.is_win_rate ?? r.win_rate)*100).toFixed(1) })),
+    });
+    // OOS line (dashed) — only when data available
+    if (mnqRuns.some(r => r.oos_win_rate != null)) {
+      datasets.push({
+        label: 'MNQ OOS %', borderColor: '#40c4ff', borderDash: [4,3],
+        pointRadius: 2, tension: 0.3, fill: false,
+        data: mnqRuns.filter(r => r.oos_win_rate != null).map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.oos_win_rate*100).toFixed(1) })),
+      });
+    }
+  }
+  if (inst === 'MGC' || inst === 'ALL') {
+    datasets.push({
+      label: 'MGC IS %', borderColor: '#ffd700', backgroundColor: 'rgba(255,215,0,.05)',
+      pointRadius: 2, tension: 0.3,
+      data: mgcRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +((r.is_win_rate ?? r.win_rate)*100).toFixed(1) })),
+    });
+    if (mgcRuns.some(r => r.oos_win_rate != null)) {
+      datasets.push({
+        label: 'MGC OOS %', borderColor: '#ffd700', borderDash: [4,3],
+        pointRadius: 2, tension: 0.3, fill: false,
+        data: mgcRuns.filter(r => r.oos_win_rate != null).map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.oos_win_rate*100).toFixed(1) })),
+      });
+    }
+  }
 
   winRateChart = new Chart(ctx, {
     type: 'line',
@@ -363,7 +382,11 @@ function buildWinRateChart(inst) {
       plugins: {
         ...CHART_OPTS.plugins,
         annotation: { annotations: {
-          target: { type:'line', yMin:50, yMax:50, borderColor:'rgba(0,200,150,.25)', borderWidth:1, borderDash:[4,4] }
+          // 75% target line (solid)
+          target75: { type:'line', yMin:75, yMax:75, borderColor:'rgba(0,200,150,.45)', borderWidth:1.5, borderDash:[2,3],
+                      label: { content:'75% target', display:true, color:'rgba(0,200,150,.6)', font:{size:9}, position:'end' } },
+          // 50% warning line
+          target50: { type:'line', yMin:50, yMax:50, borderColor:'rgba(255,82,82,.2)', borderWidth:1, borderDash:[4,4] },
         }}
       },
       scales: {
@@ -400,8 +423,15 @@ function updateStatBar(summary, learning) {
   const mnq = summary.find(s => s.instrument === 'MNQ');
   const mgc = summary.find(s => s.instrument === 'MGC');
 
-  document.getElementById('statMnqWr').textContent  = mnq ? mnq.avg_win_pct + '%' : '—';
-  document.getElementById('statMgcWr').textContent  = mgc ? mgc.avg_win_pct + '%' : '—';
+  // Show OOS win rate when available, fall back to overall average
+  const mnqWr = mnq ? (mnq.avg_oos_pct != null ? mnq.avg_oos_pct : mnq.avg_win_pct) : null;
+  const mgcWr = mgc ? (mgc.avg_oos_pct != null ? mgc.avg_oos_pct : mgc.avg_win_pct) : null;
+  const mnqEl = document.getElementById('statMnqWr');
+  const mgcEl = document.getElementById('statMgcWr');
+  mnqEl.textContent = mnqWr != null ? mnqWr + '%' : '—';
+  mgcEl.textContent = mgcWr != null ? mgcWr + '%' : '—';
+  mnqEl.className = 'sc-val mnq' + (mnqWr >= 65 ? ' ok' : mnqWr >= 50 ? '' : mnqWr != null ? ' warn' : '');
+  mgcEl.className = 'sc-val mgc' + (mgcWr >= 65 ? ' ok' : mgcWr >= 50 ? '' : mgcWr != null ? ' warn' : '');
 
   const allLast = [...summary].sort((a,b) => new Date(b.last_run_at)-new Date(a.last_run_at))[0];
   if (allLast) {
@@ -412,8 +442,12 @@ function updateStatBar(summary, learning) {
   document.getElementById('statRuns').textContent   = summary.reduce((s,r) => s + r.total_runs, 0);
   document.getElementById('statTrades').textContent = summary.reduce((s,r) => s + (r.total_trades_tested||0), 0).toLocaleString();
   document.getElementById('statRevs').textContent   = summary.reduce((s,r) => s + (r.revisions_active||0), 0);
-  const regime = learning?.regime ?? '—';
-  const regEl  = document.getElementById('statRegime');
+
+  // Blend live regime with backtest regime
+  const liveRegime = learning?.regime ?? 'unknown';
+  const btRegime   = learning?.btRegime ?? null;
+  const regime     = liveRegime !== 'unknown' ? liveRegime : (btRegime ?? '—');
+  const regEl      = document.getElementById('statRegime');
   regEl.textContent = regime;
   regEl.className   = 'sc-val ' + (regime === 'trending' ? 'ok' : regime === 'choppy' ? 'warn' : '');
 }
@@ -467,22 +501,30 @@ function showParams(inst) {
 function renderRunsTable() {
   const tbody = document.getElementById('runsBody');
   if (!allRuns.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty">No runs yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">No runs yet</td></tr>';
     return;
   }
   tbody.innerHTML = allRuns.slice(0, 50).map(r => {
-    const wr   = (r.win_rate * 100).toFixed(1);
-    const cls  = r.win_rate >= 0.60 ? 'hi' : r.win_rate >= 0.45 ? 'mid' : 'lo';
-    const inst = r.instrument === 'MNQ' ? `<span style="color:var(--mnq)">MNQ</span>` : `<span style="color:var(--mgc)">MGC</span>`;
-    return `<tr>
+    const isWr  = r.is_win_rate  != null ? (r.is_win_rate  * 100).toFixed(1) : (r.win_rate * 100).toFixed(1);
+    const oosWr = r.oos_win_rate != null ? (r.oos_win_rate * 100).toFixed(1) : '—';
+    const fit   = r.fitness      != null ? r.fitness.toFixed(3) : '—';
+    const isCls = r.win_rate >= 0.65 ? 'hi' : r.win_rate >= 0.50 ? 'mid' : 'lo';
+    const oosCls = r.oos_win_rate == null ? '' : r.oos_win_rate >= 0.65 ? 'hi' : r.oos_win_rate >= 0.50 ? 'mid' : 'lo';
+    const inst   = r.instrument === 'MNQ' ? `<span style="color:var(--mnq)">MNQ</span>` : `<span style="color:var(--mgc)">MGC</span>`;
+    // Divergence warning: IS vs OOS gap > 12%
+    const div    = r.is_win_rate != null && r.oos_win_rate != null
+                   ? Math.abs(r.is_win_rate - r.oos_win_rate) : 0;
+    const divWarn = div > 0.12 ? ` title="⚠ Overfit: IS/OOS gap ${(div*100).toFixed(0)}%"` : '';
+    return `<tr${divWarn}>
       <td>${r.id}</td>
       <td>${inst}</td>
       <td>${r.run_at.slice(0,16).replace('T',' ')}</td>
       <td>${(r.bars_tested||0).toLocaleString()}</td>
       <td>${r.trades_found ?? 0}</td>
-      <td class="wr-cell ${cls}">${wr}%</td>
+      <td class="wr-cell ${isCls}">${isWr}%</td>
+      <td class="wr-cell ${oosCls}">${oosWr}${oosWr !== '—' ? '%' : ''}</td>
+      <td style="color:var(--tp2)">${fit}</td>
       <td>${r.sharpe ?? '—'}</td>
-      <td>${r.profit_factor ?? '—'}</td>
       <td style="color:var(--muted)">${r.triggered_by ?? '—'}</td>
     </tr>`;
   }).join('');
