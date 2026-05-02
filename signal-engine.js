@@ -100,33 +100,100 @@ function calcWinProb(score, isAplus, sessQ, setup) {
   return Math.min(Math.max(base + gAdj + sAdj + ssAdj, 0.35), 0.92);
 }
 
+// ── Trade style detection ─────────────────────────────────────────────────────
+
+/**
+ * Classify the trade as scalp, intraday, or swing based on market conditions.
+ * MGC is always scalp. MNQ auto-detects from HTF trend + structure + ATR state.
+ */
+function detectTradeStyle(instrument, tradeStyleMode, direction, indicators) {
+  if (instrument === 'MGC') return 'scalp';
+  if (tradeStyleMode !== 'auto') return tradeStyleMode;
+
+  const { htfBull, htfBear, msB, msBr, inOTED, inOTEP,
+          atrExpanded, blwV2, abvV2, trendStrength } = indicators;
+
+  const trendAligned = direction === 'LONG' ? htfBull : htfBear;
+  const msAligned    = direction === 'LONG' ? msB     : msBr;
+  const inOTE        = direction === 'LONG' ? inOTED  : inOTEP;
+
+  // Swing: strong trend + structure + OTE zone + expanding volatility
+  if (trendAligned && msAligned && inOTE && atrExpanded && trendStrength > 0.008) {
+    return 'swing';
+  }
+  // Intraday: trend alignment + OTE pullback or clear structure
+  if (trendAligned && (inOTE || msAligned)) {
+    return 'intraday';
+  }
+  // Scalp: STDV extension reversals or counter/neutral-trend setups
+  return 'scalp';
+}
+
+// ── Style-specific SL / TP levels ─────────────────────────────────────────────
+
+/**
+ * Returns { sl, tp1, tp2, tp3, rr, effectiveSL } based on trade style.
+ * Swing targets are fixed NQ-point levels; scalp/intraday use R-multiples.
+ */
+function calcStyleLevels(close, direction, tradeStyle, slPts, swingTp1, swingTp2, swingTp3) {
+  const dir = direction === 'LONG' ? 1 : -1;
+
+  if (tradeStyle === 'swing') {
+    const swingSL = slPts * 2.0;
+    return {
+      sl:  close - dir * swingSL,
+      tp1: close + dir * swingTp1,
+      tp2: close + dir * swingTp2,
+      tp3: close + dir * swingTp3,
+      rr:  +(swingTp1 / swingSL).toFixed(2),
+      effectiveSL: swingSL,
+    };
+  }
+
+  const effectiveSL = tradeStyle === 'scalp' ? +(slPts * 0.65).toFixed(2) : slPts;
+  return {
+    sl:  close - dir * effectiveSL,
+    tp1: close + dir * effectiveSL,
+    tp2: close + dir * effectiveSL * 2,
+    tp3: close + dir * effectiveSL * 3,
+    rr:  1.00,
+    effectiveSL,
+  };
+}
+
 // ── Main signal computation ───────────────────────────────────────────────────
 
 /**
  * Compute a signal for the last bar in `bars`.
- * @param {Array} bars    - 1m OHLCV bars, oldest first: {timestamp,open,high,low,close,volume}
- * @param {Array} htfBars - 15m OHLCV bars, same format
- * @param {Object} cfg    - optional parameter overrides
+ * @param {Array}  bars    - 1m OHLCV bars, oldest first: {timestamp,open,high,low,close,volume}
+ * @param {Array}  htfBars - 15m OHLCV bars, same format
+ * @param {Object} cfg     - optional parameter overrides
  * @returns signal object or null
  */
 function computeSignal(bars, htfBars, cfg = {}) {
   const C = {
-    slPts:     cfg.slPts     ?? 25,
-    minScore:  cfg.minScore  ?? 12,   // caller applies adaptive threshold after
-    oteHigh:   cfg.oteHigh   ?? 0.786,
-    oteLow:    cfg.oteLow    ?? 0.618,
-    swingLook: cfg.swingLook ?? 20,
-    stdvLen:   cfg.stdvLen   ?? 20,
-    std2:      cfg.std2      ?? 2.0,
-    std1:      cfg.std1      ?? 1.0,
-    htfEmaF:   cfg.htfEmaF   ?? 9,
-    htfEmaS:   cfg.htfEmaS   ?? 21,
-    atrLen:    cfg.atrLen    ?? 14,
-    swingL:    cfg.swingL    ?? 7,
-    emaF:      cfg.emaF      ?? 9,
-    emaS:      cfg.emaS      ?? 21,
-    emaT:      cfg.emaT      ?? 50,
-    rthOnly:   cfg.rthOnly   ?? false,  // false = 24/7 mode
+    slPts:          cfg.slPts          ?? 25,
+    minScore:       cfg.minScore       ?? 12,
+    oteHigh:        cfg.oteHigh        ?? 0.786,
+    oteLow:         cfg.oteLow         ?? 0.618,
+    swingLook:      cfg.swingLook      ?? 20,
+    stdvLen:        cfg.stdvLen        ?? 20,
+    std2:           cfg.std2           ?? 2.0,
+    std1:           cfg.std1           ?? 1.0,
+    htfEmaF:        cfg.htfEmaF        ?? 9,
+    htfEmaS:        cfg.htfEmaS        ?? 21,
+    atrLen:         cfg.atrLen         ?? 14,
+    swingL:         cfg.swingL         ?? 7,
+    emaF:           cfg.emaF           ?? 9,
+    emaS:           cfg.emaS           ?? 21,
+    emaT:           cfg.emaT           ?? 50,
+    rthOnly:        cfg.rthOnly        ?? false,
+    // Instrument + style
+    instrument:     cfg.instrument     ?? 'MNQ',
+    tradeStyleMode: cfg.tradeStyleMode ?? 'auto',  // 'auto'|'scalp'|'intraday'|'swing'
+    swingTp1:       cfg.swingTp1       ?? 50,
+    swingTp2:       cfg.swingTp2       ?? 100,
+    swingTp3:       cfg.swingTp3       ?? 150,
   };
 
   const n = bars.length;
@@ -160,6 +227,10 @@ function computeSignal(bars, htfBars, cfg = {}) {
   const abvV1  = close > upp1, abvV2 = close > upp2;
   const blwV1  = close < dwn1, blwV2 = close < dwn2;
   const atVwap = Math.abs(close - vwap) < sdv * 0.3;
+
+  // ATR expansion / compression state
+  const atrSma20    = atrSmaV[i] ?? atrVal;
+  const atrExpanded = atrVal > atrSma20 * 1.25;
 
   // STDV extension memory (20-bar rolling lookback)
   let hadExtUp = false, hadExtDn = false;
@@ -233,6 +304,11 @@ function computeSignal(bars, htfBars, cfg = {}) {
   const htfNeutral = !htfBull && !htfBear;
   const htfBiasStr = htfBull ? 'BULL ▲' : htfBear ? 'BEAR ▼' : 'NEUTRAL';
 
+  // HTF trend strength (close-to-close change relative to ATR)
+  const trendStrength = hj > 0
+    ? Math.abs(htfClose[hj] - htfClose[hj - 1]) / (atrVal * 15 + 1)
+    : 0;
+
   // Session
   const sess = getSessionInfo(timestamp);
   if (C.rthOnly && !sess.sessOK) return null;
@@ -278,24 +354,48 @@ function computeSignal(bars, htfBars, cfg = {}) {
   const grade    = score >= 24 ? 'A+' : score >= 16 ? 'A' : null;
   if (!grade) return null;
 
-  const isAplus  = grade === 'A+';
-  const wp1      = calcWinProb(score, isAplus, sess.sessQ, setup);
-  const entry    = close;
-  const sl2      = direction === 'LONG' ? close - C.slPts : close + C.slPts;
-  const tp1      = direction === 'LONG' ? close + C.slPts     : close - C.slPts;
-  const tp2      = direction === 'LONG' ? close + C.slPts*2   : close - C.slPts*2;
-  const tp3      = direction === 'LONG' ? close + C.slPts*3   : close - C.slPts*3;
+  const isAplus = grade === 'A+';
+
+  // ── Trade style detection ────────────────────────────────────────────────────
+  const tradeStyle = detectTradeStyle(C.instrument, C.tradeStyleMode, direction, {
+    htfBull, htfBear, msB, msBr, inOTED, inOTEP,
+    atrExpanded, blwV2, abvV2, trendStrength,
+  });
+
+  // MGC: skip swing attempts — scalp only
+  if (C.instrument === 'MGC' && tradeStyle === 'swing') return null;
+
+  // ── Style-specific SL / TP ───────────────────────────────────────────────────
+  const levels = calcStyleLevels(close, direction, tradeStyle, C.slPts,
+    C.swingTp1, C.swingTp2, C.swingTp3);
+
+  // Win probability (style-adjusted)
+  const styleWpAdj = tradeStyle === 'scalp' ? 0.03 : tradeStyle === 'swing' ? -0.04 : 0;
+  const wp1 = Math.min(0.92, Math.max(0.35,
+    calcWinProb(score, isAplus, sess.sessQ, setup) + styleWpAdj));
+
+  const tickerMap = { MNQ: 'MNQ1!', MGC: 'MGC1!', NQ: 'NQ1!' };
+  const ticker    = tickerMap[C.instrument] ?? 'NQ1!';
 
   return {
-    ticker: 'NQ1!', timeframe: '1', direction, grade, setup,
-    entry, sl: sl2, tp1, tp2, tp3, score,
+    ticker, timeframe: '1', direction, grade, setup,
+    instrument:   C.instrument,
+    tradeStyle,
+    entry:        close,
+    sl:           levels.sl,
+    tp1:          levels.tp1,
+    tp2:          levels.tp2,
+    tp3:          levels.tp3,
+    rr:           levels.rr,
+    effectiveSL:  levels.effectiveSL,
+    score,
     win_prob_tp1: Math.round(wp1 * 100),
     win_prob_tp2: Math.round(wp1 * 0.72 * 100),
     win_prob_tp3: Math.round(wp1 * 0.50 * 100),
-    htf_bias: htfBiasStr,
-    session:  sess.sessName,
+    htf_bias:     htfBiasStr,
+    session:      sess.sessName,
     timestamp,
   };
 }
 
-module.exports = { computeSignal };
+module.exports = { computeSignal, detectTradeStyle, calcStyleLevels };

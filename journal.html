@@ -1,0 +1,663 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Journal</title>
+  <style>
+    :root {
+      --bg:     #08080f; --bg2: #0d0d1a; --bg3: #111128;
+      --border: #1e1e3a; --text: #cccce8; --muted: #55556a;
+      --long:   #00c896; --short: #ff3d5a; --aplus: #ffd700;
+      --a: #80cbc4; --tp1: #69f0ae; --tp2: #40c4ff; --tp3: #ce93d8;
+      --sl: #ff5252; --orange: #ff9800;
+    }
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font-family: 'SF Mono','Fira Code','Consolas',monospace;
+      font-size: 12px; height: 100dvh; display: flex; flex-direction: column; overflow: hidden;
+    }
+
+    /* ── HEADER ── */
+    .hdr {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 18px; background: var(--bg2); border-bottom: 1px solid var(--border); flex-shrink: 0;
+    }
+    .hdr-l { display: flex; align-items: center; gap: 14px; }
+    .logo   { font-size: 15px; font-weight: 700; letter-spacing: .5px; color: var(--aplus); }
+    .logo b { color: var(--tp2); }
+    .nav { display: flex; gap: 4px; }
+    .nav a {
+      text-decoration: none; font-size: 10px; padding: 3px 10px;
+      border: 1px solid var(--border); border-radius: 3px; color: var(--muted); transition: .12s;
+    }
+    .nav a:hover  { color: var(--text); border-color: #3a3a5a; }
+    .nav a.active { border-color: var(--aplus); color: var(--aplus); }
+    .hdr-r { font-size: 10px; color: var(--muted); }
+
+    /* ── SECTION SWITCHER ── */
+    .sec-switch {
+      display: flex; gap: 0; border-bottom: 1px solid var(--border);
+      background: var(--bg2); flex-shrink: 0; padding: 0 18px;
+    }
+    .sec-btn {
+      font: inherit; font-size: 11px; cursor: pointer; background: transparent; border: none;
+      color: var(--muted); padding: 10px 18px; border-bottom: 2px solid transparent;
+      letter-spacing: .3px; transition: color .12s, border-color .12s;
+    }
+    .sec-btn:hover { color: var(--text); }
+    .sec-btn.on    { color: var(--text); border-bottom-color: var(--aplus); }
+
+    /* ── LAYOUT ── */
+    .page-body { flex: 1; overflow: hidden; display: flex; flex-direction: column; }
+    .section { flex: 1; overflow-y: auto; padding: 14px 18px; display: none; flex-direction: column; gap: 0; }
+    .section.active { display: flex; }
+
+    /* ── FILTER + STAT BAR ── */
+    .top-bar {
+      display: flex; align-items: center; justify-content: space-between;
+      margin-bottom: 12px; flex-wrap: wrap; gap: 8px; flex-shrink: 0;
+    }
+    .filters { display: flex; gap: 5px; }
+    .fb {
+      font: inherit; font-size: 10px; cursor: pointer; padding: 3px 9px;
+      border-radius: 3px; border: 1px solid var(--border); background: var(--bg3);
+      color: var(--muted); transition: .12s;
+    }
+    .fb:hover { color: var(--text); border-color: #3a3a5a; }
+    .fb.on    { border-color: var(--aplus); color: var(--aplus); }
+    .mini-stats { display: flex; gap: 14px; }
+    .mstat { font-size: 9px; }
+    .mstat span { font-weight: 700; }
+    .mstat .w { color: var(--long); }
+    .mstat .l { color: var(--short); }
+    .mstat .b { color: var(--orange); }
+    .mstat .n { color: var(--tp2); }
+
+    /* ── DATE DIVIDER ── */
+    .date-div {
+      font-size: 9px; color: var(--muted); padding: 10px 0 4px;
+      text-transform: uppercase; letter-spacing: 1.2px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .date-div::after { content:''; flex:1; height:1px; background:var(--border); }
+
+    /* ── SIGNAL JOURNAL ROW ── */
+    .j-row {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 4px; border-bottom: 1px solid rgba(30,30,58,.55);
+      min-height: 32px; cursor: default;
+    }
+    .j-row.clickable { cursor: pointer; }
+    .j-row.clickable:hover { background: rgba(255,255,255,.015); border-radius: 3px; }
+    .j-row.expanded { background: rgba(17,17,40,.6); border-radius: 3px 3px 0 0; border-bottom-color: transparent; }
+
+    .j-time  { font-size: 9px; color: var(--muted); min-width: 36px; flex-shrink: 0; }
+    .j-dir   { font-size: 10px; font-weight: 700; min-width: 14px; flex-shrink: 0; }
+    .j-dir.L { color: var(--long); }
+    .j-dir.S { color: var(--short); }
+    .j-grade { font-size: 9px; min-width: 18px; flex-shrink: 0; }
+    .j-grade.ap { color: var(--aplus); }
+    .j-grade.a  { color: var(--a); }
+    .j-setup {
+      font-size: 9px; color: var(--text); min-width: 74px; flex-shrink: 0;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .j-style { font-size: 8px; color: var(--muted); min-width: 48px; flex-shrink: 0; }
+    .j-result {
+      font-size: 9px; font-weight: 700; padding: 1px 6px; border-radius: 2px;
+      min-width: 38px; text-align: center; flex-shrink: 0;
+    }
+    .j-result.WIN  { background: rgba(0,200,150,.12); color: var(--long);   border: 1px solid rgba(0,200,150,.22); }
+    .j-result.LOSS { background: rgba(255,82,82,.12);  color: var(--sl);    border: 1px solid rgba(255,82,82,.22); }
+    .j-result.BE   { background: rgba(255,152,0,.12);  color: var(--orange);border: 1px solid rgba(255,152,0,.22); }
+    .j-note-preview {
+      flex: 1; font-size: 9px; color: var(--muted); overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .j-note-preview.has  { color: #8a8aaa; }
+    .j-note-preview.ph   { font-style: italic; opacity: .5; }
+    .j-caret { font-size: 9px; color: var(--muted); flex-shrink: 0; transition: transform .15s; }
+    .j-row.expanded .j-caret { transform: rotate(90deg); }
+
+    /* ── NOTE EDITOR (signal) ── */
+    .j-note-wrap {
+      background: rgba(17,17,40,.6); border-radius: 0 0 3px 3px;
+      padding: 8px 8px 8px 80px; border-bottom: 1px solid rgba(30,30,58,.55);
+      display: none;
+    }
+    .j-note-wrap.open { display: block; }
+    .j-note-wrap textarea {
+      width: 100%; background: var(--bg3); border: 1px solid var(--border);
+      border-radius: 3px; color: var(--text); font: inherit; font-size: 10px;
+      padding: 7px 9px; resize: none; min-height: 58px; max-height: 110px;
+      line-height: 1.6; outline: none; transition: border-color .12s;
+    }
+    .j-note-wrap textarea:focus { border-color: #3a3a6a; }
+    .j-note-wrap textarea::placeholder { color: var(--muted); font-style: italic; }
+    .j-note-footer { display: flex; align-items: center; justify-content: flex-end; margin-top: 4px; height: 14px; }
+    .saved-flash { font-size: 9px; color: var(--long); opacity: 0; transition: opacity .3s; }
+    .saved-flash.show { opacity: 1; }
+
+    /* ── EMPTY STATE ── */
+    .empty {
+      text-align: center; color: var(--muted); padding: 50px 20px;
+      font-size: 11px; line-height: 1.8;
+    }
+    .empty strong { color: var(--text); display: block; margin-bottom: 6px; font-size: 12px; }
+
+    /* ── BACKTEST RUN CARD ── */
+    .bt-run {
+      border: 1px solid var(--border); border-radius: 4px;
+      margin-bottom: 6px; overflow: hidden; flex-shrink: 0;
+    }
+    .bt-run-hdr {
+      display: flex; align-items: center; gap: 10px;
+      padding: 8px 12px; cursor: pointer; background: var(--bg2); transition: background .1s;
+    }
+    .bt-run-hdr:hover { background: var(--bg3); }
+    .bt-caret { font-size: 9px; color: var(--muted); flex-shrink: 0; transition: transform .15s; width: 8px; }
+    .bt-run.open .bt-caret { transform: rotate(90deg); }
+    .bt-inst { font-size: 10px; font-weight: 700; min-width: 32px; flex-shrink: 0; }
+    .bt-inst.mnq { color: var(--tp2); }
+    .bt-inst.mgc { color: var(--aplus); }
+    .bt-date  { font-size: 9px; color: var(--muted); flex-shrink: 0; }
+    .bt-wr    { font-size: 10px; font-weight: 700; min-width: 50px; flex-shrink: 0; }
+    .bt-wr.hi { color: var(--long); }
+    .bt-wr.mid { color: var(--orange); }
+    .bt-wr.lo  { color: var(--short); }
+    .bt-meta { font-size: 9px; color: var(--muted); flex: 1; }
+    .bt-meta em { color: var(--short); font-style: normal; }
+    .bt-noted { font-size: 9px; color: var(--muted); flex-shrink: 0; }
+    .bt-noted b { color: var(--tp2); }
+
+    /* ── BACKTEST TRADES LIST ── */
+    .bt-trades { background: var(--bg3); border-top: 1px solid var(--border); display: none; }
+    .bt-run.open .bt-trades { display: block; }
+
+    .bt-trade {
+      display: flex; align-items: flex-start; gap: 8px;
+      padding: 6px 12px 6px 22px; border-bottom: 1px solid rgba(30,30,58,.4);
+    }
+    .bt-trade:last-child { border-bottom: none; }
+    .bt-t-time  { font-size: 8px; color: var(--muted); min-width: 42px; flex-shrink: 0; padding-top: 2px; }
+    .bt-t-dir   { font-size: 9px; font-weight: 700; min-width: 14px; flex-shrink: 0; padding-top: 1px; }
+    .bt-t-dir.L { color: var(--long); }
+    .bt-t-dir.S { color: var(--short); }
+    .bt-t-setup  { font-size: 9px; color: var(--text); min-width: 72px; flex-shrink: 0; padding-top: 1px; }
+    .bt-t-regime { font-size: 8px; color: var(--muted); min-width: 56px; flex-shrink: 0; padding-top: 2px; }
+    .bt-t-score  { font-size: 9px; color: var(--muted); min-width: 24px; flex-shrink: 0; padding-top: 1px; }
+    .bt-t-out    {
+      font-size: 8px; font-weight: 700; padding: 1px 5px; border-radius: 2px;
+      flex-shrink: 0; align-self: flex-start; margin-top: 1px;
+    }
+    .bt-t-out.LOSS { background: rgba(255,82,82,.10); color: var(--sl);    border: 1px solid rgba(255,82,82,.18); }
+    .bt-t-out.BE   { background: rgba(255,152,0,.10); color: var(--orange);border: 1px solid rgba(255,152,0,.18); }
+
+    /* Note cell within a backtest trade */
+    .bt-t-note { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+    .bt-t-note-input {
+      width: 100%; background: transparent; border: none;
+      border-bottom: 1px dashed rgba(30,30,58,.9); color: var(--text);
+      font: inherit; font-size: 9px; padding: 2px 0; outline: none; transition: border-color .12s;
+    }
+    .bt-t-note-input:focus   { border-bottom-color: #40408a; }
+    .bt-t-note-input::placeholder { color: var(--muted); font-style: italic; }
+    .bt-t-tags { display: none; flex-wrap: wrap; gap: 3px; }
+    .bt-t-note-input:focus + .bt-t-tags,
+    .bt-t-tags:focus-within { display: flex; }
+    .tag-btn {
+      font: inherit; font-size: 8px; cursor: pointer; padding: 1px 5px; border-radius: 2px;
+      background: var(--bg2); border: 1px solid var(--border); color: var(--muted); transition: .1s;
+    }
+    .tag-btn:hover { color: var(--text); border-color: #3a3a5a; }
+    .tag-btn.htf    { border-color: rgba(206,147,216,.3); color: var(--tp3); }
+    .tag-btn.ote    { border-color: rgba(64,196,255,.3);  color: var(--tp2); }
+    .tag-btn.chop   { border-color: rgba(255,152,0,.3);   color: var(--orange); }
+    .tag-btn.score  { border-color: rgba(255,215,0,.3);   color: var(--aplus); }
+    .tag-btn.timing { border-color: rgba(105,240,174,.3); color: var(--tp1); }
+    .tag-btn.regime { border-color: rgba(128,203,196,.3); color: var(--a); }
+
+    .bt-trades-empty { padding: 14px 22px; font-size: 10px; color: var(--muted); font-style: italic; }
+
+    /* ── SCROLLBAR ── */
+    ::-webkit-scrollbar { width: 4px; }
+    ::-webkit-scrollbar-track { background: transparent; }
+    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    @media (max-width: 640px) {
+      .j-style, .bt-t-regime { display: none; }
+      .j-note-wrap { padding-left: 10px; }
+      .mini-stats  { gap: 8px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- HEADER -->
+<header class="hdr">
+  <div class="hdr-l">
+    <span class="logo">NQ <b>SIGNAL PRO</b> V3</span>
+    <nav class="nav">
+      <a href="/">Live Signals</a>
+      <a href="/backtest">Backtest</a>
+      <a href="/journal" class="active">Journal</a>
+    </nav>
+  </div>
+  <span class="hdr-r" id="lastRefresh">—</span>
+</header>
+
+<!-- SECTION SWITCHER -->
+<div class="sec-switch">
+  <button class="sec-btn on" id="btnReal"  onclick="showSection('real')">Real Signals</button>
+  <button class="sec-btn"    id="btnBt"    onclick="showSection('bt')">Backtesting</button>
+</div>
+
+<!-- BODY -->
+<div class="page-body">
+
+  <!-- ── REAL SIGNALS SECTION ── -->
+  <div class="section active" id="secReal">
+    <div class="top-bar">
+      <div class="filters">
+        <button class="fb on" id="rAll"  onclick="setRFilter('ALL',this)">ALL</button>
+        <button class="fb"    id="rWin"  onclick="setRFilter('WIN',this)">WIN</button>
+        <button class="fb"    id="rLoss" onclick="setRFilter('LOSS',this)">LOSS</button>
+        <button class="fb"    id="rBe"   onclick="setRFilter('BE',this)">BE</button>
+      </div>
+      <div class="mini-stats" id="realStats"></div>
+    </div>
+    <div id="realFeed" style="flex:1;overflow-y:auto"></div>
+  </div>
+
+  <!-- ── BACKTESTING SECTION ── -->
+  <div class="section" id="secBt">
+    <div class="top-bar">
+      <div class="filters">
+        <button class="fb on" onclick="setBtFilter('ALL',this)">ALL</button>
+        <button class="fb"    onclick="setBtFilter('MNQ',this)">MNQ</button>
+        <button class="fb"    onclick="setBtFilter('MGC',this)">MGC</button>
+      </div>
+      <div class="mini-stats" id="btStats"></div>
+    </div>
+    <div id="btFeed" style="flex:1;overflow-y:auto"></div>
+  </div>
+
+</div>
+
+<script>
+'use strict';
+
+// ── State ──────────────────────────────────────────────────────────────────────
+let realSignals = [], btRuns = [];
+let rFilter = 'ALL', btFilter = 'ALL';
+const expandedSigs = new Set();   // signal IDs with open note editors
+const expandedRuns = new Set();   // run IDs with expanded trade lists
+const runTradeCache = {};          // runId → trades[]
+const saveTimers = {};             // debounce timers per signal/trade
+let activeSection = 'real';
+
+// ── Section switch ─────────────────────────────────────────────────────────────
+function showSection(s) {
+  activeSection = s;
+  document.getElementById('secReal').classList.toggle('active', s === 'real');
+  document.getElementById('secBt').classList.toggle('active', s === 'bt');
+  document.getElementById('btnReal').classList.toggle('on', s === 'real');
+  document.getElementById('btnBt').classList.toggle('on', s === 'bt');
+  if (s === 'bt' && !btRuns.length) loadBacktest();
+}
+
+// ── Filters ────────────────────────────────────────────────────────────────────
+function setRFilter(f, btn) {
+  rFilter = f;
+  document.querySelectorAll('#secReal .fb').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  renderReal();
+}
+function setBtFilter(f, btn) {
+  btFilter = f;
+  document.querySelectorAll('#secBt .fb').forEach(b => b.classList.remove('on'));
+  btn.classList.add('on');
+  renderBt();
+}
+
+// ── Helpers ────────────────────────────────────────────────────────────────────
+function hhmm(ts) {
+  if (!ts) return '—';
+  const d = new Date(ts + (ts.includes('T') ? '' : ' UTC'));
+  return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+function dateKey(ts) {
+  if (!ts) return '?';
+  return new Date(ts + (ts.includes('T') ? '' : ' UTC'))
+    .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+function pct(v) { return v != null ? (v * 100).toFixed(1) + '%' : '—'; }
+
+// ── Real Signals renderer ──────────────────────────────────────────────────────
+function renderReal() {
+  const el = document.getElementById('realFeed');
+  const filtered = realSignals.filter(s => rFilter === 'ALL' || s.result === rFilter);
+
+  // Mini stats
+  const wins = realSignals.filter(s => s.result === 'WIN').length;
+  const loss = realSignals.filter(s => s.result === 'LOSS').length;
+  const be   = realSignals.filter(s => s.result === 'BE').length;
+  const wr   = (wins + loss) > 0 ? (wins / (wins + loss) * 100).toFixed(1) + '%' : '—';
+  document.getElementById('realStats').innerHTML =
+    `<span class="mstat"><span class="n">${realSignals.length}</span> logged</span>` +
+    `<span class="mstat"><span class="w">${wins}W</span></span>` +
+    `<span class="mstat"><span class="l">${loss}L</span></span>` +
+    `<span class="mstat"><span class="b">${be}BE</span></span>` +
+    `<span class="mstat"><span class="w">${wr}</span> WR</span>`;
+
+  if (!filtered.length) {
+    el.innerHTML = `<div class="empty">
+      <strong>No ${rFilter === 'ALL' ? 'logged' : rFilter} signals</strong>
+      Mark signals as WIN / LOSS / BE on the Live Signals page to populate the journal.
+    </div>`;
+    return;
+  }
+
+  // Group by day
+  const groups = {};
+  for (const s of filtered) {
+    const k = dateKey(s.received_at);
+    (groups[k] = groups[k] || []).push(s);
+  }
+
+  let html = '';
+  for (const [day, sigs] of Object.entries(groups)) {
+    html += `<div class="date-div">${day}</div>`;
+    for (const s of sigs) {
+      const canEdit  = s.result === 'LOSS' || s.result === 'BE';
+      const hasNote  = s.notes && s.notes.trim();
+      const isExp    = expandedSigs.has(s.id);
+      const notePreview = hasNote
+        ? `<span class="j-note-preview has">${escH(s.notes)}</span>`
+        : canEdit
+          ? `<span class="j-note-preview ph">add note…</span>`
+          : `<span class="j-note-preview"></span>`;
+      const caretHtml = canEdit || hasNote
+        ? `<span class="j-caret">›</span>`
+        : '';
+
+      html += `<div class="j-row ${canEdit ? 'clickable' : ''} ${isExp ? 'expanded' : ''}"
+                    data-id="${s.id}" onclick="toggleSig(${s.id})">
+        <span class="j-time">${hhmm(s.received_at)}</span>
+        <span class="j-dir ${s.direction === 'LONG' ? 'L' : 'S'}">${s.direction === 'LONG' ? '▲' : '▼'}</span>
+        <span class="j-grade ${s.grade === 'A+' ? 'ap' : 'a'}">${s.grade || 'A'}</span>
+        <span class="j-setup">${escH(s.setup || '—')}</span>
+        <span class="j-style">${escH(s.trade_style || '')}</span>
+        <span class="j-result ${s.result}">${s.result}${s.pnl_pts != null ? ' ' + (s.pnl_pts >= 0 ? '+' : '') + s.pnl_pts : ''}</span>
+        ${notePreview}
+        ${caretHtml}
+      </div>
+      <div class="j-note-wrap ${isExp ? 'open' : ''}" id="nw-${s.id}">
+        <textarea id="nt-${s.id}" rows="3"
+          placeholder="${s.result === 'WIN' ? 'Optional note…' : 'What happened? Why did it ' + (s.result === 'LOSS' ? 'lose?' : 'break even?')}"
+          onblur="scheduleSaveSig(${s.id})"
+          oninput="onNoteInput(${s.id})"
+        >${escH(s.notes || '')}</textarea>
+        <div class="j-note-footer">
+          <span class="saved-flash" id="sf-${s.id}">✓ saved</span>
+        </div>
+      </div>`;
+    }
+  }
+  el.innerHTML = html;
+
+  // Re-focus open editors after re-render
+  for (const id of expandedSigs) {
+    const ta = document.getElementById('nt-' + id);
+    if (ta) { ta.style.height = 'auto'; ta.style.height = ta.scrollHeight + 'px'; }
+  }
+}
+
+function toggleSig(id) {
+  const s = realSignals.find(s => s.id === id);
+  if (!s || (s.result === 'WIN' && !(s.notes && s.notes.trim()))) return;
+  if (expandedSigs.has(id)) {
+    expandedSigs.delete(id);
+  } else {
+    expandedSigs.add(id);
+  }
+  renderReal();
+  if (expandedSigs.has(id)) {
+    requestAnimationFrame(() => {
+      const ta = document.getElementById('nt-' + id);
+      if (ta) { ta.focus(); ta.selectionStart = ta.selectionEnd = ta.value.length; }
+    });
+  }
+}
+
+function onNoteInput(id) {
+  const ta = document.getElementById('nt-' + id);
+  if (!ta) return;
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 110) + 'px';
+}
+
+function scheduleSaveSig(id) {
+  clearTimeout(saveTimers['s' + id]);
+  saveTimers['s' + id] = setTimeout(() => saveSigNote(id), 400);
+}
+
+async function saveSigNote(id) {
+  const ta = document.getElementById('nt-' + id);
+  if (!ta) return;
+  const note = ta.value.trim();
+  // Update local state silently
+  const sig = realSignals.find(s => s.id === id);
+  if (sig) sig.notes = note;
+  await fetch('/api/journal/signal-note', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signal_id: id, note }),
+  });
+  const flash = document.getElementById('sf-' + id);
+  if (flash) {
+    flash.classList.add('show');
+    setTimeout(() => flash.classList.remove('show'), 1800);
+  }
+}
+
+// ── Backtest renderer ──────────────────────────────────────────────────────────
+function renderBt() {
+  const el = document.getElementById('btFeed');
+  const filtered = btFilter === 'ALL' ? btRuns : btRuns.filter(r => r.instrument === btFilter);
+
+  const totalLoss = filtered.reduce((s, r) => s + (r.loss_count || 0), 0);
+  const noted     = filtered.reduce((s, r) => s + (r.noted_count || 0), 0);
+  document.getElementById('btStats').innerHTML =
+    `<span class="mstat"><span class="n">${filtered.length}</span> runs</span>` +
+    `<span class="mstat"><span class="l">${totalLoss}</span> losses/BEs</span>` +
+    `<span class="mstat"><span class="n">${noted}</span> noted</span>`;
+
+  if (!filtered.length) {
+    el.innerHTML = `<div class="empty">
+      <strong>No backtest runs yet</strong>
+      The scanner runs backtests automatically on startup and every 4 hours.<br>
+      Losing trades from each run will appear here for review.
+    </div>`;
+    return;
+  }
+
+  let html = '';
+  for (const r of filtered) {
+    const wr    = (r.win_rate * 100).toFixed(1);
+    const wrCls = r.win_rate >= 0.62 ? 'hi' : r.win_rate >= 0.48 ? 'mid' : 'lo';
+    const isOpen = expandedRuns.has(r.id);
+    const dt    = r.run_at.slice(0, 16).replace('T', ' ');
+    const inst  = r.instrument?.toLowerCase() || 'mnq';
+    const hasLosses = (r.loss_count || 0) > 0;
+    const notedStr  = r.noted_count > 0
+      ? `<b>${r.noted_count}</b>/${r.loss_count} noted`
+      : r.loss_count > 0 ? `${r.loss_count} not yet noted` : 'no losses';
+
+    html += `<div class="bt-run ${isOpen ? 'open' : ''}" id="run-${r.id}">
+      <div class="bt-run-hdr" onclick="toggleRun(${r.id})">
+        <span class="bt-caret">›</span>
+        <span class="bt-inst ${inst}">${r.instrument}</span>
+        <span class="bt-date">${dt}</span>
+        <span class="bt-wr ${wrCls}">${wr}%</span>
+        <span class="bt-meta">${r.trades_found || 0} trades &nbsp;·&nbsp; <em>${r.loss_count || 0} losses/BEs</em></span>
+        <span class="bt-noted">${notedStr}</span>
+      </div>
+      <div class="bt-trades" id="rt-${r.id}">
+        ${isOpen ? renderRunTrades(r.id) : '<div class="bt-trades-empty">Loading…</div>'}
+      </div>
+    </div>`;
+  }
+  el.innerHTML = html;
+}
+
+function renderRunTrades(runId) {
+  const trades = runTradeCache[runId];
+  if (!trades) return '<div class="bt-trades-empty">Loading…</div>';
+  if (!trades.length) return '<div class="bt-trades-empty">No losing or breakeven trades recorded for this run.</div>';
+
+  return trades.map(t => {
+    const timeStr = t.timestamp ? hhmm(t.timestamp) : (t.bar_idx != null ? '#' + t.bar_idx : '—');
+    return `<div class="bt-trade" id="bt-${t.id}">
+      <span class="bt-t-time">${timeStr}</span>
+      <span class="bt-t-dir ${t.direction === 'LONG' ? 'L' : 'S'}">${t.direction === 'LONG' ? '▲' : '▼'}</span>
+      <span class="bt-t-setup">${escH(t.setup || '—')}</span>
+      <span class="bt-t-regime">${t.regime || ''}</span>
+      <span class="bt-t-score">${t.score != null ? t.score : '—'}</span>
+      <span class="bt-t-out ${t.outcome}">${t.outcome}</span>
+      <div class="bt-t-note">
+        <input  type="text" class="bt-t-note-input"
+                id="bnt-${t.id}"
+                value="${escH(t.note || '')}"
+                placeholder="what went wrong? improvement needed?"
+                onfocus="showTags(${t.id})"
+                onblur="scheduleSaveBt(${t.id})" />
+        <div class="bt-t-tags" id="tags-${t.id}">
+          <button class="tag-btn htf"    onmousedown="insertTag(${t.id},'[HTF]')" >HTF bias</button>
+          <button class="tag-btn ote"    onmousedown="insertTag(${t.id},'[OTE]')" >OTE zone</button>
+          <button class="tag-btn chop"   onmousedown="insertTag(${t.id},'[CHOP]')">chop/range</button>
+          <button class="tag-btn score"  onmousedown="insertTag(${t.id},'[SCORE]')">low score</button>
+          <button class="tag-btn timing" onmousedown="insertTag(${t.id},'[TIMING]')">timing</button>
+          <button class="tag-btn regime" onmousedown="insertTag(${t.id},'[REGIME]')">wrong regime</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+async function toggleRun(runId) {
+  if (expandedRuns.has(runId)) {
+    expandedRuns.delete(runId);
+    document.getElementById('run-' + runId)?.classList.remove('open');
+    return;
+  }
+  expandedRuns.add(runId);
+  document.getElementById('run-' + runId)?.classList.add('open');
+  const tradesEl = document.getElementById('rt-' + runId);
+  if (!runTradeCache[runId]) {
+    try {
+      const res = await fetch('/api/journal/backtest/' + runId + '/trades');
+      runTradeCache[runId] = await res.json();
+    } catch { runTradeCache[runId] = []; }
+  }
+  if (tradesEl) tradesEl.innerHTML = renderRunTrades(runId);
+}
+
+function showTags(tradeId) {
+  const tags = document.getElementById('tags-' + tradeId);
+  if (tags) tags.style.display = 'flex';
+}
+
+function insertTag(tradeId, tag) {
+  const inp = document.getElementById('bnt-' + tradeId);
+  if (!inp) return;
+  const cur = inp.value;
+  inp.value = cur ? (cur.endsWith(' ') ? cur + tag : cur + ' ' + tag) : tag;
+  inp.focus();
+}
+
+function scheduleSaveBt(tradeId) {
+  // Let mousedown on tag buttons fire before blur clears tags
+  setTimeout(() => {
+    const tags = document.getElementById('tags-' + tradeId);
+    if (tags) tags.style.display = '';
+  }, 200);
+  clearTimeout(saveTimers['b' + tradeId]);
+  saveTimers['b' + tradeId] = setTimeout(() => saveBtNote(tradeId), 500);
+}
+
+async function saveBtNote(tradeId) {
+  const inp = document.getElementById('bnt-' + tradeId);
+  if (!inp) return;
+  const note = inp.value.trim();
+  // Update cache
+  for (const trades of Object.values(runTradeCache)) {
+    const t = trades.find(x => x.id === tradeId);
+    if (t) { t.note = note; break; }
+  }
+  await fetch('/api/journal/backtest-note', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ trade_id: tradeId, note }),
+  });
+  // Flash the input briefly
+  if (inp) {
+    inp.style.borderBottomColor = 'var(--long)';
+    setTimeout(() => { inp.style.borderBottomColor = ''; }, 900);
+  }
+  // Refresh noted count in state
+  refreshNotedCounts();
+}
+
+function refreshNotedCounts() {
+  for (const [runId, trades] of Object.entries(runTradeCache)) {
+    const run = btRuns.find(r => r.id === Number(runId));
+    if (run) run.noted_count = trades.filter(t => t.note && t.note.trim()).length;
+  }
+  // Update header noted display without full re-render
+  for (const r of btRuns) {
+    const notedEl = document.querySelector(`#run-${r.id} .bt-noted`);
+    if (!notedEl) continue;
+    notedEl.innerHTML = r.noted_count > 0
+      ? `<b>${r.noted_count}</b>/${r.loss_count} noted`
+      : r.loss_count > 0 ? `${r.loss_count} not yet noted` : 'no losses';
+  }
+}
+
+// ── Data loading ───────────────────────────────────────────────────────────────
+async function loadReal() {
+  try {
+    const res  = await fetch('/api/journal/signals?limit=300');
+    realSignals = await res.json();
+    renderReal();
+  } catch(e) { console.error('loadReal:', e); }
+}
+
+async function loadBacktest() {
+  try {
+    const res = await fetch('/api/journal/backtest?limit=40');
+    btRuns = await res.json();
+    renderBt();
+  } catch(e) { console.error('loadBt:', e); }
+}
+
+async function refresh() {
+  await loadReal();
+  if (activeSection === 'bt') await loadBacktest();
+  document.getElementById('lastRefresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
+}
+
+// ── Util ───────────────────────────────────────────────────────────────────────
+function escH(s) {
+  if (s == null) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+
+// ── Init ───────────────────────────────────────────────────────────────────────
+refresh();
+setInterval(refresh, 60_000);
+</script>
+</body>
+</html>

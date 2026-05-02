@@ -242,9 +242,73 @@ app.get('/api/market/prices', (req, res) => {
   res.json(result);
 });
 
+// ── JOURNAL ───────────────────────────────────────────────────────────────────
+
+// All resolved live signals with notes (for Real Signals journal section)
+app.get('/api/journal/signals', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 200, 500);
+  const rows = db.prepare(`
+    SELECT s.id, s.direction, s.grade, s.setup, s.entry, s.sl, s.tp1, s.score,
+           s.htf_bias, s.session, s.trade_style, s.instrument, s.received_at,
+           o.result, o.pnl_pts, o.notes
+    FROM   signals s
+    JOIN   outcomes o ON o.signal_id = s.id
+    ORDER  BY s.received_at DESC
+    LIMIT  ?
+  `).all(limit);
+  res.json(rows);
+});
+
+// Recent backtest runs with per-run loss counts (for Backtesting journal section)
+app.get('/api/journal/backtest', (req, res) => {
+  const limit = Math.min(Number(req.query.limit) || 40, 200);
+  const inst  = req.query.instrument?.toUpperCase() || null;
+  const sql   = inst
+    ? `SELECT r.*,
+              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id) AS loss_count,
+              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.note IS NOT NULL AND t.note != '') AS noted_count
+       FROM backtest_runs r WHERE r.instrument = ? ORDER BY r.run_at DESC LIMIT ?`
+    : `SELECT r.*,
+              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id) AS loss_count,
+              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.note IS NOT NULL AND t.note != '') AS noted_count
+       FROM backtest_runs r ORDER BY r.run_at DESC LIMIT ?`;
+  const rows = inst ? db.prepare(sql).all(inst, limit) : db.prepare(sql).all(limit);
+  res.json(rows);
+});
+
+// Losing/BE trades for a specific backtest run
+app.get('/api/journal/backtest/:runId/trades', (req, res) => {
+  const runId = Number(req.params.runId);
+  if (!runId) return res.status(400).json({ error: 'invalid runId' });
+  const rows = db.prepare(
+    'SELECT * FROM backtest_trades WHERE run_id = ? ORDER BY bar_idx ASC'
+  ).all(runId);
+  res.json(rows);
+});
+
+// Update note on a resolved live signal (outcome must already exist)
+app.post('/api/journal/signal-note', (req, res) => {
+  const { signal_id, note } = req.body || {};
+  if (!signal_id) return res.status(400).json({ error: 'signal_id required' });
+  const outcome = db.prepare('SELECT id FROM outcomes WHERE signal_id = ?').get(signal_id);
+  if (!outcome) return res.status(404).json({ error: 'Outcome not found — log WIN/LOSS/BE first' });
+  db.prepare(`UPDATE outcomes SET notes = ? WHERE signal_id = ?`).run(note ?? null, signal_id);
+  res.json({ ok: true });
+});
+
+// Update note on a backtest trade
+app.post('/api/journal/backtest-note', (req, res) => {
+  const { trade_id, note } = req.body || {};
+  if (!trade_id) return res.status(400).json({ error: 'trade_id required' });
+  db.prepare(`UPDATE backtest_trades SET note = ?, noted_at = datetime('now') WHERE id = ?`)
+    .run(note ?? null, trade_id);
+  res.json({ ok: true });
+});
+
 // ── STATIC ────────────────────────────────────────────────────────────────────
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
 app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest-dashboard.html')));
+app.get('/journal',  (req, res) => res.sendFile(path.join(__dirname, 'journal.html')));
 
 app.listen(PORT, () => {
   console.log(`NQ Signal Pro V3  →  http://localhost:${PORT}`);
