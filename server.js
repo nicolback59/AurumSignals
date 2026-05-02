@@ -3,6 +3,7 @@ const express  = require('express');
 const Database = require('better-sqlite3');
 const path     = require('path');
 const fs       = require('fs');
+const { getLearningStats } = require('./learning');
 
 const PORT           = process.env.PORT           || 3000;
 const DB_PATH        = process.env.DB_PATH        || path.join(__dirname, 'signals.db');
@@ -168,6 +169,15 @@ app.post('/api/outcome', (req, res) => {
     notes:      notes      ?? null,
   });
   res.json({ ok: true });
+});
+
+// ── LEARNING ──────────────────────────────────────────────────────────────────
+app.get('/api/learning', (req, res) => {
+  try {
+    res.json(getLearningStats(db));
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── STATIC ────────────────────────────────────────────────────────────────────

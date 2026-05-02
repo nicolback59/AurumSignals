@@ -138,6 +138,88 @@ sudo certbot --nginx -d yourdomain.com
 
 ---
 
+## Continuous 24/7 Scanner
+
+The scanner runs independently of TradingView. It polls Alpaca for fresh 1m and
+15m bars every 60 seconds, runs the same 4-factor signal engine as the Pine
+Script, and fires ntfy push notifications automatically — around the clock.
+
+It also learns from your trade outcomes: after you log wins/losses via the
+dashboard, the scanner adjusts its minimum score threshold per setup type and
+suppresses signals when the current market regime is choppy.
+
+### How it works
+
+```
+scanner.js  →  fetches 1m + 15m bars from Alpaca
+            →  runs signal-engine.js (4-factor model)
+            →  checks learning.js (adaptive score threshold)
+            →  saves to SQLite  +  fires ntfy
+```
+
+### Market data: Alpaca
+
+1. Create a free account at [alpaca.markets](https://alpaca.markets)
+2. Go to **Paper Trading** → **API Keys** → generate a key pair
+3. Verify that your account has **Futures Data** enabled (may require enabling
+   in account settings)
+
+Set environment variables:
+
+| Variable              | Value                 | Notes                                        |
+|-----------------------|-----------------------|----------------------------------------------|
+| `ALPACA_KEY`          | `PKxxx...`            | Your Alpaca API key ID                       |
+| `ALPACA_SECRET`       | `xxx...`              | Your Alpaca API secret                       |
+| `SCANNER_SYMBOL`      | `@NQ.C.0`             | Continuous NQ front-month (verify at Alpaca) |
+| `SCAN_INTERVAL`       | `60`                  | Seconds between scans (default 60)           |
+| `SCANNER_COOLDOWN`    | `3`                   | Min bars between signals (default 3)         |
+| `SCANNER_MIN_SCORE`   | `16`                  | Base grade-A threshold (adaptive adjusts it) |
+| `SCANNER_RTH_ONLY`    | `false`               | `true` = RTH only, `false` = 24/7 (default) |
+
+> **Symbol note:** Alpaca uses `@NQ.C.0` for the continuous NQ E-mini contract
+> and `@MNQ.C.0` for the Micro NQ. Confirm the exact symbol in
+> [Alpaca's asset search](https://alpaca.markets/docs/api-references/market-data-api/stock-pricing-data/historical/).
+
+### Running the scanner
+
+**Local / VPS:**
+```bash
+npm run scan        # production
+npm run scan:dev    # auto-restart on file changes (Node 18+)
+```
+
+With PM2 (recommended for VPS so it restarts on crash):
+```bash
+pm2 start scanner.js --name nq-scanner
+pm2 save
+```
+
+**Railway:** add a second service in the same project pointing at `scanner.js`
+as the start command, with the same environment variables.
+
+**Render:** add a Background Worker service alongside the web service.
+
+### Adaptive learning
+
+Once you have logged at least 10 outcomes via the dashboard, the scanner starts
+adjusting its own thresholds automatically:
+
+| Setup win rate (last 30 days) | Score adjustment  |
+|-------------------------------|-------------------|
+| ≥ 70 %                        | −2 (fire more)    |
+| 40 – 69 %                     | 0 (no change)     |
+| ≤ 40 %                        | +4 (be selective) |
+
+When the last 15 trades show a ≤ 38 % win rate (choppy regime), an additional
++2 is added to all thresholds.
+
+View the current learning state:
+```bash
+curl https://<your-domain>/api/learning
+```
+
+---
+
 ## ntfy Push Notifications
 
 Every incoming signal fires a push notification to your phone or desktop via [ntfy](https://ntfy.sh).
