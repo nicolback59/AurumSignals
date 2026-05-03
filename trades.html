@@ -1,0 +1,670 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Trades</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { display: flex; flex-direction: column; min-height: 100dvh; overflow-y: auto; }
+
+    /* ── Summary card row ──────────────────────────── */
+    .summary-row {
+      display: flex;
+      border-bottom: 1px solid var(--border-default);
+      overflow-x: auto;
+      scrollbar-width: none;
+      flex-shrink: 0;
+    }
+    .summary-row::-webkit-scrollbar { display: none; }
+    .sum-card {
+      flex: 1;
+      min-width: 110px;
+      padding: 12px 16px;
+      background: var(--bg-surface);
+      border-right: 1px solid var(--border-subtle);
+      text-align: center;
+    }
+    .sum-card:last-child { border-right: none; }
+    .sum-card-lbl {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 5px;
+    }
+    .sum-card-val {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+      line-height: 1;
+    }
+    .sum-card-sub { font-size: 10px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Instrument filter bar ─────────────────────── */
+    .inst-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 10px 16px;
+      background: var(--bg-surface);
+      border-bottom: 1px solid var(--border-default);
+      overflow-x: auto;
+      scrollbar-width: none;
+      flex-shrink: 0;
+    }
+    .inst-bar::-webkit-scrollbar { display: none; }
+    .inst-bar-label {
+      font-size: 10px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      color: var(--text-muted);
+      margin-right: 4px;
+      flex-shrink: 0;
+    }
+
+    /* ── Trades body ───────────────────────────────── */
+    .trades-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Table scroll wrapper ──────────────────────── */
+    .table-scroll {
+      overflow-x: auto;
+      overflow-y: auto;
+    }
+
+    /* Trade table */
+    .trade-table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 780px;
+    }
+    .trade-table thead th {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      background: var(--bg-elevated);
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 9px 10px;
+      border-bottom: 1px solid var(--border-default);
+      text-align: left;
+      white-space: nowrap;
+    }
+    .trade-table thead th.sortable { cursor: pointer; user-select: none; }
+    .trade-table thead th.sortable:hover { color: var(--text-secondary); }
+    .trade-table thead th .sort-icon { margin-left: 4px; opacity: .4; }
+    .trade-table thead th.asc  .sort-icon::after { content: '↑'; opacity: 1; }
+    .trade-table thead th.desc .sort-icon::after { content: '↓'; opacity: 1; }
+    .trade-table thead th .sort-icon::after { content: '↕'; }
+
+    .trade-table td {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-subtle);
+      vertical-align: middle;
+      white-space: nowrap;
+    }
+    .trade-table tbody tr.trade-row:hover td { background: rgba(255,255,255,.02); }
+    .trade-table tbody tr.trade-row {
+      cursor: pointer;
+      transition: background var(--t);
+    }
+    .trade-table tbody tr.trade-row.expanded td { background: rgba(17,17,40,.6); }
+    .trade-table tbody tr.trade-row td:first-child { color: var(--text-muted); }
+    .trade-table tbody tr:last-child td { border-bottom: none; }
+
+    /* Detail row */
+    .detail-row td { padding: 0 !important; border-bottom: 1px solid var(--border-subtle) !important; }
+    .detail-panel {
+      background: var(--bg-elevated);
+      padding: 14px 14px 14px 42px;
+      display: none;
+    }
+    .detail-panel.open { display: block; }
+    .detail-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .detail-item {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 6px;
+      padding: 8px 10px;
+    }
+    .detail-item-lbl { font-size: 9px; color: var(--text-muted); margin-bottom: 3px; letter-spacing: .04em; font-family: var(--font-ui); }
+    .detail-item-val { font-family: var(--font-mono); font-size: 12px; font-weight: 700; color: var(--text-primary); }
+
+    /* Win-prob mini bars in detail */
+    .detail-prob-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+    .detail-prob-lbl { font-size: 10px; color: var(--text-muted); min-width: 72px; font-family: var(--font-mono); }
+    .detail-prob-track { flex: 1; background: rgba(255,255,255,.04); border-radius: 4px; height: 5px; overflow: hidden; max-width: 120px; }
+    .detail-prob-fill  { height: 100%; border-radius: 4px; }
+    .detail-prob-val   { font-family: var(--font-mono); font-size: 10px; color: var(--text-secondary); min-width: 36px; text-align: right; }
+
+    /* Expand caret */
+    .expand-caret { font-size: 10px; color: var(--text-muted); transition: transform var(--t); display: inline-block; }
+    .trade-row.expanded .expand-caret { transform: rotate(90deg); }
+
+    /* Pending badge */
+    .pending-tag { font-size: 10px; color: var(--text-muted); font-family: var(--font-ui); font-style: italic; }
+
+    /* ── P&L Chart section ─────────────────────────── */
+    .pnl-section {
+      padding: 16px;
+      border-top: 1px solid var(--border-default);
+      background: var(--bg-surface);
+      flex-shrink: 0;
+    }
+    .pnl-section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .pnl-section-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+
+    /* ── Empty table ───────────────────────────────── */
+    .table-empty td {
+      padding: 0 !important;
+      border-bottom: none !important;
+    }
+
+    /* ── Mobile card view ──────────────────────────── */
+    .trade-cards { display: none; padding: 12px; }
+    .trade-card-item {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      padding: 12px 14px;
+      margin-bottom: 8px;
+      cursor: pointer;
+      transition: border-color var(--t);
+    }
+    .trade-card-item.long-border  { border-left: 3px solid var(--green); }
+    .trade-card-item.short-border { border-left: 3px solid var(--red); }
+    .trade-card-item:hover { border-color: var(--border-strong); }
+    .trade-card-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 5px; }
+    .trade-card-row:last-child { margin-bottom: 0; }
+
+    @media (max-width: 640px) {
+      .table-scroll { display: none; }
+      .trade-cards  { display: block; }
+      .pnl-section  { padding: 12px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"        class="nav-link">Home</a>
+      <a href="/signals" class="nav-link">Signals</a>
+      <a href="/trades"  class="nav-link active">Trades</a>
+      <a href="/backtest"class="nav-link">Backtest</a>
+      <a href="/journal" class="nav-link">Journal</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
+</header>
+
+<!-- ── SUMMARY CARDS ────────────────────────────────── -->
+<div class="summary-row">
+  <div class="sum-card">
+    <div class="sum-card-lbl">Win Rate</div>
+    <div class="sum-card-val" style="color:var(--yellow)" id="sumWr">—</div>
+    <div class="sum-card-sub" id="sumWrSub">—</div>
+  </div>
+  <div class="sum-card">
+    <div class="sum-card-lbl">Total Trades</div>
+    <div class="sum-card-val" id="sumTotal">—</div>
+    <div class="sum-card-sub">all signals</div>
+  </div>
+  <div class="sum-card">
+    <div class="sum-card-lbl">Wins</div>
+    <div class="sum-card-val" style="color:var(--green)" id="sumWins">—</div>
+    <div class="sum-card-sub" id="sumWinSub">—</div>
+  </div>
+  <div class="sum-card">
+    <div class="sum-card-lbl">Losses</div>
+    <div class="sum-card-val" style="color:var(--red)" id="sumLoss">—</div>
+    <div class="sum-card-sub" id="sumLossSub">—</div>
+  </div>
+  <div class="sum-card">
+    <div class="sum-card-lbl">Total Points</div>
+    <div class="sum-card-val" id="sumPts">—</div>
+    <div class="sum-card-sub">net P&amp;L</div>
+  </div>
+</div>
+
+<!-- ── INSTRUMENT FILTER ─────────────────────────────── -->
+<div class="inst-bar">
+  <span class="inst-bar-label">FILTER</span>
+  <div class="filter-chips" id="instFilters">
+    <button class="filter-chip active" onclick="setInstFilter('ALL', this)">All</button>
+    <button class="filter-chip"        onclick="setInstFilter('MNQ', this)">MNQ</button>
+    <button class="filter-chip"        onclick="setInstFilter('MGC', this)">MGC</button>
+    <button class="filter-chip"        onclick="setInstFilter('MES', this)">MES</button>
+  </div>
+  <div style="margin-left:auto;display:flex;gap:6px;align-items:center">
+    <div class="filter-chips" id="resultFilters">
+      <button class="filter-chip" onclick="setResultFilter('ALL', this)" style="border-color:var(--border-default);color:var(--text-muted)">All Results</button>
+      <button class="filter-chip" onclick="setResultFilter('WIN', this)">✓ Win</button>
+      <button class="filter-chip" onclick="setResultFilter('LOSS', this)">✗ Loss</button>
+      <button class="filter-chip" onclick="setResultFilter('OPEN', this)">◉ Open</button>
+    </div>
+    <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="tradeCount">— trades</span>
+  </div>
+</div>
+
+<!-- ── TRADES BODY ───────────────────────────────────── -->
+<div class="trades-body">
+
+  <!-- Desktop table -->
+  <div class="table-scroll" id="tableWrap">
+    <table class="trade-table">
+      <thead>
+        <tr>
+          <th></th>
+          <th class="sortable" data-col="received_at">Time<span class="sort-icon"></span></th>
+          <th>Market</th>
+          <th>Dir</th>
+          <th>Grade</th>
+          <th class="sortable" data-col="entry">Entry<span class="sort-icon"></span></th>
+          <th>SL</th>
+          <th>TP1</th>
+          <th>TP2</th>
+          <th>Style</th>
+          <th class="sortable" data-col="score">Score<span class="sort-icon"></span></th>
+          <th class="sortable" data-col="pnl_pts">Pts<span class="sort-icon"></span></th>
+          <th>Result</th>
+        </tr>
+      </thead>
+      <tbody id="tradesBody">
+        <tr class="table-empty">
+          <td colspan="13">
+            <div class="skeleton skeleton-card" style="margin:12px;height:200px"></div>
+          </td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <!-- Mobile cards -->
+  <div class="trade-cards" id="mobileCards">
+    <div class="skeleton skeleton-card" style="margin-bottom:8px"></div>
+    <div class="skeleton skeleton-card" style="margin-bottom:8px"></div>
+    <div class="skeleton skeleton-card"></div>
+  </div>
+
+  <!-- P&L Chart -->
+  <div class="pnl-section" id="pnlSection">
+    <div class="pnl-section-header">
+      <span class="pnl-section-title">Cumulative P&amp;L</span>
+      <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="pnlChartLbl">—</span>
+    </div>
+    <div style="position:relative;height:160px"><canvas id="pnlChart"></canvas></div>
+  </div>
+
+</div><!-- /trades-body -->
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/"        class="bottom-nav-item"><span class="bottom-nav-icon">⌂</span><span class="bottom-nav-label">Home</span></a>
+    <a href="/signals" class="bottom-nav-item"><span class="bottom-nav-icon">◈</span><span class="bottom-nav-label">Signals</span></a>
+    <a href="/trades"  class="bottom-nav-item active"><span class="bottom-nav-icon">◉</span><span class="bottom-nav-label">Trades</span></a>
+    <a href="/journal" class="bottom-nav-item"><span class="bottom-nav-icon">◎</span><span class="bottom-nav-label">Journal</span></a>
+  </div>
+</nav>
+
+<script src="/ui-components.js"></script>
+<script>
+'use strict';
+
+let allTrades    = [];   // raw from /api/signals
+let filteredList = [];   // after inst + result filter
+let instFilter   = 'ALL';
+let resultFilter = 'ALL';
+let sortCol      = 'received_at';
+let sortDir      = 'desc';
+let expandedIds  = new Set();
+let pnlChart     = null;
+
+/* ── Summary cards ───────────────────────────────────── */
+function renderSummary(stats, trades) {
+  const outs = stats.outcomes || [];
+  const wins = (outs.find(o => o.result === 'WIN')  || {}).n || 0;
+  const loss = (outs.find(o => o.result === 'LOSS') || {}).n || 0;
+  const be   = (outs.find(o => o.result === 'BE')   || {}).n || 0;
+  const res  = wins + loss;
+  const wr   = res > 0 ? (wins / res * 100).toFixed(1) + '%' : '—';
+
+  const netPts = trades
+    .filter(t => t.pnl_pts != null)
+    .reduce((s, t) => s + t.pnl_pts, 0);
+
+  document.getElementById('sumWr').textContent      = wr;
+  document.getElementById('sumWrSub').textContent   = `${res} resolved`;
+  document.getElementById('sumTotal').textContent   = stats.total || 0;
+  document.getElementById('sumWins').textContent    = wins;
+  document.getElementById('sumWinSub').textContent  = be ? `+${be} BE` : 'resolved';
+  document.getElementById('sumLoss').textContent    = loss;
+  document.getElementById('sumLossSub').textContent = 'resolved';
+
+  const ptsEl = document.getElementById('sumPts');
+  ptsEl.textContent   = trades.length ? (netPts >= 0 ? '+' : '') + netPts.toFixed(0) + 'pts' : '—';
+  ptsEl.style.color   = netPts > 0 ? 'var(--green)' : netPts < 0 ? 'var(--red)' : '';
+}
+
+/* ── Filters ─────────────────────────────────────────── */
+function setInstFilter(f, btn) {
+  instFilter = f;
+  document.querySelectorAll('#instFilters .filter-chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyFiltersAndRender();
+}
+function setResultFilter(f, btn) {
+  resultFilter = f;
+  document.querySelectorAll('#resultFilters .filter-chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  applyFiltersAndRender();
+}
+
+function applyFiltersAndRender() {
+  filteredList = allTrades.filter(t => {
+    const instMatch = instFilter === 'ALL' || (t.instrument === instFilter || t.ticker?.includes(instFilter));
+    const resMatch  = resultFilter === 'ALL'
+      ? true
+      : resultFilter === 'OPEN'
+        ? !t.result
+        : t.result === resultFilter;
+    return instMatch && resMatch;
+  });
+
+  // Sort
+  filteredList.sort((a, b) => {
+    let va = a[sortCol], vb = b[sortCol];
+    if (sortCol === 'received_at') { va = va || ''; vb = vb || ''; }
+    else { va = va ?? -Infinity; vb = vb ?? -Infinity; }
+    if (va < vb) return sortDir === 'asc' ? -1 :  1;
+    if (va > vb) return sortDir === 'asc' ?  1 : -1;
+    return 0;
+  });
+
+  document.getElementById('tradeCount').textContent = filteredList.length + ' trades';
+  renderTable();
+  renderMobileCards();
+  renderPnlChart();
+}
+
+/* ── Trade table ─────────────────────────────────────── */
+function renderTable() {
+  const tbody = document.getElementById('tradesBody');
+
+  if (!filteredList.length) {
+    tbody.innerHTML = `<tr class="table-empty"><td colspan="13">${
+      buildEmptyState('◉', 'No trades match filter', 'Try changing the instrument or result filter.')
+    }</td></tr>`;
+    return;
+  }
+
+  tbody.innerHTML = filteredList.map(t => {
+    const isLong   = t.direction === 'LONG';
+    const isExp    = expandedIds.has(t.id);
+    const pnlCls   = t.pnl_pts > 0 ? 'wr-hi' : t.pnl_pts < 0 ? 'wr-lo' : '';
+    const pnlTxt   = t.pnl_pts != null ? (t.pnl_pts >= 0 ? '+' : '') + t.pnl_pts : '—';
+    const resultTd = t.result
+      ? outcomeBadge(t.result)
+      : `<span class="pending-tag">pending</span>`;
+    const scoreStr = t.score != null ? t.score + '/35' : '—';
+    const mkt      = t.instrument || t.ticker?.replace('1!', '') || '—';
+
+    const dt = new Date(t.received_at + ' UTC');
+    const timeStr = hhmm(t.received_at);
+    const dateStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+    return `<tr class="trade-row${isExp ? ' expanded' : ''}" onclick="toggleDetail(${t.id})">
+      <td><span class="expand-caret">›</span></td>
+      <td><div style="font-weight:600;color:var(--text-primary)">${timeStr}</div><div style="font-size:9px;color:var(--text-muted)">${dateStr}</div></td>
+      <td style="color:var(--text-secondary);font-weight:600">${escH(mkt)}</td>
+      <td>${isLong
+        ? '<span style="color:var(--green);font-weight:700">▲</span>'
+        : '<span style="color:var(--red);font-weight:700">▼</span>'}</td>
+      <td>${gradeBadge(t.grade)}</td>
+      <td style="color:var(--text-primary)">${fmt(t.entry)}</td>
+      <td style="color:var(--sl)">${fmt(t.sl)}</td>
+      <td style="color:var(--tp1)">${fmt(t.tp1)}</td>
+      <td style="color:var(--tp2)">${fmt(t.tp2)}</td>
+      <td style="color:var(--text-muted)">${escH(t.trade_style || '—')}</td>
+      <td>${scoreStr}</td>
+      <td class="${pnlCls}">${pnlTxt}</td>
+      <td>${resultTd}</td>
+    </tr>
+    <tr class="detail-row" id="detail-tr-${t.id}" style="display:${isExp ? 'table-row' : 'none'}">
+      <td colspan="13">
+        <div class="detail-panel${isExp ? ' open' : ''}" id="detail-panel-${t.id}">
+          ${buildDetailPanel(t)}
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function buildDetailPanel(t) {
+  const items = [
+    { lbl: 'Setup',      val: t.setup      || '—' },
+    { lbl: 'Grade',      val: t.grade      || '—' },
+    { lbl: 'Style',      val: t.trade_style|| '—' },
+    { lbl: 'Session',    val: t.session    || '—' },
+    { lbl: 'HTF Bias',   val: t.htf_bias   || '—' },
+    { lbl: 'Timeframe',  val: t.timeframe  ? t.timeframe + 'm' : '—' },
+    { lbl: 'Instrument', val: t.instrument || t.ticker || '—' },
+    { lbl: 'Entry',      val: fmt(t.entry) },
+    { lbl: 'Stop Loss',  val: fmt(t.sl) },
+    { lbl: 'TP1',        val: fmt(t.tp1) },
+    { lbl: 'TP2',        val: fmt(t.tp2) },
+    { lbl: 'TP3',        val: fmt(t.tp3) },
+  ].filter(i => i.val !== '—' && i.val !== 'null' && i.val != null);
+
+  const probsHtml = (t.win_prob_tp1 || t.win_prob_tp2 || t.win_prob_tp3) ? `
+    <div style="margin-top:10px;padding-top:10px;border-top:1px solid var(--border-subtle)">
+      <div style="font-size:9px;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--text-muted);margin-bottom:8px">Win Probabilities</div>
+      ${[{lbl:'TP1', val:t.win_prob_tp1, cls:'tp1'},{lbl:'TP2', val:t.win_prob_tp2, cls:'tp2'},{lbl:'TP3', val:t.win_prob_tp3, cls:'tp3'}]
+        .filter(p => p.val != null)
+        .map(p => `<div class="detail-prob-row">
+          <span class="detail-prob-lbl">${p.lbl} Prob</span>
+          <div class="detail-prob-track"><div class="detail-prob-fill ${p.cls}" style="width:${Math.min(p.val||0,100)}%;background:var(--${p.cls})"></div></div>
+          <span class="detail-prob-val">${p.val}%</span>
+        </div>`).join('')}
+    </div>` : '';
+
+  return `<div class="detail-grid">${
+    items.map(i => `<div class="detail-item"><div class="detail-item-lbl">${i.lbl}</div><div class="detail-item-val">${escH(String(i.val))}</div></div>`).join('')
+  }</div>${probsHtml}`;
+}
+
+function toggleDetail(id) {
+  if (expandedIds.has(id)) {
+    expandedIds.delete(id);
+  } else {
+    expandedIds.add(id);
+  }
+  // Toggle this row without full re-render for performance
+  const row = document.querySelector(`.trade-row[onclick="toggleDetail(${id})"]`);
+  const tr  = document.getElementById('detail-tr-' + id);
+  const panel = document.getElementById('detail-panel-' + id);
+  if (row)   row.classList.toggle('expanded', expandedIds.has(id));
+  if (tr)    tr.style.display  = expandedIds.has(id) ? 'table-row' : 'none';
+  if (panel) panel.classList.toggle('open', expandedIds.has(id));
+  // Update caret
+  const caret = row?.querySelector('.expand-caret');
+  if (caret) caret.style.transform = expandedIds.has(id) ? 'rotate(90deg)' : '';
+}
+
+/* ── Mobile cards ─────────────────────────────────────── */
+function renderMobileCards() {
+  const el = document.getElementById('mobileCards');
+  if (!filteredList.length) {
+    el.innerHTML = buildEmptyState('◉', 'No trades match filter', '');
+    return;
+  }
+  el.innerHTML = filteredList.map(t => {
+    const isLong  = t.direction === 'LONG';
+    const pnlCls  = t.pnl_pts > 0 ? 'wr-hi' : t.pnl_pts < 0 ? 'wr-lo' : '';
+    const pnlTxt  = t.pnl_pts != null ? (t.pnl_pts >= 0 ? '+' : '') + t.pnl_pts + 'pts' : '—';
+    const mkt     = t.instrument || t.ticker?.replace('1!', '') || '—';
+    return `<div class="trade-card-item ${isLong ? 'long-border' : 'short-border'}">
+      <div class="trade-card-row">
+        <div style="display:flex;align-items:center;gap:6px">
+          ${directionBadge(t.direction)}
+          ${gradeBadge(t.grade)}
+          <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-secondary)">${escH(mkt)}</span>
+        </div>
+        <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)">${hhmm(t.received_at)}</span>
+      </div>
+      <div class="trade-card-row" style="margin-top:6px">
+        <span style="font-size:11px;color:var(--text-secondary)">${escH(t.setup || '—')}</span>
+        ${t.result ? outcomeBadge(t.result) : '<span style="font-size:10px;color:var(--text-muted)">pending</span>'}
+      </div>
+      <div class="trade-card-row" style="margin-top:6px;padding-top:6px;border-top:1px solid var(--border-subtle)">
+        <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">Entry: ${fmt(t.entry)}</span>
+        <span class="${pnlCls}" style="font-family:var(--font-mono);font-size:13px;font-weight:700">${pnlTxt}</span>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+/* ── P&L Chart ────────────────────────────────────────── */
+function renderPnlChart() {
+  const resolved = filteredList
+    .filter(t => t.pnl_pts != null)
+    .slice() // copy
+    .sort((a, b) => (a.received_at > b.received_at ? 1 : -1)); // oldest first
+
+  const ctx = document.getElementById('pnlChart').getContext('2d');
+  if (pnlChart) pnlChart.destroy();
+
+  if (resolved.length < 2) {
+    document.getElementById('pnlChartLbl').textContent = 'no resolved data';
+    document.getElementById('pnlSection').style.display = 'none';
+    return;
+  }
+  document.getElementById('pnlSection').style.display = '';
+  document.getElementById('pnlChartLbl').textContent = resolved.length + ' resolved trades';
+
+  let cum = 0;
+  const labels = [], data = [], pointColors = [];
+  for (const t of resolved) {
+    cum += t.pnl_pts;
+    labels.push(hhmm(t.received_at));
+    data.push(+cum.toFixed(1));
+    pointColors.push(cum >= 0 ? '#00d4a0' : '#ff3d5a');
+  }
+
+  const finalVal  = data[data.length - 1] ?? 0;
+  const lineColor = finalVal >= 0 ? '#00d4a0' : '#ff3d5a';
+  const fillColor = finalVal >= 0 ? 'rgba(0,212,160,.07)' : 'rgba(255,61,90,.07)';
+
+  pnlChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        borderColor: lineColor,
+        backgroundColor: fillColor,
+        borderWidth: 2,
+        pointRadius: data.length > 40 ? 0 : 3,
+        pointBackgroundColor: pointColors,
+        pointHoverRadius: 5,
+        tension: 0.3,
+        fill: true,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: {
+          ticks: { color: '#48486a', font: { size: 9 }, maxTicksLimit: 8 },
+          grid:  { color: 'rgba(255,255,255,.04)' },
+        },
+        y: {
+          ticks: { color: '#48486a', font: { size: 9 }, callback: v => v + 'pts' },
+          grid:  { color: 'rgba(255,255,255,.04)' },
+        },
+      },
+    },
+  });
+}
+
+/* ── Sortable columns ─────────────────────────────────── */
+document.querySelectorAll('.trade-table thead th.sortable').forEach(th => {
+  th.addEventListener('click', () => {
+    const col = th.dataset.col;
+    if (sortCol === col) {
+      sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+    } else {
+      sortCol = col;
+      sortDir = 'desc';
+    }
+    // Update visual indicators
+    document.querySelectorAll('.trade-table thead th').forEach(h => {
+      h.classList.remove('asc', 'desc');
+    });
+    th.classList.add(sortDir);
+    applyFiltersAndRender();
+  });
+});
+// Mark default sort column
+document.querySelector(`th[data-col="received_at"]`)?.classList.add('desc');
+
+/* ── Main load ───────────────────────────────────────── */
+async function load() {
+  try {
+    const [tradesRes, statsRes] = await Promise.all([
+      fetch('/api/signals?limit=200'),
+      fetch('/api/stats'),
+    ]);
+    const [trades, stats] = await Promise.all([tradesRes.json(), statsRes.json()]);
+
+    allTrades = trades;
+    renderSummary(stats, trades);
+    applyFiltersAndRender();
+
+    document.getElementById('refreshLbl').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    console.error('Load error:', e);
+  }
+}
+
+load();
+setInterval(load, 60_000);
+</script>
+</body>
+</html>

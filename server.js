@@ -307,7 +307,9 @@ app.post('/api/journal/backtest-note', (req, res) => {
 });
 
 // ── STATIC ────────────────────────────────────────────────────────────────────
-app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
+app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'home.html')));
+app.get('/signals',  (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
+app.get('/trades',   (req, res) => res.sendFile(path.join(__dirname, 'trades.html')));
 app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest-dashboard.html')));
 app.get('/journal',  (req, res) => res.sendFile(path.join(__dirname, 'journal.html')));
 
