@@ -1,0 +1,557 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Calendar</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    body { overflow-y: auto; }
+    .cal-page { max-width: 900px; margin: 0 auto; padding: 0 16px 88px; }
+
+    /* ── Page header ──────────────────────────────────── */
+    .cal-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 0 16px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .cal-hdr h1 { font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+
+    /* ── Month navigator ──────────────────────────────── */
+    .month-nav {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .month-nav-btn {
+      width: 32px;
+      height: 32px;
+      border-radius: 8px;
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-secondary);
+      font: inherit;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: var(--t);
+    }
+    .month-nav-btn:hover { background: var(--bg-elevated); border-color: var(--border-strong); color: var(--text-primary); }
+    .month-name { font-family: var(--font-mono); font-size: 14px; font-weight: 700; min-width: 130px; text-align: center; }
+
+    /* ── Summary bar ──────────────────────────────────── */
+    .month-summary {
+      display: flex;
+      gap: 20px;
+      padding: 10px 14px;
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      margin-bottom: 14px;
+      flex-wrap: wrap;
+    }
+    .month-sum-item { font-size: 12px; }
+    .month-sum-item .v { font-family: var(--font-mono); font-weight: 700; }
+    .month-sum-item .v.pos { color: var(--green); }
+    .month-sum-item .v.neg { color: var(--red); }
+    .month-sum-item .v.neu { color: var(--blue); }
+
+    /* ── Calendar grid ────────────────────────────────── */
+    .cal-grid-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .cal-weekdays {
+      display: grid;
+      grid-template-columns: repeat(7, 1fr);
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border-default);
+    }
+    .cal-weekday {
+      padding: 8px 4px;
+      text-align: center;
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .cal-days { display: grid; grid-template-columns: repeat(7, 1fr); }
+    .cal-day {
+      border-right: 1px solid var(--border-subtle);
+      border-bottom: 1px solid var(--border-subtle);
+      min-height: 80px;
+      padding: 6px;
+      position: relative;
+      cursor: default;
+      transition: background var(--t);
+    }
+    .cal-day:nth-child(7n) { border-right: none; }
+    .cal-day.has-trades { cursor: pointer; }
+    .cal-day.has-trades:hover { background: rgba(255,255,255,.025); }
+    .cal-day.today { box-shadow: inset 0 0 0 2px var(--yellow); }
+    .cal-day.selected { background: rgba(77,184,255,.06); box-shadow: inset 0 0 0 2px var(--blue); }
+    .cal-day.empty { opacity: .15; cursor: default; }
+    .cal-day.future { opacity: .4; }
+
+    .cal-day-num {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 4px;
+    }
+    .cal-day.today .cal-day-num { color: var(--yellow); font-weight: 700; }
+    .cal-day.has-trades .cal-day-num { color: var(--text-primary); }
+
+    .cal-day-pnl {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .cal-day-pnl.pos { color: var(--green); }
+    .cal-day-pnl.neg { color: var(--red); }
+    .cal-day-pnl.flat { color: var(--orange); }
+
+    .cal-day-dots {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 3px;
+      margin-top: 4px;
+    }
+    .cal-dot {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+    }
+    .cal-dot.win  { background: var(--green); }
+    .cal-dot.loss { background: var(--red); }
+    .cal-dot.be   { background: var(--orange); }
+    .cal-dot.open { background: var(--blue); }
+
+    .cal-day-inst {
+      position: absolute;
+      bottom: 4px;
+      right: 5px;
+      display: flex;
+      gap: 3px;
+    }
+    .cal-inst-tag {
+      font-size: 8px;
+      font-weight: 700;
+      font-family: var(--font-mono);
+      padding: 1px 4px;
+      border-radius: 3px;
+    }
+    .cal-inst-tag.mnq { background: var(--blue-glow); color: var(--mnq); }
+    .cal-inst-tag.mgc { background: var(--yellow-glow); color: var(--mgc); }
+
+    /* ── Day detail drawer ────────────────────────────── */
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,.55);
+      z-index: 199;
+      display: none;
+      backdrop-filter: blur(2px);
+    }
+    .drawer-backdrop.open { display: block; }
+
+    .day-drawer {
+      position: fixed;
+      bottom: 0;
+      left: 0;
+      right: 0;
+      z-index: 200;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-bottom: none;
+      border-radius: 16px 16px 0 0;
+      max-height: 65dvh;
+      display: flex;
+      flex-direction: column;
+      transform: translateY(100%);
+      transition: transform 0.3s cubic-bezier(.32,.72,0,1);
+    }
+    .day-drawer.open { transform: translateY(0); }
+
+    .drawer-handle {
+      width: 36px;
+      height: 4px;
+      background: var(--border-strong);
+      border-radius: 4px;
+      margin: 10px auto 0;
+      flex-shrink: 0;
+    }
+    .drawer-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 14px 20px 12px;
+      border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+    .drawer-title { font-size: 14px; font-weight: 700; }
+    .drawer-close {
+      width: 28px; height: 28px;
+      border-radius: 6px;
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 14px;
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      transition: var(--t);
+    }
+    .drawer-close:hover { background: var(--bg-surface); color: var(--text-primary); }
+    .drawer-summary {
+      display: flex;
+      gap: 20px;
+      padding: 10px 20px;
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+    .drawer-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 12px 20px 24px;
+    }
+
+    /* Day detail trade row */
+    .day-trade-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .day-trade-row:last-child { border-bottom: none; }
+    .dtr-time { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); min-width: 40px; flex-shrink: 0; }
+    .dtr-dir  { font-size: 11px; font-weight: 700; min-width: 14px; flex-shrink: 0; }
+    .dtr-dir.long  { color: var(--green); }
+    .dtr-dir.short { color: var(--red); }
+    .dtr-setup { font-size: 11px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .dtr-pnl  { font-family: var(--font-mono); font-size: 12px; font-weight: 700; min-width: 52px; text-align: right; flex-shrink: 0; }
+    .dtr-pnl.pos { color: var(--green); }
+    .dtr-pnl.neg { color: var(--red); }
+    .dtr-pnl.flat { color: var(--orange); }
+
+    /* ── Responsive ───────────────────────────────────── */
+    @media (max-width: 640px) {
+      .cal-day { min-height: 60px; }
+      .cal-day-pnl { font-size: 10px; }
+      .cal-inst-tag { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link active">Calendar</a>
+      <a href="/backtest" class="nav-link">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
+</header>
+
+<!-- ── CONTENT ───────────────────────────────────────── -->
+<div class="cal-page">
+
+  <!-- Page Header -->
+  <div class="cal-hdr">
+    <h1>Trade Calendar</h1>
+    <div class="month-nav">
+      <button class="month-nav-btn" onclick="prevMonth()">‹</button>
+      <span class="month-name" id="monthLabel">—</span>
+      <button class="month-nav-btn" onclick="nextMonth()">›</button>
+    </div>
+  </div>
+
+  <!-- Month Summary Bar -->
+  <div class="month-summary" id="monthSummary">
+    <span class="month-sum-item"><span class="v neu" id="msTrades">—</span> trades</span>
+    <span class="month-sum-item">P&amp;L: <span class="v" id="msPnl">—</span></span>
+    <span class="month-sum-item"><span class="v" style="color:var(--green)" id="msWins">—</span> wins</span>
+    <span class="month-sum-item"><span class="v" style="color:var(--red)" id="msLoss">—</span> losses</span>
+    <span class="month-sum-item">WR: <span class="v" style="color:var(--yellow)" id="msWr">—</span></span>
+  </div>
+
+  <!-- Calendar Grid -->
+  <div class="cal-grid-wrap">
+    <div class="cal-weekdays">
+      <div class="cal-weekday">Sun</div>
+      <div class="cal-weekday">Mon</div>
+      <div class="cal-weekday">Tue</div>
+      <div class="cal-weekday">Wed</div>
+      <div class="cal-weekday">Thu</div>
+      <div class="cal-weekday">Fri</div>
+      <div class="cal-weekday">Sat</div>
+    </div>
+    <div class="cal-days" id="calDays">
+      <!-- rendered by JS -->
+    </div>
+  </div>
+
+  <!-- Legend -->
+  <div style="display:flex;gap:14px;align-items:center;padding:4px 2px 12px;flex-wrap:wrap">
+    <span style="font-size:10px;color:var(--text-muted)">Legend:</span>
+    <span style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted)"><span class="cal-dot win"></span>Win</span>
+    <span style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted)"><span class="cal-dot loss"></span>Loss</span>
+    <span style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted)"><span class="cal-dot be"></span>BE</span>
+    <span style="display:flex;align-items:center;gap:4px;font-size:10px;color:var(--text-muted)"><span class="cal-dot open"></span>Open</span>
+    <span style="margin-left:auto;font-size:10px;color:var(--text-muted)">Click a day to see trades</span>
+  </div>
+
+</div><!-- /cal-page -->
+
+<!-- ── DAY DETAIL DRAWER ─────────────────────────────── -->
+<div class="drawer-backdrop" id="drawerBackdrop" onclick="closeDrawer()"></div>
+<div class="day-drawer" id="dayDrawer">
+  <div class="drawer-handle"></div>
+  <div class="drawer-hdr">
+    <span class="drawer-title" id="drawerTitle">—</span>
+    <button class="drawer-close" onclick="closeDrawer()">✕</button>
+  </div>
+  <div class="drawer-summary" id="drawerSummary"></div>
+  <div class="drawer-body" id="drawerBody"></div>
+</div>
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/"        class="bottom-nav-item"><span class="bottom-nav-icon">⌂</span><span class="bottom-nav-label">Home</span></a>
+    <a href="/signals" class="bottom-nav-item"><span class="bottom-nav-icon">◈</span><span class="bottom-nav-label">Signals</span></a>
+    <a href="/trades"  class="bottom-nav-item"><span class="bottom-nav-icon">◉</span><span class="bottom-nav-label">Trades</span></a>
+    <a href="/journal" class="bottom-nav-item"><span class="bottom-nav-icon">◎</span><span class="bottom-nav-label">Journal</span></a>
+  </div>
+</nav>
+
+<script src="/ui-components.js"></script>
+<script>
+'use strict';
+
+let allSignals  = [];
+let dailyMap    = {};         // ISO date → [signals]
+let currentYear, currentMonth;
+let selectedDay = null;
+
+const MONTHS = ['January','February','March','April','May','June',
+                'July','August','September','October','November','December'];
+
+/* ── Build daily map from signals ────────────────────── */
+function buildDailyMap(signals) {
+  dailyMap = {};
+  for (const s of signals) {
+    if (!s.received_at) continue;
+    const d   = new Date(s.received_at + (s.received_at.includes('T') ? '' : ' UTC'));
+    const key = d.toISOString().slice(0, 10);
+    (dailyMap[key] = dailyMap[key] || []).push(s);
+  }
+}
+
+/* ── Month summary ───────────────────────────────────── */
+function renderMonthSummary() {
+  const prefix = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}`;
+  const days   = Object.entries(dailyMap)
+    .filter(([k]) => k.startsWith(prefix))
+    .flatMap(([, v]) => v);
+
+  const wins   = days.filter(s => s.result === 'WIN').length;
+  const losses = days.filter(s => s.result === 'LOSS').length;
+  const res    = wins + losses;
+  const pnl    = days.filter(s => s.pnl_pts != null).reduce((a, s) => a + s.pnl_pts, 0);
+
+  document.getElementById('msTrades').textContent = days.length;
+  const pnlEl = document.getElementById('msPnl');
+  pnlEl.textContent  = days.some(s => s.pnl_pts != null) ? (pnl >= 0 ? '+' : '') + pnl.toFixed(0) + 'pts' : '—';
+  pnlEl.className    = `v ${pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'neu'}`;
+  document.getElementById('msWins').textContent = wins;
+  document.getElementById('msLoss').textContent = losses;
+  document.getElementById('msWr').textContent   = res > 0 ? (wins / res * 100).toFixed(1) + '%' : '—';
+}
+
+/* ── Calendar grid ───────────────────────────────────── */
+function renderGrid() {
+  document.getElementById('monthLabel').textContent = `${MONTHS[currentMonth]} ${currentYear}`;
+  renderMonthSummary();
+
+  const firstDow     = new Date(currentYear, currentMonth, 1).getDay();
+  const daysInMonth  = new Date(currentYear, currentMonth + 1, 0).getDate();
+  const today        = new Date();
+  const todayISO     = today.toISOString().slice(0, 10);
+
+  const cells = [];
+  for (let i = 0; i < firstDow; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(d);
+  while (cells.length % 7 !== 0) cells.push(null);
+
+  const container = document.getElementById('calDays');
+  container.innerHTML = cells.map(day => {
+    if (day === null) return '<div class="cal-day empty"></div>';
+
+    const iso  = `${currentYear}-${String(currentMonth + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+    const sigs = dailyMap[iso] || [];
+    const isToday   = iso === todayISO;
+    const isFuture  = iso > todayISO;
+    const isSelected = selectedDay === iso;
+    const hasTrades = sigs.length > 0;
+
+    const pnl  = sigs.filter(s => s.pnl_pts != null).reduce((a, s) => a + s.pnl_pts, 0);
+    const wins = sigs.filter(s => s.result === 'WIN').length;
+    const loss = sigs.filter(s => s.result === 'LOSS').length;
+    const bes  = sigs.filter(s => s.result === 'BE').length;
+    const open = sigs.filter(s => !s.result).length;
+
+    const pnlCls = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'flat';
+    const pnlStr = hasTrades && sigs.some(s => s.pnl_pts != null)
+      ? (pnl >= 0 ? '+' : '') + pnl.toFixed(0) + 'pts'
+      : '';
+
+    const dots = [
+      ...Array(wins).fill('<span class="cal-dot win"></span>'),
+      ...Array(loss).fill('<span class="cal-dot loss"></span>'),
+      ...Array(bes).fill('<span class="cal-dot be"></span>'),
+      ...Array(open).fill('<span class="cal-dot open"></span>'),
+    ].slice(0, 8).join('');
+
+    // Instrument tags
+    const insts = [...new Set(sigs.map(s => s.instrument || (s.ticker || '').replace('1!', '')).filter(Boolean))];
+    const instTags = insts.slice(0, 2).map(i => {
+      const cls = i.includes('MNQ') || i.includes('NQ') ? 'mnq' : i.includes('MGC') || i.includes('GC') ? 'mgc' : '';
+      return cls ? `<span class="cal-inst-tag ${cls}">${i}</span>` : '';
+    }).join('');
+
+    const cls = [
+      'cal-day',
+      hasTrades ? 'has-trades' : '',
+      isToday   ? 'today' : '',
+      isFuture  ? 'future' : '',
+      isSelected ? 'selected' : '',
+    ].filter(Boolean).join(' ');
+
+    const onclick = hasTrades ? `onclick="openDrawer('${iso}')"` : '';
+
+    return `<div class="${cls}" ${onclick}>
+      <div class="cal-day-num">${day}</div>
+      ${pnlStr ? `<div class="cal-day-pnl ${pnlCls}">${pnlStr}</div>` : ''}
+      ${dots ? `<div class="cal-day-dots">${dots}</div>` : ''}
+      ${instTags ? `<div class="cal-day-inst">${instTags}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+/* ── Drawer ──────────────────────────────────────────── */
+function openDrawer(iso) {
+  selectedDay = iso;
+  renderGrid();
+
+  const sigs = dailyMap[iso] || [];
+  const d    = new Date(iso + 'T12:00:00Z');
+  const dateStr = d.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' });
+
+  document.getElementById('drawerTitle').textContent = dateStr;
+
+  // Summary
+  const wins = sigs.filter(s => s.result === 'WIN').length;
+  const loss = sigs.filter(s => s.result === 'LOSS').length;
+  const bes  = sigs.filter(s => s.result === 'BE').length;
+  const pnl  = sigs.filter(s => s.pnl_pts != null).reduce((a, s) => a + s.pnl_pts, 0);
+  const pnlStr = sigs.some(s => s.pnl_pts != null)
+    ? (pnl >= 0 ? `<span style="color:var(--green)">+${pnl.toFixed(0)}pts</span>` : `<span style="color:var(--red)">${pnl.toFixed(0)}pts</span>`)
+    : '—';
+
+  document.getElementById('drawerSummary').innerHTML = `
+    <span class="month-sum-item"><span class="v neu">${sigs.length}</span> signals</span>
+    <span class="month-sum-item">P&amp;L: ${pnlStr}</span>
+    <span class="month-sum-item"><span class="v" style="color:var(--green)">${wins}W</span></span>
+    <span class="month-sum-item"><span class="v" style="color:var(--red)">${loss}L</span></span>
+    ${bes ? `<span class="month-sum-item"><span class="v" style="color:var(--orange)">${bes} BE</span></span>` : ''}`;
+
+  // Trade rows
+  document.getElementById('drawerBody').innerHTML = sigs.length
+    ? sigs.map(s => {
+        const isLong = s.direction === 'LONG';
+        const pnlPts = s.pnl_pts;
+        const pnlCls = pnlPts > 0 ? 'pos' : pnlPts < 0 ? 'neg' : 'flat';
+        const pnlTxt = pnlPts != null ? (pnlPts >= 0 ? '+' : '') + pnlPts + 'pts' : '—';
+        return `<div class="day-trade-row">
+          <span class="dtr-time">${hhmm(s.received_at)}</span>
+          <span class="dtr-dir ${isLong ? 'long' : 'short'}">${isLong ? '▲' : '▼'}</span>
+          ${gradeBadge(s.grade)}
+          <span class="dtr-setup">${escH(s.setup || '—')}</span>
+          ${s.result ? outcomeBadge(s.result) : '<span style="font-size:10px;color:var(--text-muted)">open</span>'}
+          <span class="dtr-pnl ${s.result ? pnlCls : ''}">${s.result ? pnlTxt : '—'}</span>
+        </div>`;
+      }).join('')
+    : buildEmptyState('◎', 'No trades', 'No signals recorded for this day.');
+
+  document.getElementById('drawerBackdrop').classList.add('open');
+  document.getElementById('dayDrawer').classList.add('open');
+}
+
+function closeDrawer() {
+  selectedDay = null;
+  document.getElementById('drawerBackdrop').classList.remove('open');
+  document.getElementById('dayDrawer').classList.remove('open');
+  renderGrid();
+}
+
+/* ── Month navigation ────────────────────────────────── */
+function prevMonth() {
+  if (currentMonth === 0) { currentMonth = 11; currentYear--; }
+  else currentMonth--;
+  renderGrid();
+}
+function nextMonth() {
+  const now = new Date();
+  if (currentYear > now.getFullYear() || (currentYear === now.getFullYear() && currentMonth >= now.getMonth())) return;
+  if (currentMonth === 11) { currentMonth = 0; currentYear++; }
+  else currentMonth++;
+  renderGrid();
+}
+
+/* ── Load ────────────────────────────────────────────── */
+async function load() {
+  try {
+    const res   = await fetch('/api/journal/signals?limit=500');
+    allSignals  = await res.json();
+    buildDailyMap(allSignals);
+    renderGrid();
+    document.getElementById('refreshLbl').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) { console.error(e); }
+}
+
+// Init to current month
+const _now = new Date();
+currentYear  = _now.getFullYear();
+currentMonth = _now.getMonth();
+
+load();
+setInterval(load, 120_000);
+</script>
+</body>
+</html>

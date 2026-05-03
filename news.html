@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — News</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    body { overflow-y: auto; }
+    .news-wrap { max-width: 860px; margin: 0 auto; padding: 0 16px 88px; }
+
+    /* ── Header ───────────────────────────────────────── */
+    .news-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 0 16px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .news-hdr h1 { font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+    .news-hdr p  { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+
+    /* ── No-API banner ────────────────────────────────── */
+    .api-notice {
+      background: var(--yellow-glow);
+      border: 1px solid var(--yellow-border);
+      border-radius: 10px;
+      padding: 12px 16px;
+      margin-bottom: 16px;
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+    }
+    .api-notice-icon { font-size: 16px; flex-shrink: 0; margin-top: 1px; }
+    .api-notice-body { font-size: 12px; color: var(--text-secondary); line-height: 1.6; }
+    .api-notice-body strong { color: var(--yellow); }
+
+    /* ── News card ────────────────────────────────────── */
+    .news-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      padding: 14px 16px;
+      margin-bottom: 8px;
+      transition: border-color var(--t), transform var(--t), box-shadow var(--t);
+      cursor: default;
+    }
+    .news-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-1px);
+      box-shadow: 0 4px 16px rgba(0,0,0,.3);
+    }
+    .news-card-hdr {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+    .news-cat-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .news-cat-dot.market   { background: var(--blue); }
+    .news-cat-dot.analysis { background: var(--green); }
+    .news-cat-dot.strategy { background: var(--purple); }
+    .news-cat-dot.regime   { background: var(--yellow); }
+    .news-source { font-size: 10px; font-weight: 600; color: var(--text-muted); }
+    .news-time   { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); margin-left: auto; }
+    .news-title  { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 5px; line-height: 1.4; }
+    .news-body   { font-size: 11px; color: var(--text-secondary); line-height: 1.6; }
+    .news-footer {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      margin-top: 10px;
+      flex-wrap: wrap;
+    }
+    .news-tag {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      padding: 2px 7px;
+      border-radius: 4px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+    }
+    .news-market-badge {
+      margin-left: auto;
+      font-family: var(--font-mono);
+      font-size: 9px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 4px;
+    }
+    .news-market-badge.mnq { background: var(--blue-glow);   color: var(--mnq); border: 1px solid var(--blue-border); }
+    .news-market-badge.mgc { background: var(--yellow-glow); color: var(--mgc); border: 1px solid var(--yellow-border); }
+    .news-market-badge.all { background: var(--bg-elevated); color: var(--text-muted); border: 1px solid var(--border-default); }
+
+    /* ── Empty / loading ──────────────────────────────── */
+    .news-section-title {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 14px 0 8px;
+      border-bottom: 1px solid var(--border-subtle);
+      margin-bottom: 10px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .news-section-title::after { content: ''; flex: 1; height: 1px; background: var(--border-subtle); }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
+      <a href="/backtest" class="nav-link">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/news"     class="nav-link active">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
+</header>
+
+<!-- ── CONTENT ───────────────────────────────────────── -->
+<div class="news-wrap">
+
+  <!-- Header -->
+  <div class="news-hdr">
+    <div>
+      <h1>Market Intelligence</h1>
+      <p>Internal analysis — no external news feed connected</p>
+    </div>
+    <div class="filter-chips" id="catFilter">
+      <button class="filter-chip active" onclick="setCat('ALL',   this)">All</button>
+      <button class="filter-chip"        onclick="setCat('MARKET',   this)">Market Data</button>
+      <button class="filter-chip"        onclick="setCat('ANALYSIS', this)">Analysis</button>
+      <button class="filter-chip"        onclick="setCat('STRATEGY', this)">Strategy</button>
+    </div>
+  </div>
+
+  <!-- API Notice -->
+  <div class="api-notice">
+    <span class="api-notice-icon">ℹ</span>
+    <div class="api-notice-body">
+      <strong>No external news API is connected.</strong> This page shows live market intelligence generated
+      from your own signal data — regime analysis, setup performance, price snapshots, and strategy updates.
+      To add real news, connect a financial data API and expose it at <code style="font-family:var(--font-mono);color:var(--blue);background:var(--blue-glow);padding:1px 5px;border-radius:3px">/api/news</code> in server.js.
+    </div>
+  </div>
+
+  <!-- Feed -->
+  <div id="newsFeed">
+    <div class="skeleton skeleton-card" style="margin-bottom:8px"></div>
+    <div class="skeleton skeleton-card" style="margin-bottom:8px"></div>
+    <div class="skeleton skeleton-card"></div>
+  </div>
+
+</div><!-- /news-wrap -->
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/"        class="bottom-nav-item"><span class="bottom-nav-icon">⌂</span><span class="bottom-nav-label">Home</span></a>
+    <a href="/signals" class="bottom-nav-item"><span class="bottom-nav-icon">◈</span><span class="bottom-nav-label">Signals</span></a>
+    <a href="/trades"  class="bottom-nav-item"><span class="bottom-nav-icon">◉</span><span class="bottom-nav-label">Trades</span></a>
+    <a href="/journal" class="bottom-nav-item"><span class="bottom-nav-icon">◎</span><span class="bottom-nav-label">Journal</span></a>
+  </div>
+</nav>
+
+<script src="/ui-components.js"></script>
+<script>
+'use strict';
+
+let allItems  = [];
+let catFilter = 'ALL';
+
+function setCat(f, btn) {
+  catFilter = f;
+  document.querySelectorAll('#catFilter .filter-chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderFeed();
+}
+
+function card({ cat, dotCls, source, time, title, body, tags, market }) {
+  const tagsHtml = (tags || []).map(t => `<span class="news-tag">${escH(t)}</span>`).join('');
+  const mktBadge = market
+    ? `<span class="news-market-badge ${market.toLowerCase()}">${market}</span>` : '';
+  return { cat, html: `<div class="news-card">
+    <div class="news-card-hdr">
+      <span class="news-cat-dot ${dotCls}"></span>
+      <span class="news-source">${escH(source)}</span>
+      <span class="news-time">${time}</span>
+    </div>
+    <div class="news-title">${escH(title)}</div>
+    <div class="news-body">${escH(body)}</div>
+    <div class="news-footer">${tagsHtml}${mktBadge}</div>
+  </div>` };
+}
+
+function renderFeed() {
+  const el       = document.getElementById('newsFeed');
+  const filtered = catFilter === 'ALL' ? allItems : allItems.filter(i => i.cat === catFilter);
+  if (!filtered.length) {
+    el.innerHTML = buildEmptyState('◈', 'No items in this category', '');
+    return;
+  }
+  el.innerHTML = filtered.map(i => i.html).join('');
+}
+
+async function load() {
+  try {
+    const [pricesRes, learningRes, statsRes] = await Promise.all([
+      fetch('/api/market/prices').catch(() => null),
+      fetch('/api/learning').catch(() => null),
+      fetch('/api/stats'),
+    ]);
+    const prices   = pricesRes   ? await pricesRes.json()   : {};
+    const learning = learningRes ? await learningRes.json() : {};
+    const stats    = await statsRes.json();
+
+    allItems = [];
+    const now = new Date();
+    const ageStr = t => timeAgo(t);
+
+    // ── Market Data items ──────────────────────────────
+    for (const [sym, p] of Object.entries(prices)) {
+      const chg     = p.change_pct ?? 0;
+      const mkt     = sym.includes('MNQ') || sym.includes('NQ') ? 'MNQ' : sym.includes('MGC') || sym.includes('GC') ? 'MGC' : 'ALL';
+      const dir     = chg >= 0 ? 'up' : 'down';
+      const priceStr = p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
+      allItems.push(card({
+        cat: 'MARKET', dotCls: 'market', source: 'Price Feed', time: timeAgo(p.snapped_at),
+        title: `${sym} ${dir === 'up' ? '↑' : '↓'} ${Math.abs(chg).toFixed(2)}%`,
+        body:  `${sym} is trading at ${priceStr}. ${chg >= 0 ? 'Positive' : 'Negative'} momentum with a ${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% session change. High: ${p.high_24h ?? '—'} · Low: ${p.low_24h ?? '—'}.`,
+        tags:  [chg >= 0 ? 'Bullish' : 'Bearish', 'Price Update'],
+        market: mkt,
+      }));
+    }
+
+    // ── Analysis items (regime) ────────────────────────
+    const regime = learning?.regime;
+    if (regime) {
+      const regDesc = {
+        trending: 'Strong directional bias detected. OTE and continuation setups are performing above average. Avoid fade trades.',
+        choppy:   'Market is oscillating without clear direction. Setups requiring trend confirmation are underperforming. Prefer range-bound strategies.',
+        mixed:    'No dominant regime identified. Mixed results across setup types. Reduce position sizing and be selective.',
+      };
+      allItems.push(card({
+        cat: 'ANALYSIS', dotCls: 'analysis', source: 'Regime Engine', time: timeAgo(now.toISOString()),
+        title: `Market Regime: ${regime.charAt(0).toUpperCase() + regime.slice(1)}`,
+        body:  regDesc[regime] || 'Regime analysis is being computed from recent outcomes.',
+        tags:  ['Regime', 'Auto-Analysis'],
+        market: 'ALL',
+      }));
+    }
+
+    // Hot / cold setups
+    const setups = (learning?.bySetup || []).filter(s => s.total >= 3);
+    if (setups.length) {
+      const hot  = [...setups].sort((a, b) => b.win_pct - a.win_pct)[0];
+      const cold = [...setups].sort((a, b) => a.win_pct - b.win_pct)[0];
+      if (hot) allItems.push(card({
+        cat: 'ANALYSIS', dotCls: 'analysis', source: 'Setup Tracker', time: 'live',
+        title: `🔥 Hot Setup: ${hot.setup} — ${hot.win_pct}% win rate`,
+        body:  `${hot.setup} is your best-performing setup with ${hot.win_pct}% win rate across ${hot.total} trades. Consider increasing confidence when this setup fires.`,
+        tags:  ['Hot Setup', 'Performance'],
+        market: 'ALL',
+      }));
+      if (cold && cold.setup !== hot?.setup) allItems.push(card({
+        cat: 'ANALYSIS', dotCls: 'analysis', source: 'Setup Tracker', time: 'live',
+        title: `❄ Cold Setup: ${cold.setup} — ${cold.win_pct}% win rate`,
+        body:  `${cold.setup} is underperforming with only ${cold.win_pct}% win rate across ${cold.total} trades. Review entry criteria or temporarily reduce size on this setup.`,
+        tags:  ['Cold Setup', 'Risk'],
+        market: 'ALL',
+      }));
+    }
+
+    // ── Strategy items ─────────────────────────────────
+    const outcomes = stats.outcomes || [];
+    const wins  = (outcomes.find(o => o.result === 'WIN')  || {}).n || 0;
+    const losses = (outcomes.find(o => o.result === 'LOSS') || {}).n || 0;
+    const total  = wins + losses;
+    const wr = total > 0 ? (wins / total * 100).toFixed(1) : null;
+
+    allItems.push(card({
+      cat: 'STRATEGY', dotCls: 'strategy', source: 'System Stats', time: 'live',
+      title: `System Overview — ${stats.total} total signals`,
+      body:  `${stats.total} signals received. ${total} resolved with ${wr ? wr + '% win rate' : 'no resolved outcomes yet'}. ${stats.last24h} signal${stats.last24h !== 1 ? 's' : ''} in the last 24 hours.`,
+      tags:  ['Summary', 'System'],
+      market: 'ALL',
+    }));
+
+    // Grade breakdown
+    const grades = stats.byGrade || [];
+    if (grades.length) {
+      const aplus = (grades.find(g => g.grade === 'A+') || {}).n || 0;
+      const a     = (grades.find(g => g.grade === 'A')  || {}).n || 0;
+      allItems.push(card({
+        cat: 'STRATEGY', dotCls: 'strategy', source: 'Grading Engine', time: 'live',
+        title: `Grade Distribution — A+: ${aplus} · A: ${a}`,
+        body:  `${aplus} A+ grade signals (${total > 0 ? ((aplus / stats.total) * 100).toFixed(0) : '—'}% of total) and ${a} A grade signals recorded. A+ signals carry stricter entry criteria and typically higher conviction.`,
+        tags:  ['Grade', 'Quality Filter'],
+        market: 'ALL',
+      }));
+    }
+
+    renderFeed();
+    document.getElementById('refreshLbl').textContent = 'Updated ' + now.toLocaleTimeString();
+  } catch (e) { console.error(e); }
+}
+
+load();
+setInterval(load, 120_000);
+</script>
+</body>
+</html>

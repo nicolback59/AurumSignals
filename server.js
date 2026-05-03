@@ -306,12 +306,70 @@ app.post('/api/journal/backtest-note', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── HEALTH ────────────────────────────────────────────────────────────────────
+app.get('/api/health', (req, res) => {
+  try {
+    const ok       = !!db.prepare('SELECT 1 n').get();
+    const sigCount = db.prepare('SELECT COUNT(*) n FROM signals').get().n;
+    const outCount = db.prepare('SELECT COUNT(*) n FROM outcomes').get().n;
+    let entCount = 0;
+    try { entCount = db.prepare('SELECT COUNT(*) n FROM journal_entries').get().n; } catch {}
+    res.json({
+      service:            'ok',
+      database:           ok ? 'ok' : 'error',
+      signals_count:      sigCount,
+      outcomes_count:     outCount,
+      journal_entries:    entCount,
+      ntfy_configured:    !!NTFY_TOPIC,
+      webhook_secret_set: !!WEBHOOK_SECRET,
+      ntfy_url:           NTFY_URL,
+      ntfy_topic:         NTFY_TOPIC || null,
+      uptime_s:           Math.floor(process.uptime()),
+    });
+  } catch (err) {
+    res.status(500).json({ service: 'ok', database: 'error', error: err.message });
+  }
+});
+
+// ── JOURNAL ENTRIES (free-form composer) ──────────────────────────────────────
+app.get('/api/journal/entries', (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 100, 500);
+    const rows = db.prepare(
+      'SELECT * FROM journal_entries ORDER BY created_at DESC LIMIT ?'
+    ).all(limit);
+    res.json(rows);
+  } catch { res.json([]); }
+});
+
+app.post('/api/journal/entries', (req, res) => {
+  const { entry_type, body, tags } = req.body || {};
+  if (!body?.trim()) return res.status(400).json({ error: 'body required' });
+  try {
+    const info = db.prepare(
+      'INSERT INTO journal_entries (entry_type, body, tags) VALUES (?, ?, ?)'
+    ).run(entry_type || 'observation', body.trim(), tags || null);
+    res.json({ ok: true, id: info.lastInsertRowid });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.delete('/api/journal/entries/:id', (req, res) => {
+  try {
+    db.prepare('DELETE FROM journal_entries WHERE id = ?').run(Number(req.params.id));
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── STATIC ────────────────────────────────────────────────────────────────────
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'home.html')));
 app.get('/signals',  (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
 app.get('/trades',   (req, res) => res.sendFile(path.join(__dirname, 'trades.html')));
+app.get('/stats',    (req, res) => res.sendFile(path.join(__dirname, 'stats.html')));
+app.get('/calendar', (req, res) => res.sendFile(path.join(__dirname, 'calendar.html')));
 app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest-dashboard.html')));
 app.get('/journal',  (req, res) => res.sendFile(path.join(__dirname, 'journal.html')));
+app.get('/news',     (req, res) => res.sendFile(path.join(__dirname, 'news.html')));
+app.get('/setup',    (req, res) => res.sendFile(path.join(__dirname, 'setup.html')));
 
 app.listen(PORT, () => {
   console.log(`NQ Signal Pro V3  →  http://localhost:${PORT}`);

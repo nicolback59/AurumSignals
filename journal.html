@@ -16,11 +16,15 @@
   <div class="top-nav-left">
     <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
     <nav class="nav-links">
-      <a href="/" class="nav-link">Home</a>
-      <a href="/signals" class="nav-link">Signals</a>
-      <a href="/trades" class="nav-link">Trades</a>
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
       <a href="/backtest" class="nav-link">Backtest</a>
-      <a href="/journal" class="nav-link active">Journal</a>
+      <a href="/journal"  class="nav-link active">Journal</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
     </nav>
   </div>
   <div class="top-nav-right">
@@ -30,8 +34,9 @@
 
 <!-- ── SECTION SWITCHER ──────────────────────────────── -->
 <div class="section-switcher">
-  <button class="section-switch-btn active" id="btnReal" onclick="showSection('real')">Real Signals</button>
-  <button class="section-switch-btn"        id="btnBt"   onclick="showSection('bt')">Backtesting</button>
+  <button class="section-switch-btn active" id="btnReal"    onclick="showSection('real')">Real Signals</button>
+  <button class="section-switch-btn"        id="btnBt"      onclick="showSection('bt')">Backtesting</button>
+  <button class="section-switch-btn"        id="btnCompose" onclick="showSection('compose')">Compose</button>
 </div>
 
 <!-- ── BODY ─────────────────────────────────────────── -->
@@ -64,6 +69,65 @@
     <div id="btFeed" style="flex:1;overflow-y:auto"></div>
   </div>
 
+  <!-- ── COMPOSE SECTION ── -->
+  <div class="page-section" id="secCompose" style="overflow-y:auto;padding:0 16px 88px;">
+
+    <!-- Entry Composer -->
+    <div style="max-width:640px;margin:0 auto;padding-top:16px;">
+
+      <div class="card" style="margin-bottom:16px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);margin-bottom:12px;">New Entry</div>
+
+        <!-- Type selector -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;" id="typeChips">
+          <button class="filter-chip active" onclick="setType('observation',this)">Observation</button>
+          <button class="filter-chip"        onclick="setType('lesson',this)">Lesson</button>
+          <button class="filter-chip"        onclick="setType('plan',this)">Plan</button>
+          <button class="filter-chip"        onclick="setType('risk',this)">Risk Note</button>
+          <button class="filter-chip"        onclick="setType('review',this)">Review</button>
+        </div>
+
+        <!-- Body textarea -->
+        <textarea id="composeBody" rows="5"
+          placeholder="Write your observation, lesson, or plan…"
+          style="width:100%;box-sizing:border-box;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:8px;padding:10px 12px;font-family:var(--font-body);font-size:13px;color:var(--text-primary);resize:vertical;line-height:1.6;outline:none;transition:border-color var(--t);"
+          onfocus="this.style.borderColor='var(--blue)'"
+          onblur="this.style.borderColor='var(--border-default)'"
+        ></textarea>
+
+        <!-- Tag quick-add -->
+        <div style="margin-top:10px;">
+          <div style="font-size:10px;color:var(--text-muted);margin-bottom:6px;">Quick tags</div>
+          <div style="display:flex;gap:5px;flex-wrap:wrap;" id="tagButtons">
+            <button class="tag-chip htf"    onmousedown="addTag('[HTF]')">HTF bias</button>
+            <button class="tag-chip ote"    onmousedown="addTag('[OTE]')">OTE zone</button>
+            <button class="tag-chip chop"   onmousedown="addTag('[CHOP]')">chop/range</button>
+            <button class="tag-chip score"  onmousedown="addTag('[SCORE]')">low score</button>
+            <button class="tag-chip timing" onmousedown="addTag('[TIMING]')">timing</button>
+            <button class="tag-chip regime" onmousedown="addTag('[REGIME]')">wrong regime</button>
+          </div>
+        </div>
+
+        <!-- Tags field + Save -->
+        <div style="display:flex;gap:8px;margin-top:12px;align-items:center;">
+          <input id="composeTags" type="text" placeholder="tags, comma-separated (optional)"
+            style="flex:1;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;padding:7px 10px;font-size:12px;color:var(--text-primary);font-family:var(--font-body);outline:none;transition:border-color var(--t);"
+            onfocus="this.style.borderColor='var(--blue)'"
+            onblur="this.style.borderColor='var(--border-default)'" />
+          <button onclick="saveEntry()" style="background:var(--blue);color:#fff;border:none;border-radius:7px;padding:8px 20px;font-size:12px;font-weight:700;cursor:pointer;transition:opacity var(--t);" onmouseover="this.style.opacity='.85'" onmouseout="this.style.opacity='1'">Save</button>
+        </div>
+        <div id="composeSaved" style="font-size:11px;color:var(--green);margin-top:8px;height:16px;transition:opacity .3s;opacity:0;"></div>
+      </div>
+
+      <!-- Saved entries list -->
+      <div style="font-size:9px;font-weight:700;letter-spacing:.12em;text-transform:uppercase;color:var(--text-muted);padding:10px 0 8px;border-bottom:1px solid var(--border-subtle);margin-bottom:10px;display:flex;align-items:center;gap:8px;">
+        Saved Entries<span style="flex:1;height:1px;background:var(--border-subtle);display:block;"></span>
+      </div>
+      <div id="entriesFeed"></div>
+
+    </div>
+  </div><!-- /secCompose -->
+
 </div><!-- /page-body -->
 
 <!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
@@ -93,8 +157,9 @@
 'use strict';
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let realSignals = [], btRuns = [];
+let realSignals = [], btRuns = [], journalEntries = [];
 let rFilter = 'ALL', btFilter = 'ALL';
+let composeType = 'observation';
 const expandedSigs = new Set();
 const expandedRuns = new Set();
 const runTradeCache = {};
@@ -104,11 +169,12 @@ let activeSection = 'real';
 // ── Section switch ─────────────────────────────────────────────────────────────
 function showSection(s) {
   activeSection = s;
-  document.getElementById('secReal').classList.toggle('active', s === 'real');
-  document.getElementById('secBt').classList.toggle('active',   s === 'bt');
-  document.getElementById('btnReal').classList.toggle('active', s === 'real');
-  document.getElementById('btnBt').classList.toggle('active',   s === 'bt');
+  ['real','bt','compose'].forEach(sec => {
+    document.getElementById('sec' + sec.charAt(0).toUpperCase() + sec.slice(1))?.classList.toggle('active', s === sec);
+    document.getElementById('btn' + sec.charAt(0).toUpperCase() + sec.slice(1))?.classList.toggle('active', s === sec);
+  });
   if (s === 'bt' && !btRuns.length) loadBacktest();
+  if (s === 'compose') loadEntries();
 }
 
 // ── Filters ────────────────────────────────────────────────────────────────────
@@ -403,6 +469,83 @@ function refreshNotedCounts() {
       ? `<b>${r.noted_count}</b>/${r.loss_count} noted`
       : r.loss_count > 0 ? `${r.loss_count} not noted` : 'no losses';
   }
+}
+
+// ── Compose ────────────────────────────────────────────────────────────────────
+function setType(t, btn) {
+  composeType = t;
+  document.querySelectorAll('#typeChips .filter-chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+}
+
+function addTag(tag) {
+  const inp = document.getElementById('composeTags');
+  if (!inp) return;
+  const cur = inp.value.trim();
+  const tagLabel = tag.replace(/^\[|\]$/g, '').toLowerCase();
+  inp.value = cur ? (cur.endsWith(',') ? cur + ' ' + tagLabel : cur + ', ' + tagLabel) : tagLabel;
+}
+
+async function saveEntry() {
+  const body = document.getElementById('composeBody')?.value?.trim();
+  const tags = document.getElementById('composeTags')?.value?.trim();
+  if (!body) { document.getElementById('composeBody')?.focus(); return; }
+  await fetch('/api/journal/entries', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entry_type: composeType, body, tags: tags || '' }),
+  });
+  document.getElementById('composeBody').value = '';
+  document.getElementById('composeTags').value = '';
+  const flash = document.getElementById('composeSaved');
+  if (flash) {
+    flash.textContent = '✓ Entry saved';
+    flash.style.opacity = '1';
+    setTimeout(() => { flash.style.opacity = '0'; }, 2000);
+  }
+  await loadEntries();
+}
+
+async function deleteEntry(id) {
+  await fetch('/api/journal/entries/' + id, { method: 'DELETE' });
+  journalEntries = journalEntries.filter(e => e.id !== id);
+  renderEntries();
+}
+
+function renderEntries() {
+  const el = document.getElementById('entriesFeed');
+  if (!el) return;
+  if (!journalEntries.length) {
+    el.innerHTML = buildEmptyState('◎', 'No entries yet', 'Use the composer above to write observations, lessons, and plans.');
+    return;
+  }
+  const typeColors = { observation: 'var(--blue)', lesson: 'var(--green)', plan: 'var(--purple)', risk: 'var(--red)', review: 'var(--yellow)' };
+  el.innerHTML = journalEntries.map(e => {
+    const color = typeColors[e.entry_type] || 'var(--text-muted)';
+    const tagsHtml = e.tags ? e.tags.split(',').map(t => t.trim()).filter(Boolean).map(t =>
+      `<span style="font-size:9px;font-weight:700;letter-spacing:.05em;padding:2px 7px;border-radius:4px;background:rgba(255,255,255,.04);border:1px solid var(--border-subtle);color:var(--text-muted);">${escH(t)}</span>`
+    ).join('') : '';
+    return `<div class="card" style="margin-bottom:8px;position:relative;">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;">
+        <span style="width:8px;height:8px;border-radius:50%;background:${color};flex-shrink:0;"></span>
+        <span style="font-size:10px;font-weight:700;color:var(--text-muted);text-transform:capitalize;">${escH(e.entry_type)}</span>
+        <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:auto;">${timeAgo(e.created_at)}</span>
+        <button onclick="deleteEntry(${e.id})"
+          style="background:none;border:none;color:var(--text-muted);cursor:pointer;font-size:14px;padding:0 2px;line-height:1;"
+          title="Delete entry">×</button>
+      </div>
+      <div style="font-size:13px;color:var(--text-primary);line-height:1.6;white-space:pre-wrap;">${escH(e.body)}</div>
+      ${tagsHtml ? `<div style="display:flex;gap:5px;flex-wrap:wrap;margin-top:10px;">${tagsHtml}</div>` : ''}
+    </div>`;
+  }).join('');
+}
+
+async function loadEntries() {
+  try {
+    const res = await fetch('/api/journal/entries');
+    journalEntries = await res.json();
+    renderEntries();
+  } catch(e) { console.error('loadEntries:', e); }
 }
 
 // ── Data loading ───────────────────────────────────────────────────────────────
