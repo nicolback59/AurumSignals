@@ -15,6 +15,7 @@ const NTFY_TOKEN     = process.env.NTFY_TOKEN || '';
 
 const app = express();
 app.use(express.json({ limit: '64kb' }));
+app.use(express.static(__dirname));
 
 // ── DATABASE ─────────────────────────────────────────────────────────────────
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');

@@ -4,173 +4,44 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>NQ Signal Pro — Backtest</title>
+  <link rel="stylesheet" href="/design-system.css">
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
-    :root {
-      --bg:     #08080f; --bg2: #0d0d1a; --bg3: #111128;
-      --border: #1e1e3a; --text: #cccce8; --muted: #55556a;
-      --long:   #00c896; --short: #ff3d5a; --aplus: #ffd700;
-      --a: #80cbc4; --tp2: #40c4ff; --tp3: #ce93d8; --orange: #ff9800;
-      --mnq: #40c4ff; --mgc: #ffd700;
+    body { display: flex; flex-direction: column; min-height: 100dvh; }
+    .main-layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 310px;
+      overflow: hidden;
+      min-height: 0;
     }
-    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      background: var(--bg); color: var(--text);
-      font-family: 'SF Mono','Fira Code','Consolas',monospace;
-      font-size: 12px; min-height: 100dvh; display: flex; flex-direction: column;
-    }
-
-    /* ── HEADER ── */
-    .hdr {
-      display: flex; align-items: center; justify-content: space-between;
-      padding: 10px 18px; background: var(--bg2);
-      border-bottom: 1px solid var(--border); flex-shrink: 0;
-    }
-    .hdr-l { display: flex; align-items: center; gap: 14px; }
-    .logo  { font-size: 15px; font-weight: 700; letter-spacing: .5px; color: var(--aplus); }
-    .logo b { color: var(--tp2); }
-    .nav { display: flex; gap: 4px; }
-    .nav a {
-      text-decoration: none; font-size: 10px; padding: 3px 10px;
-      border: 1px solid var(--border); border-radius: 3px;
-      color: var(--muted); transition: .12s;
-    }
-    .nav a:hover { color: var(--text); border-color: #3a3a5a; }
-    .nav a.active { border-color: var(--aplus); color: var(--aplus); }
-    .refresh-lbl { font-size: 10px; color: var(--muted); }
-
-    /* ── TICKER TAPE ── */
-    .ticker-wrap {
-      border-bottom: 1px solid var(--border); flex-shrink: 0; overflow: hidden; height: 46px;
-    }
-
-    /* ── STAT BAR ── */
-    .sbar { display: grid; grid-template-columns: repeat(7,1fr); border-bottom: 1px solid var(--border); }
-    .sc { background: var(--bg2); padding: 8px 14px; text-align: center; border-right: 1px solid var(--border); }
-    .sc:last-child { border-right: none; }
-    .sc-lbl { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: 1px; margin-bottom: 3px; }
-    .sc-val { font-size: 17px; font-weight: 700; }
-    .sc-val.mnq { color: var(--mnq); }
-    .sc-val.mgc { color: var(--mgc); }
-    .sc-val.ok  { color: var(--long); }
-    .sc-val.warn { color: var(--orange); }
-
-    /* ── MAIN GRID ── */
-    .main { flex: 1; display: grid; grid-template-columns: 1fr 320px; gap: 0; overflow: hidden; }
-    .left  { display: flex; flex-direction: column; gap: 0; overflow-y: auto; padding: 14px; gap: 14px; }
-    .right { background: var(--bg2); border-left: 1px solid var(--border); overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; }
-
-    /* ── PANELS ── */
-    .panel { background: var(--bg2); border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
-    .panel-hdr { padding: 8px 12px; border-bottom: 1px solid var(--border); display: flex; align-items: center; justify-content: space-between; }
-    .panel-title { font-size: 11px; font-weight: 700; letter-spacing: .5px; text-transform: uppercase; color: var(--muted); }
-    .panel-body { padding: 12px; }
-
-    /* ── CHART CONTAINERS ── */
-    .chart-wrap { position: relative; height: 200px; }
-    .chart-wrap-tall { position: relative; height: 240px; }
-
-    /* ── INSTRUMENT TABS ── */
-    .tabs { display: flex; gap: 4px; margin-bottom: 10px; }
-    .tab {
-      font: inherit; font-size: 10px; cursor: pointer;
-      padding: 3px 10px; border-radius: 3px;
-      border: 1px solid var(--border); background: var(--bg3); color: var(--muted);
-      transition: .12s;
-    }
-    .tab:hover { color: var(--text); }
-    .tab.mnq.on { border-color: var(--mnq); color: var(--mnq); }
-    .tab.mgc.on { border-color: var(--mgc); color: var(--mgc); }
-
-    /* ── REVISION TIMELINE ── */
-    .rev-item {
-      border-left: 2px solid var(--border); padding: 6px 10px; margin-bottom: 8px; position: relative;
-    }
-    .rev-item::before {
-      content: ''; position: absolute; left: -5px; top: 9px;
-      width: 8px; height: 8px; border-radius: 50%; background: var(--border);
-    }
-    .rev-item.active { border-left-color: var(--long); }
-    .rev-item.active::before { background: var(--long); }
-    .rev-item.shadow { border-left-color: var(--orange); }
-    .rev-item.shadow::before { background: var(--orange); }
-    .rev-item.discarded { opacity: .4; }
-    .rev-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 3px; }
-    .rev-inst { font-size: 10px; font-weight: 700; }
-    .rev-inst.mnq { color: var(--mnq); }
-    .rev-inst.mgc { color: var(--mgc); }
-    .rev-time { font-size: 9px; color: var(--muted); }
-    .rev-reason { font-size: 10px; color: var(--text); margin-bottom: 3px; }
-    .rev-badges { display: flex; gap: 4px; flex-wrap: wrap; }
-    .badge { font-size: 9px; padding: 1px 5px; border-radius: 2px; }
-    .badge.green { background: rgba(0,200,150,.12); color: var(--long); border: 1px solid rgba(0,200,150,.22); }
-    .badge.orange { background: rgba(255,152,0,.12); color: var(--orange); border: 1px solid rgba(255,152,0,.22); }
-    .badge.blue { background: rgba(64,196,255,.12); color: var(--tp2); border: 1px solid rgba(64,196,255,.22); }
-    .badge.muted { background: var(--bg3); color: var(--muted); border: 1px solid var(--border); }
-
-    /* ── PARAMS DISPLAY ── */
-    .params-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
-    .param-row { background: var(--bg3); border: 1px solid var(--border); border-radius: 3px; padding: 5px 8px; }
-    .param-key { font-size: 9px; color: var(--muted); margin-bottom: 2px; }
-    .param-val { font-size: 12px; font-weight: 700; color: var(--text); }
-
-    /* ── RUNS TABLE ── */
-    .tbl { width: 100%; border-collapse: collapse; }
-    .tbl th { font-size: 9px; color: var(--muted); text-transform: uppercase; letter-spacing: .8px; padding: 5px 8px; border-bottom: 1px solid var(--border); text-align: left; white-space: nowrap; }
-    .tbl td { font-size: 10px; padding: 5px 8px; border-bottom: 1px solid rgba(30,30,58,.6); white-space: nowrap; }
-    .tbl tr:last-child td { border-bottom: none; }
-    .tbl tr:hover td { background: rgba(255,255,255,.02); }
-    .wr-cell { font-weight: 700; }
-    .wr-cell.hi { color: var(--long); }
-    .wr-cell.mid { color: var(--orange); }
-    .wr-cell.lo { color: var(--short); }
-
-    /* ── LIVE PRICE PANELS ── */
-    .price-pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 14px; }
-    .price-box { background: var(--bg2); border: 1px solid var(--border); border-radius: 5px; padding: 10px 12px; }
-    .price-sym { font-size: 10px; color: var(--muted); margin-bottom: 3px; }
-    .price-val { font-size: 22px; font-weight: 700; color: var(--text); }
-    .price-chg { font-size: 10px; margin-top: 2px; }
-    .price-chg.up { color: var(--long); }
-    .price-chg.dn { color: var(--short); }
-
-    /* ── TV WIDGETS ── */
-    .tv-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-top: 14px; }
-    .tv-box { border: 1px solid var(--border); border-radius: 5px; overflow: hidden; height: 230px; position: relative; }
-    .tv-box-lbl { position: absolute; top: 6px; left: 10px; z-index: 1; font-size: 9px; color: var(--muted); pointer-events: none; }
-
-    /* ── EMPTY STATE ── */
-    .empty { padding: 30px; text-align: center; color: var(--muted); font-size: 11px; }
-
-    /* ── SCROLLBAR ── */
-    ::-webkit-scrollbar { width: 4px; height: 4px; }
-    ::-webkit-scrollbar-track { background: transparent; }
-    ::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
-
     @media (max-width: 900px) {
-      .main { grid-template-columns: 1fr; }
-      .right { border-left: none; border-top: 1px solid var(--border); }
-      .sbar  { grid-template-columns: repeat(4,1fr); }
+      .main-layout { grid-template-columns: 1fr; }
+      .right-col { display: none; }
+    }
+    @media (max-width: 640px) {
       .tv-row { grid-template-columns: 1fr; }
     }
   </style>
 </head>
 <body>
 
-<!-- HEADER -->
-<header class="hdr">
-  <div class="hdr-l">
-    <span class="logo">NQ <b>SIGNAL</b> PRO</span>
-    <nav class="nav">
-      <a href="/">Live Signals</a>
-      <a href="/backtest" class="active">Backtest</a>
-      <a href="/journal">Journal</a>
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/" class="nav-link">Live Signals</a>
+      <a href="/backtest" class="nav-link active">Backtest</a>
+      <a href="/journal" class="nav-link">Journal</a>
     </nav>
   </div>
-  <span class="refresh-lbl" id="refreshLbl">—</span>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
 </header>
 
-<!-- TICKER TAPE (TradingView free widget) -->
+<!-- ── TICKER TAPE ───────────────────────────────────── -->
 <div class="ticker-wrap">
   <div class="tradingview-widget-container" style="height:46px">
     <div class="tradingview-widget-container__widget"></div>
@@ -189,24 +60,46 @@
   </div>
 </div>
 
-<!-- STAT BAR -->
-<div class="sbar">
-  <div class="sc"><div class="sc-lbl">MNQ Win Rate</div><div class="sc-val mnq" id="statMnqWr">—</div></div>
-  <div class="sc"><div class="sc-lbl">MGC Win Rate</div><div class="sc-val mgc" id="statMgcWr">—</div></div>
-  <div class="sc"><div class="sc-lbl">Last Backtest</div><div class="sc-val ok" id="statLastBt">—</div></div>
-  <div class="sc"><div class="sc-lbl">Total Runs</div><div class="sc-val" id="statRuns">—</div></div>
-  <div class="sc"><div class="sc-lbl">Trades Tested</div><div class="sc-val" id="statTrades">—</div></div>
-  <div class="sc"><div class="sc-lbl">Revisions</div><div class="sc-val" id="statRevs">—</div></div>
-  <div class="sc"><div class="sc-lbl">Regime</div><div class="sc-val" id="statRegime">—</div></div>
+<!-- ── STAT BAR ─────────────────────────────────────── -->
+<div class="stat-bar">
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">MNQ Win Rate</div>
+    <div class="stat-bar-value" style="color:var(--mnq)" id="statMnqWr">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">MGC Win Rate</div>
+    <div class="stat-bar-value" style="color:var(--mgc)" id="statMgcWr">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Last Backtest</div>
+    <div class="stat-bar-value" style="color:var(--green)" id="statLastBt">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Total Runs</div>
+    <div class="stat-bar-value" id="statRuns">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Trades Tested</div>
+    <div class="stat-bar-value" id="statTrades">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Revisions</div>
+    <div class="stat-bar-value" id="statRevs">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Regime</div>
+    <div class="stat-bar-value" id="statRegime">—</div>
+  </div>
 </div>
 
-<!-- MAIN -->
-<div class="main">
-  <!-- LEFT COLUMN -->
-  <div class="left">
+<!-- ── MAIN LAYOUT ───────────────────────────────────── -->
+<div class="main-layout">
 
-    <!-- Live Prices from API (populated by JS, TV tape above is primary) -->
-    <div class="price-pair" id="pricePair" style="display:none">
+  <!-- LEFT COLUMN -->
+  <div class="main-col">
+
+    <!-- Live Prices (shown when available) -->
+    <div id="pricePair" style="display:none; grid-template-columns:1fr 1fr; gap:12px;">
       <div class="price-box">
         <div class="price-sym">@NQ.C.0 / MNQ</div>
         <div class="price-val" id="nqPrice">—</div>
@@ -220,29 +113,31 @@
     </div>
 
     <!-- Win Rate Over Time -->
-    <div class="panel">
-      <div class="panel-hdr">
-        <span class="panel-title">Win Rate Over Time</span>
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Win Rate Over Time</span>
         <div class="tabs">
-          <button class="tab mnq on" onclick="setInst('MNQ',this)">MNQ</button>
-          <button class="tab mgc"    onclick="setInst('MGC',this)">MGC</button>
-          <button class="tab"        onclick="setInst('ALL',this)">Both</button>
+          <button class="tab-btn on-mnq" id="tabMnq" onclick="setInst('MNQ',this)">MNQ</button>
+          <button class="tab-btn"        id="tabMgc" onclick="setInst('MGC',this)">MGC</button>
+          <button class="tab-btn"        id="tabAll" onclick="setInst('ALL',this)">Both</button>
         </div>
       </div>
-      <div class="panel-body">
-        <div class="chart-wrap-tall"><canvas id="winRateChart"></canvas></div>
+      <div class="section-card-body">
+        <div class="chart-wrap-lg"><canvas id="winRateChart"></canvas></div>
       </div>
     </div>
 
     <!-- Backtest Activity -->
-    <div class="panel">
-      <div class="panel-hdr"><span class="panel-title">Backtest Activity (Trades Tested per Run)</span></div>
-      <div class="panel-body">
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Backtest Activity — Trades Tested per Run</span>
+      </div>
+      <div class="section-card-body">
         <div class="chart-wrap"><canvas id="activityChart"></canvas></div>
       </div>
     </div>
 
-    <!-- TradingView mini charts -->
+    <!-- TradingView Mini Charts -->
     <div class="tv-row">
       <div class="tv-box">
         <div class="tv-box-lbl">NQ E-MINI (CME)</div>
@@ -266,76 +161,121 @@
       </div>
     </div>
 
-    <!-- Recent Backtest Runs Table -->
-    <div class="panel">
-      <div class="panel-hdr"><span class="panel-title">Recent Backtest Runs</span></div>
+    <!-- Recent Backtest Runs -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Recent Backtest Runs</span>
+      </div>
       <div style="overflow-x:auto">
-        <table class="tbl">
+        <table class="data-table">
           <thead><tr>
             <th>#</th><th>Instrument</th><th>Run At</th><th>Bars</th>
             <th>Trades</th><th>Win %</th><th>Sharpe</th><th>P/F</th><th>By</th>
           </tr></thead>
-          <tbody id="runsBody"><tr><td colspan="9" class="empty">No backtest runs yet — scanner will run first backtest on startup</td></tr></tbody>
+          <tbody id="runsBody">
+            <tr><td colspan="9">
+              <div class="empty-state" style="padding:24px">
+                <div class="empty-state-title">No backtest runs yet</div>
+                <div class="empty-state-desc">Scanner will run first backtest on startup.</div>
+              </div>
+            </td></tr>
+          </tbody>
         </table>
       </div>
     </div>
 
-  </div>
+  </div><!-- /main-col -->
 
   <!-- RIGHT COLUMN -->
-  <div class="right">
+  <div class="right-col side-col">
 
-    <!-- Current Strategy Parameters -->
-    <div class="panel">
-      <div class="panel-hdr"><span class="panel-title">Active Strategy Params</span></div>
-      <div class="panel-body">
-        <div style="margin-bottom:8px">
-          <div class="tabs">
-            <button class="tab mnq on" id="paramTabMnq" onclick="showParams('MNQ')">MNQ</button>
-            <button class="tab mgc"    id="paramTabMgc" onclick="showParams('MGC')">MGC</button>
-          </div>
+    <!-- Active Strategy Parameters -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Active Strategy Params</span>
+        <div class="tabs">
+          <button class="tab-btn on-mnq" id="paramTabMnq" onclick="showParams('MNQ')">MNQ</button>
+          <button class="tab-btn"        id="paramTabMgc" onclick="showParams('MGC')">MGC</button>
         </div>
+      </div>
+      <div class="section-card-body">
         <div id="paramsDisplay" class="params-grid"></div>
-        <div id="paramsVersion" style="margin-top:8px;font-size:9px;color:var(--muted)"></div>
+        <div id="paramsVersion" style="margin-top:8px;font-size:9px;color:var(--text-muted)"></div>
       </div>
     </div>
 
-    <!-- Strategy Revision Timeline -->
-    <div class="panel" style="flex:1">
-      <div class="panel-hdr"><span class="panel-title">Revision Timeline</span></div>
-      <div class="panel-body" id="revTimeline">
-        <div class="empty">No revisions yet — strategy will self-adjust once sufficient backtest data is collected</div>
+    <!-- Revision Timeline -->
+    <div class="section-card" style="flex:1">
+      <div class="section-card-header">
+        <span class="section-card-title">Revision Timeline</span>
+      </div>
+      <div class="section-card-body" id="revTimeline">
+        <div class="empty-state" style="padding:24px">
+          <div class="empty-state-icon">◎</div>
+          <div class="empty-state-desc">No revisions yet — strategy self-adjusts once sufficient backtest data is collected.</div>
+        </div>
       </div>
     </div>
 
     <!-- Learning Stats -->
-    <div class="panel">
-      <div class="panel-hdr"><span class="panel-title">Learning Stats (30d)</span></div>
-      <div class="panel-body">
-        <div id="learningSetup"></div>
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Learning Stats (30d)</span>
       </div>
+      <div class="section-card-body" id="learningSetup"></div>
     </div>
 
-  </div>
-</div>
+  </div><!-- /right-col -->
 
+</div><!-- /main-layout -->
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/" class="bottom-nav-item">
+      <span class="bottom-nav-icon">◈</span>
+      <span class="bottom-nav-label">Signals</span>
+    </a>
+    <a href="/backtest" class="bottom-nav-item active">
+      <span class="bottom-nav-icon">◉</span>
+      <span class="bottom-nav-label">Backtest</span>
+    </a>
+    <a href="/journal" class="bottom-nav-item">
+      <span class="bottom-nav-icon">◎</span>
+      <span class="bottom-nav-label">Journal</span>
+    </a>
+  </div>
+</nav>
+
+<script src="/ui-components.js"></script>
 <script>
+'use strict';
+
 const CHART_OPTS = {
   responsive: true,
   maintainAspectRatio: false,
-  plugins: { legend: { labels: { color: '#55556a', font: { size: 10, family: 'Consolas' } } } },
+  plugins: {
+    legend: {
+      labels: { color: '#48486a', font: { size: 10, family: 'JetBrains Mono, Consolas' } },
+    },
+  },
   scales: {
-    x: { ticks: { color: '#55556a', font: { size: 9 }, maxTicksLimit: 10 }, grid: { color: 'rgba(30,30,58,.6)' } },
-    y: { ticks: { color: '#55556a', font: { size: 9 } }, grid: { color: 'rgba(30,30,58,.6)' } },
+    x: {
+      ticks: { color: '#48486a', font: { size: 9 }, maxTicksLimit: 10 },
+      grid:  { color: 'rgba(255,255,255,.04)' },
+    },
+    y: {
+      ticks: { color: '#48486a', font: { size: 9 } },
+      grid:  { color: 'rgba(255,255,255,.04)' },
+    },
   },
 };
 
 let allRuns = [], allRevisions = [], allParams = {}, allLearning = {};
-let activeInst = 'MNQ';
+let activeInst = 'MNQ', activeParamInst = 'MNQ';
 let winRateChart = null, activityChart = null;
-let activeParamInst = 'MNQ';
 
-// ── Charts ──────────────────────────────────────────────────────────────────
+// ── Charts ───────────────────────────────────────────────────────────────────
 function buildWinRateChart(inst) {
   const ctx = document.getElementById('winRateChart').getContext('2d');
   if (winRateChart) winRateChart.destroy();
@@ -345,12 +285,16 @@ function buildWinRateChart(inst) {
 
   const datasets = [];
   if (inst === 'MNQ' || inst === 'ALL') datasets.push({
-    label: 'MNQ Win %', borderColor: '#40c4ff', backgroundColor: 'rgba(64,196,255,.08)',
+    label: 'MNQ Win %',
+    borderColor: '#4db8ff',
+    backgroundColor: 'rgba(77,184,255,.06)',
     pointRadius: 3, pointHoverRadius: 5, tension: 0.3, fill: true,
     data: mnqRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
   });
   if (inst === 'MGC' || inst === 'ALL') datasets.push({
-    label: 'MGC Win %', borderColor: '#ffd700', backgroundColor: 'rgba(255,215,0,.06)',
+    label: 'MGC Win %',
+    borderColor: '#f5c542',
+    backgroundColor: 'rgba(245,197,66,.05)',
     pointRadius: 3, pointHoverRadius: 5, tension: 0.3,
     data: mgcRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
   });
@@ -364,12 +308,13 @@ function buildWinRateChart(inst) {
       plugins: {
         ...CHART_OPTS.plugins,
         annotation: { annotations: {
-          target: { type:'line', yMin:50, yMax:50, borderColor:'rgba(0,200,150,.25)', borderWidth:1, borderDash:[4,4] }
-        }}
+          target: { type:'line', yMin:50, yMax:50, borderColor:'rgba(0,212,160,.2)', borderWidth:1, borderDash:[4,4] },
+        }},
       },
       scales: {
         ...CHART_OPTS.scales,
-        y: { ...CHART_OPTS.scales.y, min: 30, max: 100, ticks: { ...CHART_OPTS.scales.y.ticks, callback: v => v + '%' } }
+        y: { ...CHART_OPTS.scales.y, min:30, max:100,
+             ticks: { ...CHART_OPTS.scales.y.ticks, callback: v => v + '%' } },
       },
     },
   });
@@ -386,9 +331,10 @@ function buildActivityChart() {
       labels: recent.map(r => r.run_at.slice(5,16).replace('T',' ')),
       datasets: [{
         label: 'Trades Tested',
-        backgroundColor: recent.map(r => r.instrument === 'MNQ' ? 'rgba(64,196,255,.5)' : 'rgba(255,215,0,.4)'),
-        borderColor:      recent.map(r => r.instrument === 'MNQ' ? '#40c4ff' : '#ffd700'),
+        backgroundColor: recent.map(r => r.instrument === 'MNQ' ? 'rgba(77,184,255,.4)' : 'rgba(245,197,66,.35)'),
+        borderColor:      recent.map(r => r.instrument === 'MNQ' ? '#4db8ff' : '#f5c542'),
         borderWidth: 1,
+        borderRadius: 3,
         data: recent.map(r => r.trades_found),
       }],
     },
@@ -396,15 +342,15 @@ function buildActivityChart() {
   });
 }
 
-// ── Stat bar ──────────────────────────────────────────────────────────────────
+// ── Stat bar ─────────────────────────────────────────────────────────────────
 function updateStatBar(summary, learning) {
   const mnq = summary.find(s => s.instrument === 'MNQ');
   const mgc = summary.find(s => s.instrument === 'MGC');
 
-  document.getElementById('statMnqWr').textContent  = mnq ? mnq.avg_win_pct + '%' : '—';
-  document.getElementById('statMgcWr').textContent  = mgc ? mgc.avg_win_pct + '%' : '—';
+  document.getElementById('statMnqWr').textContent = mnq ? mnq.avg_win_pct + '%' : '—';
+  document.getElementById('statMgcWr').textContent = mgc ? mgc.avg_win_pct + '%' : '—';
 
-  const allLast = [...summary].sort((a,b) => new Date(b.last_run_at)-new Date(a.last_run_at))[0];
+  const allLast = [...summary].sort((a,b) => new Date(b.last_run_at) - new Date(a.last_run_at))[0];
   if (allLast) {
     const mins = Math.round((Date.now() - new Date(allLast.last_run_at)) / 60000);
     document.getElementById('statLastBt').textContent = mins < 60 ? mins + 'm ago' : Math.floor(mins/60) + 'h ago';
@@ -413,52 +359,54 @@ function updateStatBar(summary, learning) {
   document.getElementById('statRuns').textContent   = summary.reduce((s,r) => s + r.total_runs, 0);
   document.getElementById('statTrades').textContent = summary.reduce((s,r) => s + (r.total_trades_tested||0), 0).toLocaleString();
   document.getElementById('statRevs').textContent   = summary.reduce((s,r) => s + (r.revisions_active||0), 0);
+
   const regime = learning?.regime ?? '—';
   const regEl  = document.getElementById('statRegime');
   regEl.textContent = regime;
-  regEl.className   = 'sc-val ' + (regime === 'trending' ? 'ok' : regime === 'choppy' ? 'warn' : '');
+  regEl.style.color = regime === 'trending' ? 'var(--green)' : regime === 'choppy' ? 'var(--orange)' : '';
 }
 
 // ── Revision timeline ────────────────────────────────────────────────────────
 function renderRevisions() {
   const el = document.getElementById('revTimeline');
   if (!allRevisions.length) {
-    el.innerHTML = '<div class="empty">No revisions yet</div>';
+    el.innerHTML = '<div class="empty-state" style="padding:24px"><div class="empty-state-desc">No revisions yet.</div></div>';
     return;
   }
   el.innerHTML = allRevisions.slice(0, 20).map(r => {
-    const wr_b = r.win_rate_before != null ? (r.win_rate_before*100).toFixed(1) + '%' : '—';
-    const wr_a = r.win_rate_after  != null ? (r.win_rate_after *100).toFixed(1) + '%' : '—';
+    const wr_b    = r.win_rate_before != null ? (r.win_rate_before*100).toFixed(1) + '%' : '—';
+    const wr_a    = r.win_rate_after  != null ? (r.win_rate_after *100).toFixed(1) + '%' : '—';
     const improved = r.win_rate_after > r.win_rate_before;
-    const statusBadge = r.status === 'active' ? '<span class="badge green">ACTIVE</span>'
-                      : r.status === 'shadow' ? '<span class="badge orange">SHADOW</span>'
-                      : r.status === 'rolled_back' ? '<span class="badge muted">ROLLED BACK</span>'
-                      : '<span class="badge muted">DISCARDED</span>';
-    return `
-      <div class="rev-item ${r.status}">
-        <div class="rev-top">
-          <span class="rev-inst ${r.instrument.toLowerCase()}">${r.instrument}</span>
-          <span class="rev-time">${r.revised_at.slice(0,16).replace('T',' ')}</span>
-        </div>
-        <div class="rev-reason">${r.reason || '—'}</div>
-        <div class="rev-badges">
-          ${statusBadge}
-          ${improved ? `<span class="badge green">${wr_b} → ${wr_a}</span>` : `<span class="badge muted">${wr_b} → ${wr_a}</span>`}
-        </div>
-      </div>`;
+    const wrBadge = improved
+      ? `<span class="badge badge-active">${wr_b} → ${wr_a}</span>`
+      : `<span class="badge badge-muted">${wr_b} → ${wr_a}</span>`;
+    return `<div class="revision-item ${r.status}">
+      <div class="revision-header">
+        <span class="revision-inst ${r.instrument.toLowerCase()}">${r.instrument}</span>
+        <span class="revision-time">${r.revised_at.slice(0,16).replace('T',' ')}</span>
+      </div>
+      <div class="revision-reason">${escH(r.reason || '—')}</div>
+      <div class="revision-badges">
+        ${statusBadge(r.status)}
+        ${wrBadge}
+      </div>
+    </div>`;
   }).join('');
 }
 
 // ── Params display ────────────────────────────────────────────────────────────
 function showParams(inst) {
   activeParamInst = inst;
-  document.getElementById('paramTabMnq').className = 'tab mnq' + (inst === 'MNQ' ? ' on' : '');
-  document.getElementById('paramTabMgc').className = 'tab mgc' + (inst === 'MGC' ? ' on' : '');
+  document.getElementById('paramTabMnq').className = 'tab-btn' + (inst === 'MNQ' ? ' on-mnq' : '');
+  document.getElementById('paramTabMgc').className = 'tab-btn' + (inst === 'MGC' ? ' on-mgc' : '');
   const p = allParams[inst];
-  if (!p) { document.getElementById('paramsDisplay').innerHTML = '<div class="empty">No data</div>'; return; }
+  if (!p) {
+    document.getElementById('paramsDisplay').innerHTML = '<div style="color:var(--text-muted);font-size:11px">No data</div>';
+    return;
+  }
   const KEYS = ['minScore','slPts','oteHigh','oteLow','std2','std1','htfEmaF','htfEmaS','stdvLen','swingLook'];
   document.getElementById('paramsDisplay').innerHTML = KEYS.filter(k => p[k] != null).map(k =>
-    `<div class="param-row"><div class="param-key">${k}</div><div class="param-val">${p[k]}</div></div>`
+    `<div class="param-item"><div class="param-key">${k}</div><div class="param-val">${p[k]}</div></div>`
   ).join('');
   document.getElementById('paramsVersion').textContent =
     `v${p.version ?? 0}  ·  updated ${p.updated_at ? p.updated_at.slice(0,16).replace('T',' ') : '—'}`;
@@ -468,23 +416,25 @@ function showParams(inst) {
 function renderRunsTable() {
   const tbody = document.getElementById('runsBody');
   if (!allRuns.length) {
-    tbody.innerHTML = '<tr><td colspan="9" class="empty">No runs yet</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="9"><div class="empty-state" style="padding:20px"><div class="empty-state-desc">No runs yet</div></div></td></tr>';
     return;
   }
   tbody.innerHTML = allRuns.slice(0, 50).map(r => {
     const wr   = (r.win_rate * 100).toFixed(1);
-    const cls  = r.win_rate >= 0.60 ? 'hi' : r.win_rate >= 0.45 ? 'mid' : 'lo';
-    const inst = r.instrument === 'MNQ' ? `<span style="color:var(--mnq)">MNQ</span>` : `<span style="color:var(--mgc)">MGC</span>`;
+    const cls  = wrClass(r.win_rate);
+    const inst = r.instrument === 'MNQ'
+      ? `<span style="color:var(--mnq);font-weight:700">MNQ</span>`
+      : `<span style="color:var(--mgc);font-weight:700">MGC</span>`;
     return `<tr>
-      <td>${r.id}</td>
+      <td style="color:var(--text-muted)">${r.id}</td>
       <td>${inst}</td>
-      <td>${r.run_at.slice(0,16).replace('T',' ')}</td>
+      <td style="color:var(--text-secondary)">${r.run_at.slice(0,16).replace('T',' ')}</td>
       <td>${(r.bars_tested||0).toLocaleString()}</td>
       <td>${r.trades_found ?? 0}</td>
-      <td class="wr-cell ${cls}">${wr}%</td>
+      <td class="${cls}">${wr}%</td>
       <td>${r.sharpe ?? '—'}</td>
       <td>${r.profit_factor ?? '—'}</td>
-      <td style="color:var(--muted)">${r.triggered_by ?? '—'}</td>
+      <td style="color:var(--text-muted)">${r.triggered_by ?? '—'}</td>
     </tr>`;
   }).join('');
 }
@@ -493,17 +443,30 @@ function renderRunsTable() {
 function renderLearning() {
   const el = document.getElementById('learningSetup');
   const rows = allLearning?.bySetup ?? [];
-  if (!rows.length) { el.innerHTML = '<div class="empty">Log outcomes on the Live Signals page to see learning stats</div>'; return; }
-  el.innerHTML = `<table class="tbl"><thead><tr><th>Setup</th><th>Trades</th><th>Win %</th><th>Delta</th></tr></thead><tbody>` +
+  if (!rows.length) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">Log outcomes on the Live Signals page to see learning stats.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="data-table"><thead><tr>
+    <th>Setup</th><th>Trades</th><th>Win %</th><th>Delta</th>
+  </tr></thead><tbody>` +
     rows.map(r => {
       const delta = (allLearning?.adaptiveDeltas ?? {})[r.setup] ?? 0;
-      const dStr  = delta > 0 ? `<span style="color:var(--short)">+${delta}</span>` : delta < 0 ? `<span style="color:var(--long)">${delta}</span>` : '—';
-      const cls   = r.win_pct >= 60 ? 'hi' : r.win_pct >= 45 ? 'mid' : 'lo';
-      return `<tr><td>${r.setup}</td><td>${r.total}</td><td class="wr-cell ${cls}">${r.win_pct}%</td><td>${dStr}</td></tr>`;
+      const dStr  = delta > 0
+        ? `<span style="color:var(--red)">+${delta}</span>`
+        : delta < 0
+          ? `<span style="color:var(--green)">${delta}</span>`
+          : '<span style="color:var(--text-muted)">—</span>';
+      return `<tr>
+        <td>${escH(r.setup)}</td>
+        <td>${r.total}</td>
+        <td class="${wrClass(r.win_pct / 100)}">${r.win_pct}%</td>
+        <td>${dStr}</td>
+      </tr>`;
     }).join('') + '</tbody></table>';
 }
 
-// ── Market prices ────────────────────────────────────────────────────────────
+// ── Market prices ─────────────────────────────────────────────────────────────
 function updatePrices(prices) {
   const keys = Object.keys(prices);
   if (!keys.length) return;
@@ -515,7 +478,7 @@ function updatePrices(prices) {
   if (nqKey) {
     const p = prices[nqKey];
     document.getElementById('nqPrice').textContent = p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
-    const c = p.change_pct ?? 0;
+    const c  = p.change_pct ?? 0;
     const el = document.getElementById('nqChg');
     el.textContent = (c >= 0 ? '+' : '') + c.toFixed(2) + '%';
     el.className   = 'price-chg ' + (c >= 0 ? 'up' : 'dn');
@@ -523,7 +486,7 @@ function updatePrices(prices) {
   if (gcKey) {
     const p = prices[gcKey];
     document.getElementById('gcPrice').textContent = p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
-    const c = p.change_pct ?? 0;
+    const c  = p.change_pct ?? 0;
     const el = document.getElementById('gcChg');
     el.textContent = (c >= 0 ? '+' : '') + c.toFixed(2) + '%';
     el.className   = 'price-chg ' + (c >= 0 ? 'up' : 'dn');
@@ -533,16 +496,13 @@ function updatePrices(prices) {
 // ── Tab switcher ──────────────────────────────────────────────────────────────
 function setInst(inst, btn) {
   activeInst = inst;
-  document.querySelectorAll('.tabs .tab').forEach(b => {
-    if (b.closest('.panel') === btn.closest('.panel')) {
-      b.className = b.className.replace(/ on/,'');
-    }
-  });
-  btn.className += ' on';
+  document.getElementById('tabMnq').className = 'tab-btn' + (inst === 'MNQ' ? ' on-mnq' : '');
+  document.getElementById('tabMgc').className = 'tab-btn' + (inst === 'MGC' ? ' on-mgc' : '');
+  document.getElementById('tabAll').className = 'tab-btn' + (inst === 'ALL' ? ' on-all' : '');
   buildWinRateChart(inst);
 }
 
-// ── Fetch all data ────────────────────────────────────────────────────────────
+// ── Fetch all data ─────────────────────────────────────────────────────────────
 async function refresh() {
   try {
     const [runs, revisions, params, summary, learning, prices] = await Promise.all([
@@ -554,10 +514,10 @@ async function refresh() {
       fetch('/api/market/prices').then(r=>r.json()).catch(()=>({})),
     ]);
 
-    allRuns       = runs;
-    allRevisions  = revisions;
-    allParams     = params;
-    allLearning   = learning;
+    allRuns      = runs;
+    allRevisions = revisions;
+    allParams    = params;
+    allLearning  = learning;
 
     updateStatBar(summary, learning);
     buildWinRateChart(activeInst);
@@ -575,7 +535,7 @@ async function refresh() {
 }
 
 refresh();
-setInterval(refresh, 120_000);  // auto-refresh every 2 minutes
+setInterval(refresh, 120_000);
 </script>
 </body>
 </html>
