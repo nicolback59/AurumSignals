@@ -144,6 +144,16 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
 );
 CREATE INDEX IF NOT EXISTS idx_bt_trades_run ON backtest_trades(run_id, outcome);
 
+-- Free-form journal entries (composer notes)
+CREATE TABLE IF NOT EXISTS journal_entries (
+  id         INTEGER PRIMARY KEY AUTOINCREMENT,
+  entry_type TEXT    NOT NULL DEFAULT 'observation',  -- observation | lesson | plan | risk | review
+  body       TEXT    NOT NULL,
+  tags       TEXT,                                    -- comma-separated
+  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_journal_entries ON journal_entries(created_at DESC);
+
 -- Latest market price per symbol (single-row upsert)
 CREATE TABLE IF NOT EXISTS market_snapshots (
   symbol      TEXT    PRIMARY KEY,

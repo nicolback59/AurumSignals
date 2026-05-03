@@ -1,0 +1,390 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Setup</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    body { overflow-y: auto; }
+    .setup-wrap { max-width: 720px; margin: 0 auto; padding: 0 16px 88px; }
+
+    /* ── Header ───────────────────────────────────────── */
+    .setup-hdr { padding: 18px 0 16px; }
+    .setup-hdr h1 { font-size: 20px; font-weight: 700; letter-spacing: -.02em; }
+    .setup-hdr p  { font-size: 11px; color: var(--text-muted); margin-top: 3px; }
+
+    /* ── Status card ──────────────────────────────────── */
+    .status-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .status-card-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .status-card-title {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-secondary);
+    }
+    .status-card-body { padding: 6px 0; }
+
+    /* ── Status row ───────────────────────────────────── */
+    .status-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .status-row:last-child { border-bottom: none; }
+    .status-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .status-dot.ok      { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .status-dot.warn    { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+    .status-dot.error   { background: var(--red); box-shadow: 0 0 6px var(--red); }
+    .status-dot.offline { background: var(--text-muted); }
+    .status-dot.ok.pulse { animation: livePulse 2.5s infinite; }
+
+    .status-name { font-size: 13px; font-weight: 600; flex: 1; }
+    .status-badge {
+      font-size: 10px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 20px;
+      border: 1px solid;
+      letter-spacing: .04em;
+    }
+    .status-badge.ok      { color: var(--green);  border-color: var(--green-border);  background: var(--green-glow); }
+    .status-badge.warn    { color: var(--yellow); border-color: var(--yellow-border); background: var(--yellow-glow); }
+    .status-badge.error   { color: var(--red);    border-color: var(--red-border);    background: var(--red-glow); }
+    .status-badge.offline { color: var(--text-muted); border-color: var(--border-default); background: rgba(255,255,255,.04); }
+    .status-detail { font-size: 11px; color: var(--text-muted); margin-left: auto; font-family: var(--font-mono); }
+
+    /* ── Config row ───────────────────────────────────── */
+    .config-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 12px;
+      padding: 11px 16px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .config-row:last-child { border-bottom: none; }
+    .config-key {
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 160px;
+      flex-shrink: 0;
+    }
+    .config-val {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-primary);
+      word-break: break-all;
+    }
+    .config-val.masked { letter-spacing: .1em; color: var(--text-secondary); }
+    .config-val.empty  { color: var(--text-muted); font-style: italic; font-family: var(--font-ui); font-size: 11px; }
+
+    /* ── Stat cells ───────────────────────────────────── */
+    .db-stats-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 1px;
+      background: var(--border-subtle);
+    }
+    .db-stat-cell {
+      background: var(--bg-surface);
+      padding: 14px 16px;
+      text-align: center;
+    }
+    .db-stat-lbl { font-size: 9px; font-weight: 700; letter-spacing: .1em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
+    .db-stat-val { font-family: var(--font-mono); font-size: 22px; font-weight: 700; }
+
+    /* ── Uptime ───────────────────────────────────────── */
+    .uptime-bar {
+      background: var(--green-glow);
+      border: 1px solid var(--green-border);
+      border-radius: 8px;
+      padding: 10px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .uptime-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); animation: livePulse 2s infinite; flex-shrink: 0; }
+    .uptime-text { font-size: 12px; font-weight: 600; color: var(--green); }
+    .uptime-since { font-family: var(--font-mono); font-size: 11px; color: var(--green); margin-left: auto; }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
+      <a href="/backtest" class="nav-link">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link active">Setup</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
+</header>
+
+<!-- ── CONTENT ───────────────────────────────────────── -->
+<div class="setup-wrap">
+
+  <div class="setup-hdr">
+    <h1>System Setup</h1>
+    <p>Service health, configuration, and database status</p>
+  </div>
+
+  <!-- Uptime indicator (populated by JS) -->
+  <div class="uptime-bar" id="uptimeBar" style="display:none">
+    <span class="uptime-dot"></span>
+    <span class="uptime-text">Service Online</span>
+    <span class="uptime-since" id="uptimeSince">—</span>
+  </div>
+
+  <!-- ── System Status ──────────────────────────────── -->
+  <div class="status-card">
+    <div class="status-card-hdr">
+      <span class="status-card-title">System Status</span>
+      <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="healthTs">—</span>
+    </div>
+    <div class="status-card-body">
+      <div class="status-row">
+        <span class="status-dot ok pulse"></span>
+        <span class="status-name">Web Service</span>
+        <span class="status-badge ok">ONLINE</span>
+        <span class="status-detail">Page loaded successfully</span>
+      </div>
+      <div class="status-row" id="dbStatusRow">
+        <span class="status-dot offline" id="dbDot"></span>
+        <span class="status-name">SQLite Database</span>
+        <span class="status-badge offline" id="dbBadge">CHECKING</span>
+        <span class="status-detail" id="dbDetail">—</span>
+      </div>
+      <div class="status-row" id="ntfyStatusRow">
+        <span class="status-dot offline" id="ntfyDot"></span>
+        <span class="status-name">NTFY Notifications</span>
+        <span class="status-badge offline" id="ntfyBadge">CHECKING</span>
+        <span class="status-detail" id="ntfyDetail">—</span>
+      </div>
+      <div class="status-row" id="webhookStatusRow">
+        <span class="status-dot offline" id="whDot"></span>
+        <span class="status-name">Webhook Security</span>
+        <span class="status-badge offline" id="whBadge">CHECKING</span>
+        <span class="status-detail" id="whDetail">—</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Database Stats ────────────────────────────── -->
+  <div class="status-card">
+    <div class="status-card-hdr">
+      <span class="status-card-title">Database</span>
+    </div>
+    <div class="db-stats-row" id="dbStatsRow">
+      <div class="db-stat-cell">
+        <div class="db-stat-lbl">Signals</div>
+        <div class="db-stat-val" style="color:var(--blue)" id="dbSigCount">—</div>
+      </div>
+      <div class="db-stat-cell">
+        <div class="db-stat-lbl">Outcomes</div>
+        <div class="db-stat-val" style="color:var(--green)" id="dbOutCount">—</div>
+      </div>
+      <div class="db-stat-cell">
+        <div class="db-stat-lbl">Journal Notes</div>
+        <div class="db-stat-val" style="color:var(--purple)" id="dbEntCount">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Configuration ─────────────────────────────── -->
+  <div class="status-card">
+    <div class="status-card-hdr">
+      <span class="status-card-title">Configuration</span>
+      <span style="font-size:10px;color:var(--text-muted)">set via environment variables</span>
+    </div>
+    <div class="status-card-body" id="configBody">
+      <div class="config-row">
+        <span class="config-key">PORT</span>
+        <span class="config-val">3000</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">NTFY_URL</span>
+        <span class="config-val" id="cfgNtfyUrl"><span class="empty">Not set</span></span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">NTFY_TOPIC</span>
+        <span class="config-val" id="cfgNtfyTopic"><span class="empty">Not configured</span></span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">WEBHOOK_SECRET</span>
+        <span class="config-val masked" id="cfgWebhook"><span class="empty">Not set — open access</span></span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">NTFY_TOKEN</span>
+        <span class="config-val masked" id="cfgNtfyToken"><span class="empty">Not configured</span></span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Webhook guide ─────────────────────────────── -->
+  <div class="status-card">
+    <div class="status-card-hdr">
+      <span class="status-card-title">Webhook Endpoint</span>
+    </div>
+    <div class="status-card-body">
+      <div class="config-row">
+        <span class="config-key">URL</span>
+        <span class="config-val" id="webhookUrl">—</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">Method</span>
+        <span class="config-val">POST</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">Auth Header</span>
+        <span class="config-val">x-webhook-secret: &lt;secret&gt;</span>
+      </div>
+      <div class="config-row">
+        <span class="config-key">Content-Type</span>
+        <span class="config-val">application/json</span>
+      </div>
+      <div class="config-row" style="flex-direction:column;gap:6px">
+        <span class="config-key">Example Payload</span>
+        <pre style="font-family:var(--font-mono);font-size:10px;color:var(--text-secondary);background:var(--bg-elevated);border:1px solid var(--border-subtle);border-radius:8px;padding:10px;overflow-x:auto;margin:0;line-height:1.7">{
+  "signal":   "LONG",
+  "grade":    "A+",
+  "setup":    "OTE PB",
+  "entry":    21450.50,
+  "sl":       21435.00,
+  "tp1":      21475.00,
+  "tp2":      21500.00,
+  "score":    28,
+  "session":  "NY Open",
+  "ticker":   "MNQ1!"
+}</pre>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /setup-wrap -->
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/"        class="bottom-nav-item"><span class="bottom-nav-icon">⌂</span><span class="bottom-nav-label">Home</span></a>
+    <a href="/signals" class="bottom-nav-item"><span class="bottom-nav-icon">◈</span><span class="bottom-nav-label">Signals</span></a>
+    <a href="/trades"  class="bottom-nav-item"><span class="bottom-nav-icon">◉</span><span class="bottom-nav-label">Trades</span></a>
+    <a href="/journal" class="bottom-nav-item"><span class="bottom-nav-icon">◎</span><span class="bottom-nav-label">Journal</span></a>
+  </div>
+</nav>
+
+<script src="/ui-components.js"></script>
+<script>
+'use strict';
+
+function fmtUptime(s) {
+  if (s < 60)    return `${s}s`;
+  if (s < 3600)  return `${Math.floor(s/60)}m ${s%60}s`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m`;
+  return `${Math.floor(s/86400)}d ${Math.floor((s%86400)/3600)}h`;
+}
+
+function setStatus(dotId, badgeId, detailId, state, detail) {
+  const dot   = document.getElementById(dotId);
+  const badge = document.getElementById(badgeId);
+  const det   = document.getElementById(detailId);
+  if (dot)   { dot.className   = `status-dot ${state}${state === 'ok' ? ' pulse' : ''}`; }
+  if (badge) { badge.className = `status-badge ${state}`; badge.textContent = state.toUpperCase(); }
+  if (det && detail) det.textContent = detail;
+}
+
+async function load() {
+  try {
+    const res    = await fetch('/api/health');
+    const health = await res.json();
+
+    // Uptime
+    const uptimeEl = document.getElementById('uptimeBar');
+    if (uptimeEl && health.uptime_s != null) {
+      uptimeEl.style.display = '';
+      document.getElementById('uptimeSince').textContent = 'uptime: ' + fmtUptime(health.uptime_s);
+    }
+
+    // DB status
+    const dbOk = health.database === 'ok';
+    setStatus('dbDot', 'dbBadge', 'dbDetail', dbOk ? 'ok' : 'error',
+      dbOk ? `${health.signals_count} signals stored` : health.error || 'error');
+
+    // NTFY status
+    const ntfyOk = health.ntfy_configured;
+    setStatus('ntfyDot', 'ntfyBadge', 'ntfyDetail',
+      ntfyOk ? 'ok' : 'warn',
+      ntfyOk ? `Topic: ${health.ntfy_topic}` : 'NTFY_TOPIC not set — notifications disabled');
+
+    // Webhook security
+    const whOk = health.webhook_secret_set;
+    setStatus('whDot', 'whBadge', 'whDetail',
+      whOk ? 'ok' : 'warn',
+      whOk ? 'Secret key configured' : 'No WEBHOOK_SECRET — open access');
+
+    // DB stats
+    document.getElementById('dbSigCount').textContent = health.signals_count ?? '—';
+    document.getElementById('dbOutCount').textContent = health.outcomes_count ?? '—';
+    document.getElementById('dbEntCount').textContent = health.journal_entries ?? '—';
+
+    // Config
+    const ntfyUrl = health.ntfy_url;
+    if (ntfyUrl) {
+      document.getElementById('cfgNtfyUrl').textContent = ntfyUrl;
+      document.getElementById('cfgNtfyUrl').classList.remove('masked');
+    }
+    if (ntfyOk) {
+      document.getElementById('cfgNtfyTopic').textContent = health.ntfy_topic;
+    }
+    if (whOk) {
+      document.getElementById('cfgWebhook').innerHTML = `<span class="masked">●●●●●●●● (set)</span>`;
+    }
+
+    // Webhook URL
+    document.getElementById('webhookUrl').textContent = `${location.origin}/webhook`;
+
+    document.getElementById('healthTs').textContent = 'Checked ' + new Date().toLocaleTimeString();
+    document.getElementById('refreshLbl').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    console.error(e);
+    setStatus('dbDot', 'dbBadge', 'dbDetail', 'error', 'Health check failed');
+  }
+}
+
+load();
+setInterval(load, 30_000);
+</script>
+</body>
+</html>
