@@ -475,7 +475,8 @@ function renderHero(sig) {
   document.getElementById('heroMeta').innerHTML =
     directionBadge(sig.direction) +
     ' ' + gradeBadge(sig.grade) +
-    (sig.setup ? ' ' + setupBadge(sig.setup) : '');
+    (sig.setup ? ' ' + setupBadge(sig.setup) : '') +
+    `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${timeAgo(sig.received_at)}</span>`;
 
   // Status pill
   const statusEl = document.getElementById('heroStatus');
@@ -547,6 +548,7 @@ function renderStats(stats, recentSigs, journalSigs) {
   document.getElementById('winRate').textContent    = wr;
   document.getElementById('winRateSub').textContent = res > 0 ? `${res} resolved` : 'no outcomes yet';
   document.getElementById('tradesToday').textContent = stats.last24h || 0;
+  document.getElementById('todayTradeSub').textContent = 'last 24h';
 
   // Today P&L from journal signals
   const todayStr = new Date().toLocaleDateString('en-US');
@@ -810,8 +812,23 @@ async function load() {
   }
 }
 
-load();
-setInterval(load, 30_000);
+/* ── Auto-refresh with countdown display ─────────────── */
+let _cdTimer = null;
+function startCountdown(secs) {
+  let remaining = secs;
+  if (_cdTimer) clearInterval(_cdTimer);
+  _cdTimer = setInterval(() => {
+    remaining--;
+    const lbl = document.getElementById('refreshLbl');
+    if (lbl) lbl.textContent = `Refresh in ${remaining}s`;
+    if (remaining <= 0) {
+      clearInterval(_cdTimer);
+      load().then(() => startCountdown(30));
+    }
+  }, 1000);
+}
+
+load().then(() => startCountdown(30));
 </script>
 </body>
 </html>
