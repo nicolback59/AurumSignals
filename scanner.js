@@ -20,10 +20,11 @@ const NTFY_TOKEN     = process.env.NTFY_TOKEN        || '';
 const ALPACA_KEY     = process.env.ALPACA_KEY         || '';
 const ALPACA_SECRET  = process.env.ALPACA_SECRET      || '';
 const SYMBOL         = process.env.SCANNER_SYMBOL     || '@NQ.C.0';
+const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || '@MGC.C.0';
 const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL     || '60')  * 1000;
-const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '3');
+const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '1');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
-const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '16');
+const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '12');
 
 // Backtest symbols per instrument
 const BT_SYMBOLS = {
@@ -70,6 +71,23 @@ const upsertPrice = db.prepare(`
     high_24h   = excluded.high_24h,
     low_24h    = excluded.low_24h,
     snapped_at = excluded.snapped_at
+`);
+
+const insertOutcome = db.prepare(`
+  INSERT OR IGNORE INTO outcomes (signal_id, result, exit_price, exit_at, pnl_pts)
+  VALUES (?, ?, ?, ?, ?)
+`);
+
+const getPendingSignals = db.prepare(`
+  SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument
+  FROM signals s
+  LEFT JOIN outcomes o ON o.signal_id = s.id
+  WHERE o.id IS NULL
+    AND s.entry IS NOT NULL AND s.sl IS NOT NULL AND s.tp1 IS NOT NULL
+    AND s.received_at <= datetime('now', '-3 minutes')
+    AND s.received_at >= datetime('now', '-4 hours')
+    AND s.instrument = ?
+  ORDER BY s.received_at ASC
 `);
 
 // ── ntfy push notifications ───────────────────────────────────────────────────
@@ -150,74 +168,123 @@ function savePrice(symbol, bars) {
   upsertPrice.run(symbol, last.close, first.open, +chg.toFixed(3), high, low);
 }
 
-// ── Cooldown tracking ─────────────────────────────────────────────────────────
-let lastSignalTime = 0;
-let scanCount      = 0;
+// ── Cooldown tracking (per instrument) ───────────────────────────────────────
+const lastSignalTimes = { MNQ: 0, MGC: 0 };
+let scanCount = 0;
 
-// ── Live signal scan ──────────────────────────────────────────────────────────
+// ── Auto-resolve pending outcomes against fresh bars ──────────────────────────
+function autoResolveOutcomes(bars1m, instrument) {
+  const pending = getPendingSignals.all(instrument);
+  if (!pending.length) return;
+
+  for (const sig of pending) {
+    const sigTime   = new Date(sig.received_at).getTime();
+    const futureBars = bars1m.filter(b => new Date(b.timestamp).getTime() > sigTime);
+    if (futureBars.length < 2) continue;
+
+    let resolved = null;
+    let exitBar  = null;
+    for (const bar of futureBars) {
+      if (sig.direction === 'LONG') {
+        if (bar.high >= sig.tp1) { resolved = { result: 'WIN',  exitPrice: sig.tp1 }; exitBar = bar; break; }
+        if (bar.low  <= sig.sl)  { resolved = { result: 'LOSS', exitPrice: sig.sl  }; exitBar = bar; break; }
+      } else {
+        if (bar.low  <= sig.tp1) { resolved = { result: 'WIN',  exitPrice: sig.tp1 }; exitBar = bar; break; }
+        if (bar.high >= sig.sl)  { resolved = { result: 'LOSS', exitPrice: sig.sl  }; exitBar = bar; break; }
+      }
+    }
+
+    if (resolved) {
+      const pnlPts = sig.direction === 'LONG'
+        ? resolved.exitPrice - sig.entry
+        : sig.entry - resolved.exitPrice;
+      insertOutcome.run(sig.id, resolved.result, resolved.exitPrice,
+        exitBar?.timestamp ?? new Date().toISOString(), +pnlPts.toFixed(2));
+      console.log(`[${ts()}] AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolved.result} (${+pnlPts.toFixed(2)} pts)`);
+    }
+  }
+}
+
+// ── Per-instrument signal scan ────────────────────────────────────────────────
+async function scanInstrument(symbol, instrument, bars1m, bars15m) {
+  const barMs = 60_000;
+  if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) return;
+
+  const signal = computeSignal(bars1m, bars15m, {
+    rthOnly:    RTH_ONLY,
+    minScore:   BASE_SCORE,
+    instrument,
+  });
+  if (!signal) return;
+
+  const minScore = getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, BASE_SCORE);
+  if (signal.score < minScore) {
+    console.log(`[${ts()}] Suppressed ${instrument} ${signal.setup} (score=${signal.score} < adaptive=${minScore})`);
+    return;
+  }
+
+  lastSignalTimes[instrument] = Date.now();
+
+  const info = insertSignal.run({
+    ticker:       signal.ticker,
+    timeframe:    signal.timeframe,
+    direction:    signal.direction,
+    grade:        signal.grade,
+    setup:        signal.setup,
+    entry:        signal.entry,
+    sl:           signal.sl,
+    tp1:          signal.tp1,
+    tp2:          signal.tp2,
+    tp3:          signal.tp3,
+    score:        signal.score,
+    win_prob_tp1: signal.win_prob_tp1,
+    win_prob_tp2: signal.win_prob_tp2,
+    win_prob_tp3: signal.win_prob_tp3,
+    htf_bias:     signal.htf_bias,
+    session:      signal.session,
+    trade_style:  signal.tradeStyle,
+    instrument:   signal.instrument,
+    rr:           signal.rr,
+    raw_payload:  JSON.stringify(signal),
+  });
+
+  console.log(
+    `[${ts()}] SIGNAL #${info.lastInsertRowid} | ${instrument} ${signal.direction} ${signal.grade} | ` +
+    `${signal.setup} [${signal.tradeStyle}] | score=${signal.score}/${minScore} | ` +
+    `entry=${signal.entry} | rr=${signal.rr} | regime=${getMarketRegime(db)}`
+  );
+  sendNtfy(signal);
+}
+
+// ── Live scan — both MNQ and MGC in parallel ──────────────────────────────────
 async function scan() {
   scanCount++;
   try {
-    const [bars1m, bars15m] = await Promise.all([
-      fetchBarsForSymbol(SYMBOL, '1Min',  120),
-      fetchBarsForSymbol(SYMBOL, '15Min',  60),
+    const [mnqBars1m, mnqBars15m, mgcBars1m, mgcBars15m] = await Promise.all([
+      fetchBarsForSymbol(SYMBOL,     '1Min',  120),
+      fetchBarsForSymbol(SYMBOL,     '15Min',  60),
+      fetchBarsForSymbol(SYMBOL_MGC, '1Min',  120),
+      fetchBarsForSymbol(SYMBOL_MGC, '15Min',  60),
     ]);
 
-    if (bars1m.length >= 2) savePrice(SYMBOL, bars1m);
+    if (mnqBars1m.length >= 2) savePrice(SYMBOL,     mnqBars1m);
+    if (mgcBars1m.length >= 2) savePrice(SYMBOL_MGC, mgcBars1m);
 
-    if (bars1m.length < 60 || bars15m.length < 30) {
-      console.log(`[${ts()}] Waiting for bars (${bars1m.length} 1m, ${bars15m.length} 15m)`);
+    const mnqReady = mnqBars1m.length >= 60 && mnqBars15m.length >= 30;
+    const mgcReady = mgcBars1m.length >= 60 && mgcBars15m.length >= 30;
+
+    if (!mnqReady && !mgcReady) {
+      console.log(`[${ts()}] Waiting for bars (MNQ: ${mnqBars1m.length} 1m, MGC: ${mgcBars1m.length} 1m)`);
       return;
     }
 
-    const barMs = 60_000;
-    if (Date.now() - lastSignalTime < COOLDOWN * barMs) return;
+    await Promise.all([
+      mnqReady ? scanInstrument(SYMBOL,     'MNQ', mnqBars1m, mnqBars15m) : Promise.resolve(),
+      mgcReady ? scanInstrument(SYMBOL_MGC, 'MGC', mgcBars1m, mgcBars15m) : Promise.resolve(),
+    ]);
 
-    // Live scan always uses MNQ instrument (NQ symbol data)
-    const signal = computeSignal(bars1m, bars15m, {
-      rthOnly:    RTH_ONLY,
-      minScore:   12,
-      instrument: 'MNQ',
-    });
-    if (!signal) return;
-
-    const minScore = getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, BASE_SCORE);
-    if (signal.score < minScore) {
-      console.log(`[${ts()}] Suppressed ${signal.setup} ${signal.tradeStyle} (score=${signal.score} < adaptive=${minScore})`);
-      return;
-    }
-
-    lastSignalTime = Date.now();
-
-    const info = insertSignal.run({
-      ticker:       signal.ticker,
-      timeframe:    signal.timeframe,
-      direction:    signal.direction,
-      grade:        signal.grade,
-      setup:        signal.setup,
-      entry:        signal.entry,
-      sl:           signal.sl,
-      tp1:          signal.tp1,
-      tp2:          signal.tp2,
-      tp3:          signal.tp3,
-      score:        signal.score,
-      win_prob_tp1: signal.win_prob_tp1,
-      win_prob_tp2: signal.win_prob_tp2,
-      win_prob_tp3: signal.win_prob_tp3,
-      htf_bias:     signal.htf_bias,
-      session:      signal.session,
-      trade_style:  signal.tradeStyle,
-      instrument:   signal.instrument,
-      rr:           signal.rr,
-      raw_payload:  JSON.stringify(signal),
-    });
-
-    console.log(
-      `[${ts()}] SIGNAL #${info.lastInsertRowid} | ${signal.direction} ${signal.grade} | ` +
-      `${signal.setup} [${signal.tradeStyle}] | score=${signal.score}/${minScore} | ` +
-      `entry=${signal.entry} | rr=${signal.rr} | regime=${getMarketRegime(db)}`
-    );
-    sendNtfy(signal);
+    if (mnqReady) autoResolveOutcomes(mnqBars1m, 'MNQ');
+    if (mgcReady) autoResolveOutcomes(mgcBars1m, 'MGC');
 
   } catch (err) {
     console.error(`[${ts()}] Scan error:`, err.message);
@@ -362,7 +429,7 @@ function ts() { return new Date().toISOString(); }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
 console.log('NQ Signal Pro V3 — Enhanced Scanner + Backtesting Framework');
-console.log(`Live symbol: ${SYMBOL} | Scan: every ${SCAN_INTERVAL/1000}s | RTH-only: ${RTH_ONLY}`);
+console.log(`Live symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: every ${SCAN_INTERVAL/1000}s | Cooldown: ${COOLDOWN}min/instrument | Base score: ${BASE_SCORE} | RTH-only: ${RTH_ONLY}`);
 console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
 console.log(`Optimizer: every ${OPT_INTERVAL_H}h | Instruments: MNQ (scalp/intraday/swing), MGC (scalp)`);
 if (!ALPACA_KEY)  console.warn('WARNING: ALPACA_KEY not set — all market data disabled');

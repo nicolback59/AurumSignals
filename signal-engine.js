@@ -351,7 +351,7 @@ function computeSignal(bars, htfBars, cfg = {}) {
 
   if (score < C.minScore) return null;
 
-  const grade    = score >= 24 ? 'A+' : score >= 16 ? 'A' : null;
+  const grade    = score >= 24 ? 'A+' : score >= 12 ? 'A' : null;
   if (!grade) return null;
 
   const isAplus = grade === 'A+';
