@@ -17,19 +17,18 @@ const DB_PATH        = process.env.DB_PATH           || path.join(__dirname, 'si
 const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
 const NTFY_TOPIC     = process.env.NTFY_TOPIC        || '';
 const NTFY_TOKEN     = process.env.NTFY_TOKEN        || '';
-const ALPACA_KEY     = process.env.ALPACA_KEY         || '';
-const ALPACA_SECRET  = process.env.ALPACA_SECRET      || '';
-const SYMBOL         = process.env.SCANNER_SYMBOL     || '@NQ.C.0';
-const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || '@MGC.C.0';
+// Yahoo Finance symbols — no API key needed, free, real-time futures data
+const SYMBOL         = process.env.SCANNER_SYMBOL     || 'NQ=F';   // NQ futures (same price as MNQ)
+const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || 'GC=F';   // Gold futures (same price as MGC)
 const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL     || '60')  * 1000;
 const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '1');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
 const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '12');
 
-// Backtest symbols per instrument
+// Backtest symbols (Yahoo Finance)
 const BT_SYMBOLS = {
-  MNQ: process.env.SCANNER_BT_MNQ || '@MNQ.C.0',
-  MGC: process.env.SCANNER_BT_MGC || '@MGC.C.0',
+  MNQ: process.env.SCANNER_BT_MNQ || 'NQ=F',
+  MGC: process.env.SCANNER_BT_MGC || 'GC=F',
 };
 
 // Backtest schedule
@@ -120,42 +119,44 @@ function sendNtfy(s) {
     .catch(err => console.error('[ntfy]', err.message));
 }
 
-// ── Market data (Alpaca) ──────────────────────────────────────────────────────
-async function fetchBarsForSymbol(symbol, timeframe, limit) {
-  const url = `https://data.alpaca.markets/v1beta1/futures/bars`
-    + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
-  const res = await fetch(url, {
-    headers: {
-      'APCA-API-KEY-ID':     ALPACA_KEY,
-      'APCA-API-SECRET-KEY': ALPACA_SECRET,
-    },
-  });
-  if (!res.ok) throw new Error(`Alpaca ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const json = await res.json();
-  return (json.bars?.[symbol] ?? []).map(b => ({
-    timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
-  }));
+// ── Market data (Yahoo Finance — free, no API key) ────────────────────────────
+function yahooInterval(timeframe) {
+  return timeframe.startsWith('1M') ? '1m' : '15m';
 }
 
-// Paginated fetch for large historical datasets
+async function fetchYahooBars(symbol, interval, range) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`
+    + `?interval=${interval}&range=${range}`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'NQ-Signal-Pro/3.0' } });
+  if (!res.ok) throw new Error(`Yahoo Finance ${res.status}: ${symbol}`);
+  const json   = await res.json();
+  const result = json.chart?.result?.[0];
+  if (!result) return [];
+  const ts    = result.timestamp ?? [];
+  const quote = result.indicators?.quote?.[0] ?? {};
+  return ts.map((t, i) => ({
+    timestamp: new Date(t * 1000).toISOString(),
+    open:   quote.open?.[i],
+    high:   quote.high?.[i],
+    low:    quote.low?.[i],
+    close:  quote.close?.[i],
+    volume: quote.volume?.[i] ?? 0,
+  })).filter(b => b.open != null && b.close != null);
+}
+
+async function fetchBarsForSymbol(symbol, timeframe, limit) {
+  const interval = yahooInterval(timeframe);
+  const range    = interval === '1m' ? '2d' : '5d';
+  const bars     = await fetchYahooBars(symbol, interval, range);
+  return bars.slice(-limit);
+}
+
+// Historical fetch for backtests — Yahoo gives up to 7d of 1m data (~10k bars)
 async function fetchAllBars(symbol, timeframe, maxBars) {
-  let all = [], pageToken = null;
-  while (all.length < maxBars) {
-    const limit = Math.min(1000, maxBars - all.length);
-    let url = `https://data.alpaca.markets/v1beta1/futures/bars`
-      + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
-    if (pageToken) url += `&page_token=${encodeURIComponent(pageToken)}`;
-    const res  = await fetch(url, { headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET } });
-    if (!res.ok) break;
-    const json = await res.json();
-    const bars = (json.bars?.[symbol] ?? []).map(b => ({
-      timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
-    }));
-    all.push(...bars);
-    pageToken = json.next_page_token ?? null;
-    if (!pageToken || bars.length === 0) break;
-  }
-  return all.slice(-maxBars);
+  const interval = yahooInterval(timeframe);
+  const range    = interval === '1m' ? '7d' : '60d';
+  const bars     = await fetchYahooBars(symbol, interval, range);
+  return bars.slice(-maxBars);
 }
 
 function savePrice(symbol, bars) {
@@ -432,17 +433,15 @@ console.log('NQ Signal Pro V3 — Enhanced Scanner + Backtesting Framework');
 console.log(`Live symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: every ${SCAN_INTERVAL/1000}s | Cooldown: ${COOLDOWN}min/instrument | Base score: ${BASE_SCORE} | RTH-only: ${RTH_ONLY}`);
 console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
 console.log(`Optimizer: every ${OPT_INTERVAL_H}h | Instruments: MNQ (scalp/intraday/swing), MGC (scalp)`);
-if (!ALPACA_KEY)  console.warn('WARNING: ALPACA_KEY not set — all market data disabled');
-if (!NTFY_TOPIC)  console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
+if (!NTFY_TOPIC) console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
+console.log('Market data: Yahoo Finance (free, no API key required)');
 
 // Warmup on startup (staggered to avoid rate-limiting)
-if (ALPACA_KEY) {
-  setTimeout(() => runBacktestCycle('MNQ', 'startup'),   5_000);
-  setTimeout(() => runBacktestCycle('MGC', 'startup'),  35_000);
-  // Full optimizer runs 2 minutes after startup to let quick backtest complete first
-  setTimeout(() => runOptimizerCycle('MNQ'), 120_000);
-  setTimeout(() => runOptimizerCycle('MGC'), 180_000);
-}
+setTimeout(() => runBacktestCycle('MNQ', 'startup'),   5_000);
+setTimeout(() => runBacktestCycle('MGC', 'startup'),  35_000);
+// Full optimizer runs 2 minutes after startup to let quick backtest complete first
+setTimeout(() => runOptimizerCycle('MNQ'), 120_000);
+setTimeout(() => runOptimizerCycle('MGC'), 180_000);
 
 // Live scan
 scan();
