@@ -17,7 +17,7 @@ const app = express();
 app.use(express.json({ limit: '64kb' }));
 app.use(express.static(__dirname));
 
-// ── DATABASE ─────────────────────────────────────────────────────────────────
+// ── DATABASE ─────────────────────────────────────────────────────────────────────────────
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 const db = new Database(DB_PATH);
@@ -45,7 +45,7 @@ const upsertOutcome = db.prepare(`
     notes      = excluded.notes
 `);
 
-// ── NTFY ─────────────────────────────────────────────────────────────────────
+// ── NTFY ─────────────────────────────────────────────────────────────────────────────
 function sendNtfy(s) {
   if (!NTFY_TOPIC) return;
 
@@ -53,33 +53,31 @@ function sendNtfy(s) {
   const priority = s.grade === 'A+' ? 'urgent' : 'high';
   const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
 
-const priority = s.grade === 'A+' ? 'urgent' : 'high';
+  const body = [
+    s.setup             ? `Setup:   ${s.setup}`            : null,
+    s.entry   != null   ? `Entry:   ${s.entry}`            : null,
+    s.sl      != null   ? `SL:      ${s.sl}`               : null,
+    s.tp1     != null   ? `TP1:     ${s.tp1}`              : null,
+    s.tp2     != null   ? `TP2:     ${s.tp2}`              : null,
+    s.tp3     != null   ? `TP3:     ${s.tp3}`              : null,
+    s.score   != null   ? `Score:   ${s.score}`            : null,
+    s.win_prob_tp1 != null ? `Win%:  ${s.win_prob_tp1}%`   : null,
+    s.session           ? `Session: ${s.session}`          : null,
+  ].filter(Boolean).join('\n');
 
-const body = [
-  `Signal: ${s.direction} ${s.grade} ${s.ticker}`,
-  s.setup   ? `Setup: ${s.setup}` : null,
-  s.entry != null ? `Entry: ${s.entry}` : null,
-  s.sl    != null ? `SL: ${s.sl}` : null,
-  s.tp1   != null ? `TP1: ${s.tp1}` : null,
-  s.tp2   != null ? `TP2: ${s.tp2}` : null,
-  s.tp3   != null ? `TP3: ${s.tp3}` : null,
-  s.score != null ? `Score: ${s.score}` : null,
-  s.win_prob_tp1 != null ? `Win%: ${s.win_prob_tp1}%` : null,
-  s.session ? `Session: ${s.session}` : null,
-].filter(Boolean).join('\n');
-
-const headers = {
-  'Content-Type': 'text/plain; charset=utf-8',
-  'Title': `${s.direction} ${s.grade} ${s.ticker}`,
-  'Priority': priority
-};
+  const headers = {
+    'Content-Type': 'text/plain',
+    'Title':    `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker}`,
+    'Priority': priority,
+    'Tags':     tags,
+  };
   if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
 
   fetch(`${NTFY_URL}/${NTFY_TOPIC}`, { method: 'POST', headers, body })
     .catch(err => console.error('[ntfy] send failed:', err.message));
 }
 
-// ── WEBHOOK ──────────────────────────────────────────────────────────────────
+// ── WEBHOOK ──────────────────────────────────────────────────────────────────────────────
 app.post('/webhook', (req, res) => {
   if (WEBHOOK_SECRET && req.headers['x-webhook-secret'] !== WEBHOOK_SECRET) {
     return res.status(401).json({ error: 'Unauthorized' });
@@ -138,7 +136,7 @@ app.post('/webhook', (req, res) => {
   }
 });
 
-// ── API ───────────────────────────────────────────────────────────────────────
+// ── API ───────────────────────────────────────────────────────────────────────────────
 app.get('/api/signals', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const rows = db.prepare(`
@@ -176,13 +174,13 @@ app.post('/api/outcome', (req, res) => {
   res.json({ ok: true });
 });
 
-// ── LEARNING ──────────────────────────────────────────────────────────────────
+// ── LEARNING ─────────────────────────────────────────────────────────────────────────────
 app.get('/api/learning', (req, res) => {
   try { res.json(getLearningStats(db)); }
   catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── BACKTEST ──────────────────────────────────────────────────────────────────
+// ── BACKTEST ──────────────────────────────────────────────────────────────────────────────
 app.get('/api/backtest/runs', (req, res) => {
   const instrument = (req.query.instrument || '').toUpperCase() || null;
   const limit      = Math.min(Number(req.query.limit) || 100, 500);
@@ -220,7 +218,7 @@ app.get('/api/backtest/summary', (req, res) => {
   res.json(summary);
 });
 
-// ── STRATEGY PARAMS ───────────────────────────────────────────────────────────
+// ── STRATEGY PARAMS ───────────────────────────────────────────────────────────────────────
 app.get('/api/strategy/params', (req, res) => {
   const rows = db.prepare('SELECT * FROM strategy_params').all();
   const result = {};
@@ -231,14 +229,13 @@ app.get('/api/strategy/params', (req, res) => {
       version:    row.version,
     };
   }
-  // Fill in defaults for instruments not yet in DB
   for (const inst of ['MNQ', 'MGC']) {
     if (!result[inst]) result[inst] = { ...getParams(db, inst), version: 0 };
   }
   res.json(result);
 });
 
-// ── MARKET PRICES ─────────────────────────────────────────────────────────────
+// ── MARKET PRICES ─────────────────────────────────────────────────────────────────────────
 app.get('/api/market/prices', (req, res) => {
   const rows = db.prepare('SELECT * FROM market_snapshots').all();
   const result = {};
@@ -246,9 +243,8 @@ app.get('/api/market/prices', (req, res) => {
   res.json(result);
 });
 
-// ── JOURNAL ───────────────────────────────────────────────────────────────────
+// ── JOURNAL ───────────────────────────────────────────────────────────────────────────────
 
-// All resolved live signals with notes (for Real Signals journal section)
 app.get('/api/journal/signals', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 200, 500);
   const rows = db.prepare(`
@@ -263,7 +259,6 @@ app.get('/api/journal/signals', (req, res) => {
   res.json(rows);
 });
 
-// Recent backtest runs with per-run loss counts (for Backtesting journal section)
 app.get('/api/journal/backtest', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 40, 200);
   const inst  = req.query.instrument?.toUpperCase() || null;
@@ -280,7 +275,6 @@ app.get('/api/journal/backtest', (req, res) => {
   res.json(rows);
 });
 
-// Losing/BE trades for a specific backtest run
 app.get('/api/journal/backtest/:runId/trades', (req, res) => {
   const runId = Number(req.params.runId);
   if (!runId) return res.status(400).json({ error: 'invalid runId' });
@@ -290,7 +284,6 @@ app.get('/api/journal/backtest/:runId/trades', (req, res) => {
   res.json(rows);
 });
 
-// Update note on a resolved live signal (outcome must already exist)
 app.post('/api/journal/signal-note', (req, res) => {
   const { signal_id, note } = req.body || {};
   if (!signal_id) return res.status(400).json({ error: 'signal_id required' });
@@ -300,7 +293,6 @@ app.post('/api/journal/signal-note', (req, res) => {
   res.json({ ok: true });
 });
 
-// Update note on a backtest trade
 app.post('/api/journal/backtest-note', (req, res) => {
   const { trade_id, note } = req.body || {};
   if (!trade_id) return res.status(400).json({ error: 'trade_id required' });
@@ -309,7 +301,7 @@ app.post('/api/journal/backtest-note', (req, res) => {
   res.json({ ok: true });
 });
 
-// ── HEALTH ────────────────────────────────────────────────────────────────────
+// ── HEALTH ────────────────────────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   try {
     const ok       = !!db.prepare('SELECT 1 n').get();
@@ -334,7 +326,7 @@ app.get('/api/health', (req, res) => {
   }
 });
 
-// ── JOURNAL ENTRIES (free-form composer) ──────────────────────────────────────
+// ── JOURNAL ENTRIES (free-form composer) ──────────────────────────────────────────────
 app.get('/api/journal/entries', (req, res) => {
   try {
     const limit = Math.min(Number(req.query.limit) || 100, 500);
@@ -363,7 +355,7 @@ app.delete('/api/journal/entries/:id', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
-// ── STATIC ────────────────────────────────────────────────────────────────────
+// ── STATIC ────────────────────────────────────────────────────────────────────────────────
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'home.html')));
 app.get('/signals',  (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
 app.get('/trades',   (req, res) => res.sendFile(path.join(__dirname, 'trades.html')));
