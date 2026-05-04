@@ -17,30 +17,25 @@ const DB_PATH        = process.env.DB_PATH           || path.join(__dirname, 'si
 const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
 const NTFY_TOPIC     = process.env.NTFY_TOPIC        || '';
 const NTFY_TOKEN     = process.env.NTFY_TOKEN        || '';
-const ALPACA_KEY     = process.env.ALPACA_KEY         || '';
-const ALPACA_SECRET  = process.env.ALPACA_SECRET      || '';
-const SYMBOL         = process.env.SCANNER_SYMBOL     || '@NQ.C.0';
-const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || '@MGC.C.0';
+// Yahoo Finance symbols — no API key needed, free, real-time futures data
+const SYMBOL         = process.env.SCANNER_SYMBOL     || 'NQ=F';   // NQ futures (same price as MNQ)
+const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || 'GC=F';   // Gold futures (same price as MGC)
 const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL     || '60')  * 1000;
 const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '1');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
 const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '12');
 
-// Backtest symbols per instrument
+// Backtest symbols (Yahoo Finance)
 const BT_SYMBOLS = {
-  MNQ: process.env.SCANNER_BT_MNQ || '@MNQ.C.0',
-  MGC: process.env.SCANNER_BT_MGC || '@MGC.C.0',
+  MNQ: process.env.SCANNER_BT_MNQ || 'NQ=F',
+  MGC: process.env.SCANNER_BT_MGC || 'GC=F',
 };
 
 // Backtest schedule
 const BT_INTERVAL_H  = parseFloat(process.env.BACKTEST_INTERVAL_H  || '4');
-// Increased default from 3000 → 10000 bars for 250-trade statistical target
 const BT_BARS        = parseInt(process.env.BACKTEST_BARS           || '10000');
-// Full optimizer runs less frequently than quick revision checks
 const OPT_INTERVAL_H = parseFloat(process.env.OPTIMIZER_INTERVAL_H || '12');
-// Slippage assumption for backtests (per side, in price points)
 const BT_SLIPPAGE    = parseFloat(process.env.BT_SLIPPAGE           || '0.5');
-// Target trades per backtest cycle for statistical significance
 const BT_TARGET_TRADES = parseInt(process.env.BT_TARGET_TRADES      || '250');
 
 // ── Database ──────────────────────────────────────────────────────────────────
@@ -120,42 +115,44 @@ function sendNtfy(s) {
     .catch(err => console.error('[ntfy]', err.message));
 }
 
-// ── Market data (Alpaca) ──────────────────────────────────────────────────────
-async function fetchBarsForSymbol(symbol, timeframe, limit) {
-  const url = `https://data.alpaca.markets/v1beta1/futures/bars`
-    + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
-  const res = await fetch(url, {
-    headers: {
-      'APCA-API-KEY-ID':     ALPACA_KEY,
-      'APCA-API-SECRET-KEY': ALPACA_SECRET,
-    },
-  });
-  if (!res.ok) throw new Error(`Alpaca ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const json = await res.json();
-  return (json.bars?.[symbol] ?? []).map(b => ({
-    timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
-  }));
+// ── Market data (Yahoo Finance — free, no API key) ────────────────────────────
+function yahooInterval(timeframe) {
+  return timeframe.startsWith('1M') ? '1m' : '15m';
 }
 
-// Paginated fetch for large historical datasets
+async function fetchYahooBars(symbol, interval, range) {
+  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`
+    + `?interval=${interval}&range=${range}`;
+  const res = await fetch(url, { headers: { 'User-Agent': 'NQ-Signal-Pro/3.0' } });
+  if (!res.ok) throw new Error(`Yahoo Finance ${res.status}: ${symbol}`);
+  const json   = await res.json();
+  const result = json.chart?.result?.[0];
+  if (!result) return [];
+  const ts    = result.timestamp ?? [];
+  const quote = result.indicators?.quote?.[0] ?? {};
+  return ts.map((t, i) => ({
+    timestamp: new Date(t * 1000).toISOString(),
+    open:   quote.open?.[i],
+    high:   quote.high?.[i],
+    low:    quote.low?.[i],
+    close:  quote.close?.[i],
+    volume: quote.volume?.[i] ?? 0,
+  })).filter(b => b.open != null && b.close != null);
+}
+
+async function fetchBarsForSymbol(symbol, timeframe, limit) {
+  const interval = yahooInterval(timeframe);
+  const range    = interval === '1m' ? '2d' : '5d';
+  const bars     = await fetchYahooBars(symbol, interval, range);
+  return bars.slice(-limit);
+}
+
+// Historical fetch for backtests — Yahoo gives up to 7d of 1m data (~10k bars)
 async function fetchAllBars(symbol, timeframe, maxBars) {
-  let all = [], pageToken = null;
-  while (all.length < maxBars) {
-    const limit = Math.min(1000, maxBars - all.length);
-    let url = `https://data.alpaca.markets/v1beta1/futures/bars`
-      + `?symbols=${encodeURIComponent(symbol)}&timeframe=${timeframe}&limit=${limit}&sort=asc`;
-    if (pageToken) url += `&page_token=${encodeURIComponent(pageToken)}`;
-    const res  = await fetch(url, { headers: { 'APCA-API-KEY-ID': ALPACA_KEY, 'APCA-API-SECRET-KEY': ALPACA_SECRET } });
-    if (!res.ok) break;
-    const json = await res.json();
-    const bars = (json.bars?.[symbol] ?? []).map(b => ({
-      timestamp: b.t, open: b.o, high: b.h, low: b.l, close: b.c, volume: b.v,
-    }));
-    all.push(...bars);
-    pageToken = json.next_page_token ?? null;
-    if (!pageToken || bars.length === 0) break;
-  }
-  return all.slice(-maxBars);
+  const interval = yahooInterval(timeframe);
+  const range    = interval === '1m' ? '7d' : '60d';
+  const bars     = await fetchYahooBars(symbol, interval, range);
+  return bars.slice(-maxBars);
 }
 
 function savePrice(symbol, bars) {
@@ -178,7 +175,7 @@ function autoResolveOutcomes(bars1m, instrument) {
   if (!pending.length) return;
 
   for (const sig of pending) {
-    const sigTime   = new Date(sig.received_at).getTime();
+    const sigTime    = new Date(sig.received_at).getTime();
     const futureBars = bars1m.filter(b => new Date(b.timestamp).getTime() > sigTime);
     if (futureBars.length < 2) continue;
 
@@ -299,7 +296,6 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
   try {
     console.log(`[${ts()}] BACKTEST START: ${instrument} (${symbol}, up to ${BT_BARS} bars, target ${BT_TARGET_TRADES} trades)`);
 
-    // Evaluate any pending shadow revision first
     const pendingShadow = db.prepare(
       `SELECT id FROM strategy_revisions WHERE instrument=? AND status='shadow' LIMIT 1`
     ).get(instrument);
@@ -308,15 +304,14 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
       const barsForShadow = await fetchAllBars(symbol, '1Min', BT_BARS);
       if (barsForShadow.length >= 100) {
         savePrice(symbol, barsForShadow);
-        const result = evaluateShadow(db, instrument, barsForShadow,
-          { slippage: BT_SLIPPAGE });
+        const result = evaluateShadow(db, instrument, barsForShadow, { slippage: BT_SLIPPAGE });
         if (result?.promoted) {
           console.log(`[${ts()}] REVISION PROMOTED: ${instrument} ${(result.before*100).toFixed(1)}% → ${(result.after*100).toFixed(1)}%`);
         } else if (result) {
           console.log(`[${ts()}] Shadow discarded for ${instrument}`);
         }
       }
-      return; // one action per cycle
+      return;
     }
 
     const bars1m = await fetchAllBars(symbol, '1Min', BT_BARS);
@@ -327,7 +322,6 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
 
     savePrice(symbol, bars1m);
 
-    // Backtest with current params + 250-trade auto-tune + slippage
     const params = getParams(db, instrument);
     const result = runBacktest(bars1m, params, {
       targetTrades: BT_TARGET_TRADES,
@@ -339,7 +333,6 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
 
     const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
 
-    // Persist losing/BE trades for the journal (capped at 100 per run to limit growth)
     const lossTrades = result.signalLog.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').slice(0, 100);
     if (lossTrades.length > 0) {
       const insLoss = db.prepare(`
@@ -378,7 +371,6 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
       `wf=${result.walkForward?.consistency ?? 'n/a'} | run#${runId}`
     );
 
-    // Propose better params
     const best = proposeRevision(db, instrument, bars1m, runId,
       { cooldown: result.cooldownUsed, slippage: BT_SLIPPAGE });
     if (best) {
@@ -432,28 +424,25 @@ console.log('NQ Signal Pro V3 — Enhanced Scanner + Backtesting Framework');
 console.log(`Live symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: every ${SCAN_INTERVAL/1000}s | Cooldown: ${COOLDOWN}min/instrument | Base score: ${BASE_SCORE} | RTH-only: ${RTH_ONLY}`);
 console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
 console.log(`Optimizer: every ${OPT_INTERVAL_H}h | Instruments: MNQ (scalp/intraday/swing), MGC (scalp)`);
-if (!ALPACA_KEY)  console.warn('WARNING: ALPACA_KEY not set — all market data disabled');
-if (!NTFY_TOPIC)  console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
+if (!NTFY_TOPIC) console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
+console.log('Market data: Yahoo Finance (free, no API key required)');
 
 // Warmup on startup (staggered to avoid rate-limiting)
-if (ALPACA_KEY) {
-  setTimeout(() => runBacktestCycle('MNQ', 'startup'),   5_000);
-  setTimeout(() => runBacktestCycle('MGC', 'startup'),  35_000);
-  // Full optimizer runs 2 minutes after startup to let quick backtest complete first
-  setTimeout(() => runOptimizerCycle('MNQ'), 120_000);
-  setTimeout(() => runOptimizerCycle('MGC'), 180_000);
-}
+setTimeout(() => runBacktestCycle('MNQ', 'startup'),   5_000);
+setTimeout(() => runBacktestCycle('MGC', 'startup'),  35_000);
+setTimeout(() => runOptimizerCycle('MNQ'), 120_000);
+setTimeout(() => runOptimizerCycle('MGC'), 180_000);
 
 // Live scan
 scan();
 setInterval(scan, SCAN_INTERVAL);
 
-// Quick backtest cycles (shadow check + revision proposal)
+// Quick backtest cycles
 const BT_MS  = BT_INTERVAL_H  * 3_600_000;
 setInterval(() => runBacktestCycle('MNQ'), BT_MS);
 setInterval(() => runBacktestCycle('MGC'), BT_MS + BT_MS / 2);
 
-// Full optimizer cycles (less frequent, deeper 50-candidate genetic search)
+// Full optimizer cycles
 const OPT_MS = OPT_INTERVAL_H * 3_600_000;
 setInterval(() => runOptimizerCycle('MNQ'), OPT_MS);
 setInterval(() => runOptimizerCycle('MGC'), OPT_MS + OPT_MS / 3);
