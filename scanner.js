@@ -43,6 +43,7 @@ const BT_SLIPPAGE    = parseFloat(process.env.BT_SLIPPAGE           || '0.5');
 const BT_TARGET_TRADES = parseInt(process.env.BT_TARGET_TRADES      || '250');
 
 // ── Database ──────────────────────────────────────────────────────────────────
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');

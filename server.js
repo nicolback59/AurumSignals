@@ -18,6 +18,7 @@ app.use(express.json({ limit: '64kb' }));
 app.use(express.static(__dirname));
 
 // ── DATABASE ─────────────────────────────────────────────────────────────────
+fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
 const schema = fs.readFileSync(path.join(__dirname, 'schema.sql'), 'utf8');
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
