@@ -332,14 +332,30 @@ function runBacktest(bars1m, params, opts = {}) {
     cooldown = autoTuneCooldown(bars1m, params, opts.targetTrades, innerOpts);
   }
 
-  const result = _runBacktest(bars1m, params, { ...innerOpts, cooldown });
+  let result = _runBacktest(bars1m, params, { ...innerOpts, cooldown });
   result.cooldownUsed = cooldown;
   result.slippageUsed = slippage;
+
+  // If minSignals quota not met, progressively relax minScore and retry
+  if (opts.minSignals && result.metrics.tradeCount < opts.minSignals) {
+    for (const scoreFloor of [10, 8, 6]) {
+      if (result.metrics.tradeCount >= opts.minSignals) break;
+      const relaxedParams = { ...params, minScore: Math.min(params.minScore ?? 12, scoreFloor), relaxed: true };
+      const cd = autoTuneCooldown(bars1m, relaxedParams, opts.targetTrades ?? opts.minSignals, innerOpts);
+      const retry = _runBacktest(bars1m, relaxedParams, { ...innerOpts, cooldown: cd });
+      if (retry.metrics.tradeCount > result.metrics.tradeCount) {
+        result = retry;
+        result.cooldownUsed = cd;
+        result.slippageUsed = slippage;
+        result.quotaRelaxed = true;
+      }
+    }
+  }
 
   if (opts.walkForward) {
     result.walkForward = runWalkForward(bars1m, params, {
       nWindows:  opts.nWindows ?? 5,
-      cooldown,
+      cooldown:  result.cooldownUsed,
       slippage,
       minBars:   opts.minBars ?? 300,
     });

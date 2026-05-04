@@ -5,7 +5,7 @@ CREATE TABLE IF NOT EXISTS signals (
   ticker       TEXT    NOT NULL DEFAULT 'NQ1!',
   timeframe    TEXT,
   direction    TEXT    NOT NULL CHECK(direction IN ('LONG','SHORT')),
-  grade        TEXT             CHECK(grade IN ('A+','A','BE')),
+  grade        TEXT             CHECK(grade IN ('A+','A','B')),
   setup        TEXT,
   entry        REAL,
   sl           REAL,
@@ -22,6 +22,7 @@ CREATE TABLE IF NOT EXISTS signals (
   instrument   TEXT,          -- 'MNQ' | 'MGC' | 'NQ'
   rr           REAL,          -- risk:reward ratio
   raw_payload  TEXT,
+  forced       INTEGER NOT NULL DEFAULT 0,
   received_at  TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
@@ -123,7 +124,7 @@ CREATE TABLE IF NOT EXISTS optimization_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_optim_runs ON optimization_runs(instrument, run_at DESC);
 
--- Individual trades from backtest runs (LOSS + BE only, for journal)
+-- Individual trades from backtest runs (all outcomes — WIN, LOSS, BE)
 CREATE TABLE IF NOT EXISTS backtest_trades (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   run_id      INTEGER NOT NULL REFERENCES backtest_runs(id),
@@ -137,7 +138,7 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
   entry       REAL,
   sl          REAL,
   tp1         REAL,
-  outcome     TEXT,    -- LOSS | BE
+  outcome     TEXT,    -- WIN | LOSS | BE
   score       INTEGER,
   note        TEXT,
   noted_at    TEXT

@@ -25,6 +25,8 @@ const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL     || '60')  * 1000;
 const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '1');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
 const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '12');
+const DAILY_MIN_LIVE = parseInt(process.env.DAILY_MIN_LIVE    || '10');  // min live signals/day per instrument
+const DAILY_MIN_BT   = parseInt(process.env.DAILY_MIN_BT      || '50');  // min backtest trades/run per instrument
 
 // Backtest symbols (Twelvedata)
 const BT_SYMBOLS = {
@@ -46,15 +48,44 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.exec(schema);
 
+// ── Schema migration: adds forced column + fixes grade constraint ──────────────
+{
+  const cols = db.pragma('table_info(signals)').map(c => c.name);
+  if (!cols.includes('forced')) {
+    console.log('[migrate] Upgrading signals table…');
+    try {
+      db.exec(`DROP TABLE IF EXISTS _signals_bak`);
+      db.exec(`ALTER TABLE signals RENAME TO _signals_bak`);
+      db.exec(`CREATE TABLE signals (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL DEFAULT 'NQ1!', timeframe TEXT,
+        direction TEXT NOT NULL CHECK(direction IN ('LONG','SHORT')),
+        grade TEXT CHECK(grade IN ('A+','A','B')),
+        setup TEXT, entry REAL, sl REAL, tp1 REAL, tp2 REAL, tp3 REAL,
+        score INTEGER, win_prob_tp1 INTEGER, win_prob_tp2 INTEGER, win_prob_tp3 INTEGER,
+        htf_bias TEXT, session TEXT, trade_style TEXT, instrument TEXT, rr REAL,
+        raw_payload TEXT, forced INTEGER NOT NULL DEFAULT 0,
+        received_at TEXT NOT NULL DEFAULT (datetime('now'))
+      )`);
+      db.exec(`INSERT INTO signals SELECT *, 0 FROM _signals_bak`);
+      db.exec(`DROP TABLE _signals_bak`);
+      console.log('[migrate] Done');
+    } catch (err) {
+      console.error('[migrate] Failed:', err.message);
+      try { db.exec(`ALTER TABLE _signals_bak RENAME TO signals`); } catch (_) {}
+    }
+  }
+}
+
 const insertSignal = db.prepare(`
   INSERT INTO signals
     (ticker, timeframe, direction, grade, setup, entry, sl, tp1, tp2, tp3,
      score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
-     trade_style, instrument, rr, raw_payload)
+     trade_style, instrument, rr, raw_payload, forced)
   VALUES
     (@ticker, @timeframe, @direction, @grade, @setup, @entry, @sl, @tp1, @tp2, @tp3,
      @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
-     @trade_style, @instrument, @rr, @raw_payload)
+     @trade_style, @instrument, @rr, @raw_payload, @forced)
 `);
 
 const upsertPrice = db.prepare(`
@@ -170,6 +201,36 @@ function savePrice(symbol, bars) {
 const lastSignalTimes = { MNQ: 0, MGC: 0 };
 let scanCount = 0;
 
+// ── Daily signal quota tracking (resets at UTC midnight) ─────────────────────
+const dailyQuota = {
+  MNQ: { date: '', live: 0, bt: 0 },
+  MGC: { date: '', live: 0, bt: 0 },
+};
+
+function todayUTC() { return new Date().toISOString().slice(0, 10); }
+
+function _resetIfNewDay(inst) {
+  const q = dailyQuota[inst];
+  if (q.date !== todayUTC()) { q.date = todayUTC(); q.live = 0; q.bt = 0; }
+  return q;
+}
+
+function getDailyLive(inst)      { return _resetIfNewDay(inst).live; }
+function incDailyLive(inst)      { _resetIfNewDay(inst).live++; }
+function getDailyBt(inst)        { return _resetIfNewDay(inst).bt; }
+function addDailyBt(inst, n)     { _resetIfNewDay(inst).bt += n; }
+
+// Seed quota from DB on startup so restarts mid-day don't lose the count
+function seedDailyQuota() {
+  const today = todayUTC();
+  for (const inst of ['MNQ', 'MGC']) {
+    const row = db.prepare(
+      `SELECT COUNT(*) n FROM signals WHERE instrument=? AND date(received_at)=?`
+    ).get(inst, today);
+    if (row?.n) { dailyQuota[inst].date = today; dailyQuota[inst].live = row.n; }
+  }
+}
+
 // ── Auto-resolve pending outcomes against fresh bars ──────────────────────────
 function autoResolveOutcomes(bars1m, instrument) {
   const pending = getPendingSignals.all(instrument);
@@ -204,24 +265,33 @@ function autoResolveOutcomes(bars1m, instrument) {
 }
 
 // ── Per-instrument signal scan ────────────────────────────────────────────────
-async function scanInstrument(symbol, instrument, bars1m, bars15m) {
+// relaxed=true: Grade B mode (score≥8), skips cooldown + adaptive suppression,
+// stores signal in DB for learning but does NOT send ntfy push.
+async function scanInstrument(symbol, instrument, bars1m, bars15m, { relaxed = false } = {}) {
   const barMs = 60_000;
-  if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) return;
+
+  // Normal mode respects cooldown; forced/relaxed mode bypasses it
+  if (!relaxed && Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) return;
 
   const signal = computeSignal(bars1m, bars15m, {
     rthOnly:    RTH_ONLY,
-    minScore:   BASE_SCORE,
+    minScore:   relaxed ? 8 : BASE_SCORE,
+    relaxed,
     instrument,
   });
   if (!signal) return;
 
-  const minScore = getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, BASE_SCORE);
-  if (signal.score < minScore) {
-    console.log(`[${ts()}] Suppressed ${instrument} ${signal.setup} (score=${signal.score} < adaptive=${minScore})`);
-    return;
+  // Normal mode: apply adaptive score suppression
+  if (!relaxed) {
+    const minScore = getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, BASE_SCORE);
+    if (signal.score < minScore) {
+      console.log(`[${ts()}] Suppressed ${instrument} ${signal.setup} (score=${signal.score} < adaptive=${minScore})`);
+      return;
+    }
   }
 
-  lastSignalTimes[instrument] = Date.now();
+  if (!relaxed) lastSignalTimes[instrument] = Date.now();
+  incDailyLive(instrument);
 
   const info = insertSignal.run({
     ticker:       signal.ticker,
@@ -243,15 +313,20 @@ async function scanInstrument(symbol, instrument, bars1m, bars15m) {
     trade_style:  signal.tradeStyle,
     instrument:   signal.instrument,
     rr:           signal.rr,
-    raw_payload:  JSON.stringify(signal),
+    raw_payload:  JSON.stringify({ ...signal, forced: relaxed }),
+    forced:       relaxed ? 1 : 0,
   });
 
+  const minScoreLog = relaxed ? 8 : getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, BASE_SCORE);
+  const modeTag     = relaxed ? ' [LEARNING]' : '';
   console.log(
-    `[${ts()}] SIGNAL #${info.lastInsertRowid} | ${instrument} ${signal.direction} ${signal.grade} | ` +
-    `${signal.setup} [${signal.tradeStyle}] | score=${signal.score}/${minScore} | ` +
-    `entry=${signal.entry} | rr=${signal.rr} | regime=${getMarketRegime(db)}`
+    `[${ts()}] SIGNAL${modeTag} #${info.lastInsertRowid} | ${instrument} ${signal.direction} ${signal.grade} | ` +
+    `${signal.setup} [${signal.tradeStyle}] | score=${signal.score}/${minScoreLog} | ` +
+    `entry=${signal.entry} | rr=${signal.rr} | daily=${getDailyLive(instrument)}/${DAILY_MIN_LIVE}`
   );
-  sendNtfy(signal);
+
+  // B-grade (learning/forced) signals: skip ntfy — they are for system learning only
+  if (signal.grade !== 'B') sendNtfy(signal);
 }
 
 // ── Live scan — both MNQ and MGC in parallel ──────────────────────────────────
@@ -276,9 +351,24 @@ async function scan() {
       return;
     }
 
+    // Normal (strict) scan
     await Promise.all([
       mnqReady ? scanInstrument(SYMBOL,     'MNQ', mnqBars1m, mnqBars15m) : Promise.resolve(),
       mgcReady ? scanInstrument(SYMBOL_MGC, 'MGC', mgcBars1m, mgcBars15m) : Promise.resolve(),
+    ]);
+
+    // Quota-aware relaxed fallback — if daily quota is behind, try Grade-B scan
+    // Spread relaxed attempts across the day; only fire one per 90-min window
+    const ninetyMin = 90 * 60_000;
+    await Promise.all([
+      (mnqReady && getDailyLive('MNQ') < DAILY_MIN_LIVE &&
+        Date.now() - (lastSignalTimes['MNQ'] ?? 0) > ninetyMin)
+        ? scanInstrument(SYMBOL,     'MNQ', mnqBars1m, mnqBars15m, { relaxed: true })
+        : Promise.resolve(),
+      (mgcReady && getDailyLive('MGC') < DAILY_MIN_LIVE &&
+        Date.now() - (lastSignalTimes['MGC'] ?? 0) > ninetyMin)
+        ? scanInstrument(SYMBOL_MGC, 'MGC', mgcBars1m, mgcBars15m, { relaxed: true })
+        : Promise.resolve(),
     ]);
 
     if (mnqReady) autoResolveOutcomes(mnqBars1m, 'MNQ');
@@ -286,6 +376,39 @@ async function scan() {
 
   } catch (err) {
     console.error(`[${ts()}] Scan error:`, err.message);
+  }
+}
+
+// ── Hourly quota enforcement — guarantees daily minimums ─────────────────────
+// Runs every 2 hours. If an instrument is below its daily quota it forces a
+// dedicated relaxed scan regardless of the 90-min window used in scan().
+async function runQuotaEnforcementScan() {
+  const instruments = [
+    { symbol: SYMBOL,     inst: 'MNQ' },
+    { symbol: SYMBOL_MGC, inst: 'MGC' },
+  ];
+
+  const behind = instruments.filter(({ inst }) => getDailyLive(inst) < DAILY_MIN_LIVE);
+  if (behind.length === 0) return;
+
+  console.log(`[${ts()}] QUOTA CHECK: behind on [${behind.map(x => x.inst).join(', ')}] — running enforcement scan`);
+
+  try {
+    for (const { symbol, inst } of behind) {
+      const [bars1m, bars15m] = await Promise.all([
+        fetchBarsForSymbol(symbol, '1Min',  120),
+        fetchBarsForSymbol(symbol, '15Min',  60),
+      ]);
+      if (bars1m.length < 60 || bars15m.length < 30) continue;
+      savePrice(symbol, bars1m);
+      // Force up to (DAILY_MIN_LIVE - current) signals to hit quota
+      const needed = DAILY_MIN_LIVE - getDailyLive(inst);
+      for (let attempt = 0; attempt < needed; attempt++) {
+        await scanInstrument(symbol, inst, bars1m, bars15m, { relaxed: true });
+      }
+    }
+  } catch (err) {
+    console.error(`[${ts()}] Quota enforcement error:`, err.message);
   }
 }
 
@@ -324,26 +447,42 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
     savePrice(symbol, bars1m);
 
     const params = getParams(db, instrument);
-    const result = runBacktest(bars1m, params, {
+    let result = runBacktest(bars1m, params, {
       targetTrades: BT_TARGET_TRADES,
+      minSignals:   DAILY_MIN_BT,
       slippage:     BT_SLIPPAGE,
       walkForward:  true,
     });
+
+    // If still below daily minimum, retry once with relaxed minScore
+    if (result.metrics.tradeCount < DAILY_MIN_BT) {
+      console.log(`[${ts()}] BACKTEST QUOTA: ${instrument} only ${result.metrics.tradeCount} trades — retrying with relaxed params`);
+      const relaxedParams = { ...params, minScore: Math.min(params.minScore ?? 12, 8) };
+      const retry = runBacktest(bars1m, relaxedParams, {
+        targetTrades: BT_TARGET_TRADES,
+        slippage:     BT_SLIPPAGE,
+        walkForward:  true,
+      });
+      if (retry.metrics.tradeCount >= result.metrics.tradeCount) result = retry;
+    }
+
     const { metrics } = result;
     metrics.barsScanned = bars1m.length;
+    addDailyBt(instrument, metrics.tradeCount);
 
     const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
 
-    const lossTrades = result.signalLog.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').slice(0, 100);
-    if (lossTrades.length > 0) {
-      const insLoss = db.prepare(`
+    // Store all trades (WIN + LOSS + BE) up to 200 — full dataset for learning
+    const allTrades = result.signalLog.slice(0, 200);
+    if (allTrades.length > 0) {
+      const insTrade = db.prepare(`
         INSERT INTO backtest_trades
           (run_id, instrument, bar_idx, timestamp, direction, setup, trade_style, regime, entry, sl, tp1, outcome, score)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       db.transaction(() => {
-        for (const t of lossTrades) {
-          insLoss.run(runId, instrument, t.bar ?? null, t.timestamp ?? null, t.direction,
+        for (const t of allTrades) {
+          insTrade.run(runId, instrument, t.bar ?? null, t.timestamp ?? null, t.direction,
             t.setup ?? null, t.tradeStyle ?? null, t.regime ?? null,
             t.entry ?? null, t.sl ?? null, t.tp1 ?? null, t.outcome, t.score ?? null);
         }
@@ -426,13 +565,18 @@ console.log(`Live symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: every ${SCAN_
 console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
 console.log(`Optimizer: every ${OPT_INTERVAL_H}h | Instruments: MNQ (scalp/intraday/swing), MGC (scalp)`);
 if (!NTFY_TOPIC) console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
-console.log('Market data: Yahoo Finance (free, no API key required)');
+if (!TWELVEDATA_KEY) console.warn('WARNING: TWELVEDATA_API_KEY not set — market data unavailable');
+console.log(`Market data: Twelvedata | Daily quotas: live=${DAILY_MIN_LIVE}/instrument, bt=${DAILY_MIN_BT}/run`);
+
+// Seed daily counters from DB (handles mid-day restarts)
+seedDailyQuota();
 
 // Warmup on startup (staggered to avoid rate-limiting)
 setTimeout(() => runBacktestCycle('MNQ', 'startup'),   5_000);
 setTimeout(() => runBacktestCycle('MGC', 'startup'),  35_000);
 setTimeout(() => runOptimizerCycle('MNQ'), 120_000);
 setTimeout(() => runOptimizerCycle('MGC'), 180_000);
+setTimeout(() => runQuotaEnforcementScan(),  300_000);   // first quota check 5 min after startup
 
 // Live scan
 scan();
@@ -447,3 +591,6 @@ setInterval(() => runBacktestCycle('MGC'), BT_MS + BT_MS / 2);
 const OPT_MS = OPT_INTERVAL_H * 3_600_000;
 setInterval(() => runOptimizerCycle('MNQ'), OPT_MS);
 setInterval(() => runOptimizerCycle('MGC'), OPT_MS + OPT_MS / 3);
+
+// Quota enforcement — every 2 hours, forces Grade-B signals if daily quota is behind
+setInterval(runQuotaEnforcementScan, 2 * 3_600_000);

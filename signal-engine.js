@@ -188,6 +188,7 @@ function computeSignal(bars, htfBars, cfg = {}) {
     emaS:           cfg.emaS           ?? 21,
     emaT:           cfg.emaT           ?? 50,
     rthOnly:        cfg.rthOnly        ?? false,
+    relaxed:        cfg.relaxed        ?? false,   // Grade B mode: accept score >= 8
     // Instrument + style
     instrument:     cfg.instrument     ?? 'MNQ',
     tradeStyleMode: cfg.tradeStyleMode ?? 'auto',  // 'auto'|'scalp'|'intraday'|'swing'
@@ -351,7 +352,7 @@ function computeSignal(bars, htfBars, cfg = {}) {
 
   if (score < C.minScore) return null;
 
-  const grade    = score >= 24 ? 'A+' : score >= 12 ? 'A' : null;
+  const grade    = score >= 24 ? 'A+' : score >= 12 ? 'A' : (C.relaxed && score >= 8) ? 'B' : null;
   if (!grade) return null;
 
   const isAplus = grade === 'A+';
