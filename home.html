@@ -456,15 +456,17 @@ function getMarketContext() {
   const minute  = parseInt(parts.find(p => p.type === 'minute').value);
   const weekday = parts.find(p => p.type === 'weekday').value;
   const t = hour * 60 + minute;
-  const isWeekday = !['Sat', 'Sun'].includes(weekday);
-
-  if (!isWeekday) return { cls: 'closed', label: 'MARKET CLOSED', session: 'Weekend' };
-  if (t < 240)   return { cls: 'closed', label: 'OVERNIGHT',    session: 'Overnight' };
+  // CME NQ futures: Sun 6 PM ET open → Fri 5 PM ET close (daily maint 5–6 PM ET)
+  if (weekday === 'Sat')                     return { cls: 'closed', label: 'MARKET CLOSED', session: 'Weekend' };
+  if (weekday === 'Sun' && t < 1080)         return { cls: 'closed', label: 'MARKET CLOSED', session: 'Weekend' };
+  if (weekday === 'Fri' && t >= 1020)        return { cls: 'closed', label: 'MARKET CLOSED', session: 'Weekend' };
+  if (t >= 1020 && t < 1080)                return { cls: 'closed', label: 'MAINTENANCE',   session: 'Overnight' };
+  if (t >= 1080 || t < 240)                 return { cls: 'open',   label: 'FUTURES OPEN',  session: 'Overnight' };
   if (t < 570)   return { cls: 'pre',    label: 'PRE-MARKET',   session: 'Pre-Market' };
   if (t < 690)   return { cls: 'open',   label: 'NYSE OPEN',    session: 'NY Open' };
   if (t < 840)   return { cls: 'open',   label: 'NYSE OPEN',    session: 'Midday' };
   if (t < 960)   return { cls: 'open',   label: 'NYSE OPEN',    session: 'Afternoon' };
-  return         { cls: 'closed', label: 'AFTER HOURS', session: 'After-Hours' };
+  return         { cls: 'pre',    label: 'AFTER HOURS',  session: 'After-Hours' };
 }
 
 /* ── Hero card ───────────────────────────────────────── */
