@@ -5,14 +5,14 @@ const { runBacktest } = require('./backtest-engine');
 // ── Default parameters per instrument ────────────────────────────────────────
 const DEFAULT_PARAMS = {
   MNQ: {
-    slPts: 25, minScore: 16, oteHigh: 0.786, oteLow: 0.618,
+    slPts: 25, minScore: 12, oteHigh: 0.786, oteLow: 0.618,
     swingLook: 20, stdvLen: 20, std2: 2.0, std1: 1.0,
     htfEmaF: 9, htfEmaS: 21, atrLen: 14, swingL: 7,
     emaF: 9, emaS: 21, emaT: 50,
     instrument: 'MNQ', tradeStyleMode: 'auto',
   },
   MGC: {
-    slPts: 12, minScore: 16, oteHigh: 0.786, oteLow: 0.618,
+    slPts: 12, minScore: 12, oteHigh: 0.786, oteLow: 0.618,
     swingLook: 15, stdvLen: 15, std2: 2.0, std1: 1.0,
     htfEmaF: 9, htfEmaS: 21, atrLen: 14, swingL: 5,
     emaF: 9, emaS: 21, emaT: 50,
@@ -24,7 +24,7 @@ const DEFAULT_PARAMS = {
 const DEFAULT_PARAMS_BY_STYLE = {
   MNQ_SCALP: {
     ...DEFAULT_PARAMS.MNQ,
-    slPts: 16, minScore: 14, stdvLen: 15, std2: 2.2, swingLook: 15,
+    slPts: 16, minScore: 12, stdvLen: 15, std2: 2.2, swingLook: 15,
     tradeStyleMode: 'scalp',
   },
   MNQ_INTRADAY: {
@@ -49,7 +49,7 @@ const DEFAULT_PARAMS_BY_STYLE = {
 // Hard bounds — adjustments never exceed these limits
 const PARAM_BOUNDS = {
   slPts:     { min: 10,   max: 60    },
-  minScore:  { min: 12,   max: 26    },
+  minScore:  { min: 10,   max: 26    },
   oteHigh:   { min: 0.72, max: 0.92  },
   oteLow:    { min: 0.50, max: 0.72  },
   stdvLen:   { min: 8,    max: 40    },
@@ -65,8 +65,8 @@ const PARAM_BOUNDS = {
 
 // Safeguards for autonomous revisions
 const SAFEGUARDS = {
-  minTrades:        20,    // backtest must find at least this many trades
-  minWinRateGain:   0.04,  // 4pp absolute improvement required
+  minTrades:        15,    // backtest must find at least this many trades
+  minWinRateGain:   0.03,  // 3pp absolute improvement required
   minSharpeDelta:   0.08,  // Sharpe ratio must improve by at least this much
   cooldownHours:    6,     // minimum hours between revisions
   maxScoreShift:    4,     // minScore can't shift more than ±4 per revision

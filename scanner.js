@@ -37,7 +37,7 @@ const BT_INTERVAL_H  = parseFloat(process.env.BACKTEST_INTERVAL_H  || '4');
 const BT_BARS        = parseInt(process.env.BACKTEST_BARS           || '10000');
 const OPT_INTERVAL_H = parseFloat(process.env.OPTIMIZER_INTERVAL_H || '12');
 const BT_SLIPPAGE    = parseFloat(process.env.BT_SLIPPAGE           || '0.5');
-const BT_TARGET_TRADES = parseInt(process.env.BT_TARGET_TRADES      || '250');
+const BT_TARGET_TRADES = parseInt(process.env.BT_TARGET_TRADES      || '350');
 
 // ── Database ──────────────────────────────────────────────────────────────────
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });

@@ -542,7 +542,7 @@ function buildRow(t) {
   const isLong  = t.direction === 'LONG';
   const isExp   = expandedIds.has(t.id);
   const mkt     = t.instrument || (t.ticker || '').replace('1!', '') || '—';
-  const dt      = new Date(t.received_at + ' UTC');
+  const dt      = new Date(t.received_at + (t.received_at?.includes('T') ? '' : ' UTC'));
   const timeStr = hhmm(t.received_at);
   const dateStr = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
   const ageStr  = timeAgo(t.received_at);
