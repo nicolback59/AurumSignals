@@ -17,18 +17,19 @@ const DB_PATH        = process.env.DB_PATH           || path.join(__dirname, 'si
 const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
 const NTFY_TOPIC     = process.env.NTFY_TOPIC        || '';
 const NTFY_TOKEN     = process.env.NTFY_TOKEN        || '';
-// Yahoo Finance symbols — no API key needed, free, real-time futures data
-const SYMBOL         = process.env.SCANNER_SYMBOL     || 'NQ=F';   // NQ futures (same price as MNQ)
-const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || 'GC=F';   // Gold futures (same price as MGC)
+// Twelvedata — requires TWELVEDATA_API_KEY (free tier: 800 req/day, 8 req/min)
+const TWELVEDATA_KEY = process.env.TWELVEDATA_API_KEY  || '';
+const SYMBOL         = process.env.SCANNER_SYMBOL     || 'NQ';     // NQ futures (same price as MNQ)
+const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || 'GC';     // Gold futures (same price as MGC)
 const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL     || '60')  * 1000;
 const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '1');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
 const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '12');
 
-// Backtest symbols (Yahoo Finance)
+// Backtest symbols (Twelvedata)
 const BT_SYMBOLS = {
-  MNQ: process.env.SCANNER_BT_MNQ || 'NQ=F',
-  MGC: process.env.SCANNER_BT_MGC || 'GC=F',
+  MNQ: process.env.SCANNER_BT_MNQ || 'NQ',
+  MGC: process.env.SCANNER_BT_MGC || 'GC',
 };
 
 // Backtest schedule
@@ -115,43 +116,43 @@ function sendNtfy(s) {
     .catch(err => console.error('[ntfy]', err.message));
 }
 
-// ── Market data (Yahoo Finance — free, no API key) ────────────────────────────
-function yahooInterval(timeframe) {
-  return timeframe.startsWith('1M') ? '1m' : '15m';
+// ── Market data (Twelvedata — twelvedata.com, free tier: 800 req/day) ────────
+function twelvedataInterval(timeframe) {
+  return timeframe.startsWith('1M') ? '1min' : '15min';
 }
 
-async function fetchYahooBars(symbol, interval, range) {
-  const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`
-    + `?interval=${interval}&range=${range}`;
+async function fetchTwelvedataBars(symbol, interval, outputsize) {
+  if (!TWELVEDATA_KEY) throw new Error('TWELVEDATA_API_KEY env var not set');
+  const url = `https://api.twelvedata.com/time_series`
+    + `?symbol=${encodeURIComponent(symbol)}&interval=${interval}`
+    + `&outputsize=${outputsize}&timezone=UTC&apikey=${TWELVEDATA_KEY}`;
   const res = await fetch(url, { headers: { 'User-Agent': 'NQ-Signal-Pro/3.0' } });
-  if (!res.ok) throw new Error(`Yahoo Finance ${res.status}: ${symbol}`);
-  const json   = await res.json();
-  const result = json.chart?.result?.[0];
-  if (!result) return [];
-  const ts    = result.timestamp ?? [];
-  const quote = result.indicators?.quote?.[0] ?? {};
-  return ts.map((t, i) => ({
-    timestamp: new Date(t * 1000).toISOString(),
-    open:   quote.open?.[i],
-    high:   quote.high?.[i],
-    low:    quote.low?.[i],
-    close:  quote.close?.[i],
-    volume: quote.volume?.[i] ?? 0,
-  })).filter(b => b.open != null && b.close != null);
+  if (!res.ok) throw new Error(`Twelvedata ${res.status}: ${symbol}`);
+  const json = await res.json();
+  if (json.status === 'error') throw new Error(`Twelvedata: ${json.message}`);
+  const values = json.values ?? [];
+  // Twelvedata returns newest-first; reverse for chronological order
+  return values.reverse().map(v => ({
+    timestamp: new Date(v.datetime.replace(' ', 'T') + 'Z').toISOString(),
+    open:   parseFloat(v.open),
+    high:   parseFloat(v.high),
+    low:    parseFloat(v.low),
+    close:  parseFloat(v.close),
+    volume: parseFloat(v.volume ?? '0'),
+  })).filter(b => !isNaN(b.open) && !isNaN(b.close));
 }
 
 async function fetchBarsForSymbol(symbol, timeframe, limit) {
-  const interval = yahooInterval(timeframe);
-  const range    = interval === '1m' ? '2d' : '5d';
-  const bars     = await fetchYahooBars(symbol, interval, range);
+  const interval = twelvedataInterval(timeframe);
+  const bars = await fetchTwelvedataBars(symbol, interval, Math.min(limit, 5000));
   return bars.slice(-limit);
 }
 
-// Historical fetch for backtests — Yahoo gives up to 7d of 1m data (~10k bars)
+// Historical fetch for backtests — free tier supports up to 5000 bars per request
 async function fetchAllBars(symbol, timeframe, maxBars) {
-  const interval = yahooInterval(timeframe);
-  const range    = interval === '1m' ? '7d' : '60d';
-  const bars     = await fetchYahooBars(symbol, interval, range);
+  const interval = twelvedataInterval(timeframe);
+  const outputsize = Math.min(maxBars, 5000);
+  const bars = await fetchTwelvedataBars(symbol, interval, outputsize);
   return bars.slice(-maxBars);
 }
 

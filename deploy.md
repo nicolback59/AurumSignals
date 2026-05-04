@@ -147,8 +147,8 @@ own strategy parameters — no manual tuning required.
 
 ```
 Every 4 hours (per instrument):
-  1. Fetch up to 3,000 1m bars from Alpaca  (paginated — maximises history)
-  2. Run full signal engine over all bars    (backtest-engine.js)
+  1. Fetch up to 5,000 1m bars from Twelvedata  (free tier max per request)
+  2. Run full signal engine over all bars        (backtest-engine.js)
   3. Resolve each signal outcome: TP1 hit first = WIN, SL hit first = LOSS
   4. Compute win rate, Sharpe ratio, profit factor, max drawdown
   5. Neighbourhood search: test 15 parameter perturbations
@@ -173,10 +173,10 @@ Every 4 hours (per instrument):
 
 ### Instruments backtested
 
-| Instrument | Alpaca symbol | Default SL |
-|-----------|---------------|-----------|
-| MNQ (Micro NQ) | `@MNQ.C.0` | 25 pts |
-| MGC (Micro Gold) | `@MGC.C.0` | 15 pts |
+| Instrument | Twelvedata symbol | Default SL |
+|-----------|-------------------|-----------|
+| MNQ (Micro NQ) | `NQ` | 25 pts |
+| MGC (Micro Gold) | `GC` | 15 pts |
 
 Override symbols via `SCANNER_BT_MNQ` and `SCANNER_BT_MGC` env vars.
 
@@ -185,9 +185,9 @@ Override symbols via `SCANNER_BT_MNQ` and `SCANNER_BT_MGC` env vars.
 | Variable | Default | Notes |
 |----------|---------|-------|
 | `BACKTEST_INTERVAL_H` | `4` | Hours between backtest cycles |
-| `BACKTEST_BARS` | `3000` | Bars of history per instrument |
-| `SCANNER_BT_MNQ` | `@MNQ.C.0` | Alpaca symbol for MNQ backtest |
-| `SCANNER_BT_MGC` | `@MGC.C.0` | Alpaca symbol for MGC backtest |
+| `BACKTEST_BARS` | `5000` | Bars of history (free tier cap: 5000) |
+| `SCANNER_BT_MNQ` | `NQ` | Twelvedata symbol for MNQ backtest |
+| `SCANNER_BT_MGC` | `GC` | Twelvedata symbol for MGC backtest |
 
 ### Accelerating learning
 
@@ -242,7 +242,7 @@ by TradingView's infrastructure.
 
 ## Continuous 24/7 Scanner
 
-The scanner runs independently of TradingView. It polls Alpaca for fresh 1m and
+The scanner runs independently of TradingView. It polls Twelvedata for fresh 1m and
 15m bars every 60 seconds, runs the same 4-factor signal engine as the Pine
 Script, and fires ntfy push notifications automatically — around the clock.
 
@@ -253,34 +253,32 @@ suppresses signals when the current market regime is choppy.
 ### How it works
 
 ```
-scanner.js  →  fetches 1m + 15m bars from Alpaca
+scanner.js  →  fetches 1m + 15m bars from Twelvedata
             →  runs signal-engine.js (4-factor model)
             →  checks learning.js (adaptive score threshold)
             →  saves to SQLite  +  fires ntfy
 ```
 
-### Market data: Alpaca
+### Market data: Twelvedata
 
-1. Create a free account at [alpaca.markets](https://alpaca.markets)
-2. Go to **Paper Trading** → **API Keys** → generate a key pair
-3. Verify that your account has **Futures Data** enabled (may require enabling
-   in account settings)
+1. Create a free account at [twelvedata.com](https://twelvedata.com)
+2. Go to **Dashboard** → **API Keys** → copy your key
+3. Free tier gives 800 API credits/day and 8 requests/minute — enough for 24/7 scanning on 2 symbols
 
 Set environment variables:
 
-| Variable              | Value                 | Notes                                        |
-|-----------------------|-----------------------|----------------------------------------------|
-| `ALPACA_KEY`          | `PKxxx...`            | Your Alpaca API key ID                       |
-| `ALPACA_SECRET`       | `xxx...`              | Your Alpaca API secret                       |
-| `SCANNER_SYMBOL`      | `@NQ.C.0`             | Continuous NQ front-month (verify at Alpaca) |
-| `SCAN_INTERVAL`       | `60`                  | Seconds between scans (default 60)           |
-| `SCANNER_COOLDOWN`    | `3`                   | Min bars between signals (default 3)         |
-| `SCANNER_MIN_SCORE`   | `16`                  | Base grade-A threshold (adaptive adjusts it) |
-| `SCANNER_RTH_ONLY`    | `false`               | `true` = RTH only, `false` = 24/7 (default) |
+| Variable                | Value        | Notes                                          |
+|-------------------------|--------------|------------------------------------------------|
+| `TWELVEDATA_API_KEY`    | `abc123...`  | Your Twelvedata API key (required)             |
+| `SCANNER_SYMBOL`        | `NQ`         | NQ futures symbol on Twelvedata                |
+| `SCANNER_SYMBOL_MGC`    | `GC`         | Gold futures symbol on Twelvedata              |
+| `SCAN_INTERVAL`         | `60`         | Seconds between scans (default 60)             |
+| `SCANNER_COOLDOWN`      | `3`          | Min bars between signals (default 3)           |
+| `SCANNER_MIN_SCORE`     | `16`         | Base grade-A threshold (adaptive adjusts it)   |
+| `SCANNER_RTH_ONLY`      | `false`      | `true` = RTH only, `false` = 24/7 (default)   |
 
-> **Symbol note:** Alpaca uses `@NQ.C.0` for the continuous NQ E-mini contract
-> and `@MNQ.C.0` for the Micro NQ. Confirm the exact symbol in
-> [Alpaca's asset search](https://alpaca.markets/docs/api-references/market-data-api/stock-pricing-data/historical/).
+> **Symbol note:** Twelvedata uses `NQ` for NQ E-mini futures and `GC` for Gold futures.
+> Verify symbols at [Twelvedata symbol search](https://twelvedata.com/stocks) if needed.
 
 ### Running the scanner
 
