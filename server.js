@@ -53,24 +53,26 @@ function sendNtfy(s) {
   const priority = s.grade === 'A+' ? 'urgent' : 'high';
   const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
 
-  const body = [
-    s.setup             ? `Setup:   ${s.setup}`            : null,
-    s.entry   != null   ? `Entry:   ${s.entry}`            : null,
-    s.sl      != null   ? `SL:      ${s.sl}`               : null,
-    s.tp1     != null   ? `TP1:     ${s.tp1}`              : null,
-    s.tp2     != null   ? `TP2:     ${s.tp2}`              : null,
-    s.tp3     != null   ? `TP3:     ${s.tp3}`              : null,
-    s.score   != null   ? `Score:   ${s.score}`            : null,
-    s.win_prob_tp1 != null ? `Win%:  ${s.win_prob_tp1}%`   : null,
-    s.session           ? `Session: ${s.session}`          : null,
-  ].filter(Boolean).join('\n');
+const priority = s.grade === 'A+' ? 'urgent' : 'high';
 
-  const headers = {
-    'Content-Type': 'text/plain',
-    'Title':    `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker}`,
-    'Priority': priority,
-    'Tags':     tags,
-  };
+const body = [
+  `Signal: ${s.direction} ${s.grade} ${s.ticker}`,
+  s.setup   ? `Setup: ${s.setup}` : null,
+  s.entry != null ? `Entry: ${s.entry}` : null,
+  s.sl    != null ? `SL: ${s.sl}` : null,
+  s.tp1   != null ? `TP1: ${s.tp1}` : null,
+  s.tp2   != null ? `TP2: ${s.tp2}` : null,
+  s.tp3   != null ? `TP3: ${s.tp3}` : null,
+  s.score != null ? `Score: ${s.score}` : null,
+  s.win_prob_tp1 != null ? `Win%: ${s.win_prob_tp1}%` : null,
+  s.session ? `Session: ${s.session}` : null,
+].filter(Boolean).join('\n');
+
+const headers = {
+  'Content-Type': 'text/plain; charset=utf-8',
+  'Title': `${s.direction} ${s.grade} ${s.ticker}`,
+  'Priority': priority
+};
   if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
 
   fetch(`${NTFY_URL}/${NTFY_TOPIC}`, { method: 'POST', headers, body })
