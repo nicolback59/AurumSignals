@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Live Signals</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    /* Page-specific layout */
+    body { height: 100dvh; display: flex; flex-direction: column; overflow: hidden; }
+    .page-content {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 290px;
+      overflow: hidden;
+      min-height: 0;
+    }
+    @media (max-width: 900px) {
+      .page-content { grid-template-columns: 1fr; }
+      .sidebar { display: none; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link active">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
+      <a href="/backtest" class="nav-link">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <div class="live-badge"><span class="live-dot"></span>LIVE</div>
+    <span class="refresh-label" id="rt">10s</span>
+  </div>
+</header>
+
+<!-- ── STAT BAR ─────────────────────────────────────── -->
+<div class="stat-bar">
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Total</div>
+    <div class="stat-bar-value" style="color:var(--blue)" id="s-tot">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Today</div>
+    <div class="stat-bar-value" style="color:var(--yellow)" id="s-day">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Wins</div>
+    <div class="stat-bar-value" style="color:var(--green)" id="s-win">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Losses</div>
+    <div class="stat-bar-value" style="color:var(--red)" id="s-los">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Win Rate</div>
+    <div class="stat-bar-value" style="color:var(--yellow)" id="s-wr">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Breakeven</div>
+    <div class="stat-bar-value" style="color:var(--orange)" id="s-be">—</div>
+  </div>
+</div>
+
+<!-- ── MAIN CONTENT ─────────────────────────────────── -->
+<div class="page-content">
+
+  <!-- SIGNAL FEED -->
+  <div class="feed-wrap">
+    <!-- Filters -->
+    <div class="filter-chips" style="flex-shrink:0">
+      <button class="filter-chip active" onclick="setFilter('all',this)">All</button>
+      <button class="filter-chip" onclick="setFilter('LONG',this)">▲ Long</button>
+      <button class="filter-chip" onclick="setFilter('SHORT',this)">▼ Short</button>
+      <button class="filter-chip" onclick="setFilter('A+',this)">A+ Only</button>
+    </div>
+
+    <!-- Cards / empty / skeletons -->
+    <div id="feed">
+      <!-- skeleton while loading -->
+      <div id="feed-skeleton">
+        <div class="skeleton skeleton-card" style="margin-bottom:10px"></div>
+        <div class="skeleton skeleton-card" style="margin-bottom:10px"></div>
+        <div class="skeleton skeleton-card"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar side-col">
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Performance</div>
+      <div class="kv-row"><span class="kv-label">Total Signals</span><span class="kv-value" style="color:var(--blue)" id="sb-tot">—</span></div>
+      <div class="kv-row"><span class="kv-label">Wins</span><span class="kv-value" style="color:var(--green)" id="sb-win">—</span></div>
+      <div class="kv-row"><span class="kv-label">Losses</span><span class="kv-value" style="color:var(--red)" id="sb-los">—</span></div>
+      <div class="kv-row"><span class="kv-label">Breakevens</span><span class="kv-value" style="color:var(--orange)" id="sb-be">—</span></div>
+      <div class="kv-row"><span class="kv-label">Win Rate</span><span class="kv-value" style="color:var(--yellow)" id="sb-wr">—</span></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">By Grade</div>
+      <div class="kv-row"><span class="kv-label" style="color:var(--yellow)">A+ Signals</span><span class="kv-value" id="sb-ap">—</span></div>
+      <div class="kv-row"><span class="kv-label" style="color:var(--teal)">A Signals</span><span class="kv-value" id="sb-a">—</span></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">Direction</div>
+      <div class="kv-row"><span class="kv-label" style="color:var(--green)">Long</span><span class="kv-value" id="sb-lo">—</span></div>
+      <div class="kv-row"><span class="kv-label" style="color:var(--red)">Short</span><span class="kv-value" id="sb-sh">—</span></div>
+    </div>
+
+    <div class="sidebar-section">
+      <div class="sidebar-section-title">By Setup</div>
+      <div id="sb-setups"></div>
+    </div>
+
+    <div class="sidebar-section" style="margin-top:auto;padding-top:14px;border-top:1px solid var(--border-subtle)">
+      <div class="sidebar-section-title">Specification</div>
+      <div class="kv-row"><span class="kv-label">Instrument</span><span class="kv-value" style="color:var(--blue)">NQ / MNQ</span></div>
+      <div class="kv-row"><span class="kv-label">Stop Loss</span><span class="kv-value">25 pts</span></div>
+      <div class="kv-row"><span class="kv-label">TP1 / TP2 / TP3</span><span class="kv-value">25 / 50 / 75</span></div>
+      <div class="kv-row"><span class="kv-label">Quality Gate</span><span class="kv-value">A / A+ (≥16/35)</span></div>
+      <div class="kv-row"><span class="kv-label">Setups</span><span class="kv-value">OTE · STDV · Combo</span></div>
+    </div>
+
+  </aside>
+</div>
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/" class="bottom-nav-item">
+      <span class="bottom-nav-icon">⌂</span>
+      <span class="bottom-nav-label">Home</span>
+    </a>
+    <a href="/signals" class="bottom-nav-item active">
+      <span class="bottom-nav-icon">◈</span>
+      <span class="bottom-nav-label">Signals</span>
+    </a>
+    <a href="/trades" class="bottom-nav-item">
+      <span class="bottom-nav-icon">◉</span>
+      <span class="bottom-nav-label">Trades</span>
+    </a>
+    <a href="/journal" class="bottom-nav-item">
+      <span class="bottom-nav-icon">◎</span>
+      <span class="bottom-nav-label">Journal</span>
+    </a>
+  </div>
+</nav>
+
+<script src="/ui-components.js"></script>
+<script>
+'use strict';
+
+let signals = [], activeFilter = 'all', countdown = 10, timer = null, knownIds = new Set();
+
+const $ = id => document.getElementById(id);
+const fmtPct = v => v != null ? (v * 100).toFixed(1) + '%' : '—';
+
+/* ── Filter ─────────────────────────────────────────── */
+function setFilter(f, btn) {
+  activeFilter = f;
+  document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderFeed();
+}
+
+/* ── Render feed ────────────────────────────────────── */
+function renderFeed() {
+  const filtered = signals.filter(s => {
+    if (activeFilter === 'LONG')  return s.direction === 'LONG';
+    if (activeFilter === 'SHORT') return s.direction === 'SHORT';
+    if (activeFilter === 'A+')    return s.grade === 'A+';
+    return true;
+  });
+
+  const feed = $('feed');
+
+  if (!filtered.length) {
+    feed.innerHTML = buildEmptyState(
+      '◈',
+      'No signals yet',
+      'Point your TradingView alert webhook to <code>POST /webhook</code> on this server. See <code>tradingview-alerts.txt</code> for JSON templates.'
+    );
+    return;
+  }
+
+  feed.innerHTML = filtered.map(buildSignalCard).join('');
+}
+
+/* ── Outcome logging ─────────────────────────────────── */
+async function logOutcome(id, result) {
+  const sig = signals.find(s => s.id === id);
+  let pnl = null;
+  if (result === 'WIN')  pnl = sig?.direction === 'LONG' ?  25 : -25;
+  if (result === 'LOSS') pnl = sig?.direction === 'LONG' ? -25 :  25;
+  if (result === 'BE')   pnl = 0;
+
+  await fetch('/api/outcome', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ signal_id: id, result, pnl_pts: pnl }),
+  });
+  load();
+}
+
+/* ── Stats sidebar ───────────────────────────────────── */
+function applyStats(st) {
+  const outs = st.outcomes || [];
+  const wins = (outs.find(o => o.result === 'WIN')  || {}).n || 0;
+  const loss = (outs.find(o => o.result === 'LOSS') || {}).n || 0;
+  const be   = (outs.find(o => o.result === 'BE')   || {}).n || 0;
+  const res  = wins + loss;
+  const wr   = res > 0 ? fmtPct(wins / res) : '—';
+
+  $('s-tot').textContent = st.total   || 0;
+  $('s-day').textContent = st.last24h || 0;
+  $('s-win').textContent = wins;
+  $('s-los').textContent = loss;
+  $('s-wr').textContent  = wr;
+  $('s-be').textContent  = be;
+
+  $('sb-tot').textContent = st.total || 0;
+  $('sb-win').textContent = wins;
+  $('sb-los').textContent = loss;
+  $('sb-be').textContent  = be;
+  $('sb-wr').textContent  = wr;
+
+  const bg = st.byGrade || [];
+  $('sb-ap').textContent = (bg.find(g => g.grade === 'A+') || {}).n || 0;
+  $('sb-a').textContent  = (bg.find(g => g.grade === 'A')  || {}).n || 0;
+
+  const bd = st.byDir || [];
+  $('sb-lo').textContent = (bd.find(d => d.direction === 'LONG')  || {}).n || 0;
+  $('sb-sh').textContent = (bd.find(d => d.direction === 'SHORT') || {}).n || 0;
+
+  const bs  = (st.bySetup || []).filter(s => s.setup);
+  const max = Math.max(...bs.map(s => s.n), 1);
+  $('sb-setups').innerHTML = bs.map(s => `
+    <div class="setup-dist-row">
+      <span class="setup-dist-name">${escH(s.setup)}</span>
+      <div class="setup-dist-track">
+        <div class="setup-dist-fill" style="width:${(s.n / max * 100).toFixed(0)}%;background:${setupColor(s.setup)}"></div>
+      </div>
+      <span class="setup-dist-count">${s.n}</span>
+    </div>`).join('');
+}
+
+/* ── Toast ───────────────────────────────────────────── */
+function showToast(msg) {
+  const t = document.createElement('div');
+  t.className = 'toast';
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3200);
+}
+
+/* ── Data fetch ──────────────────────────────────────── */
+async function load() {
+  try {
+    const [sr, ss] = await Promise.all([
+      fetch('/api/signals?limit=50'),
+      fetch('/api/stats'),
+    ]);
+    const [sigs, stats] = await Promise.all([sr.json(), ss.json()]);
+
+    // Remove skeleton on first load
+    const sk = $('feed-skeleton');
+    if (sk) sk.remove();
+
+    const prev  = new Set(knownIds);
+    sigs.forEach(s => knownIds.add(s.id));
+    const fresh = sigs.filter(s => !prev.has(s.id));
+    if (fresh.length && prev.size > 0) {
+      showToast(`${fresh.length} new signal${fresh.length > 1 ? 's' : ''}`);
+    }
+
+    signals = sigs;
+    renderFeed();
+    applyStats(stats);
+  } catch (e) {
+    console.error('Fetch error:', e);
+  }
+}
+
+/* ── Countdown ───────────────────────────────────────── */
+function tick() {
+  countdown--;
+  $('rt').textContent = countdown + 's';
+  if (countdown <= 0) {
+    countdown = 10;
+    $('rt').textContent = '…';
+    load();
+  }
+}
+
+load().then(() => { timer = setInterval(tick, 1000); });
+</script>
+</body>
+</html>

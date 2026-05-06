@@ -1,0 +1,553 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Stats</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { overflow-y: auto; }
+    .stats-wrap { max-width: 1100px; margin: 0 auto; padding: 0 16px 88px; }
+
+    /* ── Page header ──────────────────────────────────── */
+    .stats-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 18px 0 16px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .stats-hdr-left h1 {
+      font-size: 20px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+    }
+    .stats-hdr-left p {
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
+    /* ── KPI cards ────────────────────────────────────── */
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .kpi-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      padding: 16px 14px;
+    }
+    .kpi-lbl {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .kpi-val {
+      font-family: var(--font-mono);
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+      line-height: 1;
+    }
+    .kpi-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+
+    /* ── Charts row ───────────────────────────────────── */
+    .charts-row {
+      display: grid;
+      grid-template-columns: 2fr 1fr;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    /* ── Breakdown row ────────────────────────────────── */
+    .breakdown-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+
+    /* ── Instrument cards ─────────────────────────────── */
+    .inst-cards-row {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+      margin-bottom: 16px;
+    }
+    .inst-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .inst-card-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+    .inst-name {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .inst-name.mnq { color: var(--mnq); }
+    .inst-name.mgc { color: var(--mgc); }
+    .inst-name.other { color: var(--text-secondary); }
+    .inst-kv { display: flex; justify-content: space-between; align-items: center; padding: 4px 0; border-bottom: 1px solid var(--border-subtle); }
+    .inst-kv:last-child { border-bottom: none; }
+    .inst-kv-lbl { font-size: 11px; color: var(--text-muted); }
+    .inst-kv-val { font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
+
+    /* ── Setup table ──────────────────────────────────── */
+    .setup-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .setup-row:last-child { border-bottom: none; }
+    .setup-name { font-size: 11px; color: var(--text-primary); min-width: 90px; flex-shrink: 0; }
+    .setup-bar-wrap { flex: 1; }
+    .setup-bar-track { background: rgba(255,255,255,.04); border-radius: 4px; height: 5px; overflow: hidden; }
+    .setup-bar-fill { height: 100%; border-radius: 4px; }
+    .setup-wr { font-family: var(--font-mono); font-size: 12px; font-weight: 700; min-width: 42px; text-align: right; }
+    .setup-cnt { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); min-width: 28px; text-align: right; }
+
+    /* ── Direction/Grade cards ────────────────────────── */
+    .dir-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+    .dir-card { background: var(--bg-elevated); border: 1px solid var(--border-subtle); border-radius: 8px; padding: 10px 12px; }
+    .dir-card-lbl { font-size: 9px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 6px; }
+    .dir-card-val { font-family: var(--font-mono); font-size: 18px; font-weight: 700; }
+    .dir-card-sub { font-size: 10px; color: var(--text-muted); margin-top: 3px; }
+
+    /* ── Responsive ───────────────────────────────────── */
+    @media (max-width: 900px) {
+      .kpi-row { grid-template-columns: repeat(3, 1fr); }
+      .charts-row { grid-template-columns: 1fr; }
+      .breakdown-row { grid-template-columns: 1fr; }
+      .inst-cards-row { grid-template-columns: 1fr 1fr; }
+    }
+    @media (max-width: 640px) {
+      .kpi-row { grid-template-columns: 1fr 1fr; }
+      .kpi-val { font-size: 20px; }
+      .inst-cards-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link active">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
+      <a href="/backtest" class="nav-link">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
+</header>
+
+<!-- ── CONTENT ───────────────────────────────────────── -->
+<div class="stats-wrap">
+
+  <!-- Page Header -->
+  <div class="stats-hdr">
+    <div class="stats-hdr-left">
+      <h1>Performance Stats</h1>
+      <p id="statsSubtitle">Loading…</p>
+    </div>
+    <div class="filter-chips" id="instFilter">
+      <button class="filter-chip active" onclick="setInst('ALL',this)">All</button>
+      <button class="filter-chip" onclick="setInst('MNQ',this)" style="color:var(--mnq)">MNQ</button>
+      <button class="filter-chip" onclick="setInst('MGC',this)" style="color:var(--mgc)">MGC</button>
+      <button class="filter-chip" onclick="setInst('MES',this)">MES</button>
+    </div>
+  </div>
+
+  <!-- KPI Cards -->
+  <div class="kpi-row">
+    <div class="kpi-card">
+      <div class="kpi-lbl">Win Rate</div>
+      <div class="kpi-val" style="color:var(--yellow)" id="kWr">—</div>
+      <div class="kpi-sub" id="kWrSub">—</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-lbl">Avg Win</div>
+      <div class="kpi-val" style="color:var(--green)" id="kAvgW">—</div>
+      <div class="kpi-sub">pts per winning trade</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-lbl">Avg Loss</div>
+      <div class="kpi-val" style="color:var(--red)" id="kAvgL">—</div>
+      <div class="kpi-sub">pts per losing trade</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-lbl">Risk : Reward</div>
+      <div class="kpi-val" style="color:var(--blue)" id="kRR">—</div>
+      <div class="kpi-sub">avg win / avg loss</div>
+    </div>
+    <div class="kpi-card">
+      <div class="kpi-lbl">Total Resolved</div>
+      <div class="kpi-val" id="kTotal">—</div>
+      <div class="kpi-sub" id="kTotalSub">—</div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="charts-row">
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Cumulative P&amp;L</span>
+        <span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)" id="pnlChartLbl">—</span>
+      </div>
+      <div class="section-card-body" style="padding:12px 14px 14px">
+        <div style="position:relative;height:200px"><canvas id="pnlChart"></canvas></div>
+      </div>
+    </div>
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Win / Loss / BE</span>
+      </div>
+      <div class="section-card-body" style="padding:12px 14px 14px">
+        <div style="position:relative;height:200px"><canvas id="donutChart"></canvas></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Breakdown: Direction + Grade -->
+  <div class="breakdown-row">
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">By Direction</span>
+      </div>
+      <div class="section-card-body" style="padding:12px 14px">
+        <div class="dir-cards" id="dirCards">
+          <div class="skeleton" style="height:70px;border-radius:8px"></div>
+          <div class="skeleton" style="height:70px;border-radius:8px"></div>
+        </div>
+      </div>
+    </div>
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">By Grade</span>
+      </div>
+      <div class="section-card-body" style="padding:12px 14px">
+        <div class="dir-cards" id="gradeCards">
+          <div class="skeleton" style="height:70px;border-radius:8px"></div>
+          <div class="skeleton" style="height:70px;border-radius:8px"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Setup Performance -->
+  <div class="section-card" style="margin-bottom:16px">
+    <div class="section-card-header">
+      <span class="section-card-title">Setup Performance</span>
+      <span style="font-size:10px;color:var(--text-muted)">sorted by win rate</span>
+    </div>
+    <div class="section-card-body" style="padding:6px 14px 12px" id="setupTable">
+      <div class="skeleton skeleton-line" style="margin-top:10px"></div>
+      <div class="skeleton skeleton-line skeleton-w-3" style="margin-top:8px"></div>
+      <div class="skeleton skeleton-line skeleton-w-2" style="margin-top:8px"></div>
+    </div>
+  </div>
+
+  <!-- Instrument Breakdown -->
+  <div class="section-card" style="margin-bottom:16px">
+    <div class="section-card-header">
+      <span class="section-card-title">By Instrument</span>
+    </div>
+    <div class="section-card-body" style="padding:12px 14px">
+      <div class="inst-cards-row" id="instCards">
+        <div class="skeleton" style="height:120px;border-radius:10px"></div>
+        <div class="skeleton" style="height:120px;border-radius:10px"></div>
+        <div class="skeleton" style="height:120px;border-radius:10px"></div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /stats-wrap -->
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/"        class="bottom-nav-item"><span class="bottom-nav-icon">⌂</span><span class="bottom-nav-label">Home</span></a>
+    <a href="/signals" class="bottom-nav-item"><span class="bottom-nav-icon">◈</span><span class="bottom-nav-label">Signals</span></a>
+    <a href="/trades"  class="bottom-nav-item"><span class="bottom-nav-icon">◉</span><span class="bottom-nav-label">Trades</span></a>
+    <a href="/journal" class="bottom-nav-item"><span class="bottom-nav-icon">◎</span><span class="bottom-nav-label">Journal</span></a>
+  </div>
+</nav>
+
+<script src="/ui-components.js"></script>
+<script>
+'use strict';
+
+let allJournal = [];
+let instFilter = 'ALL';
+let pnlChart   = null;
+let donutChart = null;
+
+/* ── Instrument filter ───────────────────────────────── */
+function setInst(f, btn) {
+  instFilter = f;
+  document.querySelectorAll('#instFilter .filter-chip').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderAll();
+}
+
+/* ── Compute stats from filtered signals ─────────────── */
+function compute(signals) {
+  const wins   = signals.filter(s => s.result === 'WIN');
+  const losses = signals.filter(s => s.result === 'LOSS');
+  const bes    = signals.filter(s => s.result === 'BE');
+  const res    = wins.length + losses.length;
+  const wr     = res > 0 ? wins.length / res : null;
+  const avgW   = wins.filter(s => s.pnl_pts != null).length
+    ? wins.filter(s => s.pnl_pts != null).reduce((a, s) => a + s.pnl_pts, 0) / wins.filter(s => s.pnl_pts != null).length
+    : null;
+  const avgL   = losses.filter(s => s.pnl_pts != null).length
+    ? Math.abs(losses.filter(s => s.pnl_pts != null).reduce((a, s) => a + s.pnl_pts, 0) / losses.filter(s => s.pnl_pts != null).length)
+    : null;
+  const rr     = avgW != null && avgL != null && avgL > 0 ? avgW / avgL : null;
+  return { wins, losses, bes, res, wr, avgW, avgL, rr };
+}
+
+/* ── Render all ──────────────────────────────────────── */
+function renderAll() {
+  const filtered = instFilter === 'ALL'
+    ? allJournal
+    : allJournal.filter(s => s.instrument === instFilter || (s.ticker || '').includes(instFilter));
+
+  const { wins, losses, bes, res, wr, avgW, avgL, rr } = compute(filtered);
+
+  // KPI
+  document.getElementById('kWr').textContent    = wr != null ? (wr * 100).toFixed(1) + '%' : '—';
+  document.getElementById('kWrSub').textContent  = res > 0 ? `${res} resolved (${wins.length}W / ${losses.length}L)` : 'no outcomes yet';
+  document.getElementById('kAvgW').textContent  = avgW != null ? '+' + avgW.toFixed(1) + 'pts' : '—';
+  document.getElementById('kAvgL').textContent  = avgL != null ? avgL.toFixed(1) + 'pts' : '—';
+  document.getElementById('kRR').textContent    = rr   != null ? rr.toFixed(2) + ':1' : '—';
+  document.getElementById('kTotal').textContent = filtered.length;
+  document.getElementById('kTotalSub').textContent = `${res} resolved, ${filtered.length - res} pending`;
+  document.getElementById('statsSubtitle').textContent =
+    `${instFilter === 'ALL' ? 'All instruments' : instFilter} · ${filtered.length} total signals`;
+
+  renderPnlChart(filtered);
+  renderDonut(wins.length, losses.length, bes.length);
+  renderDirection(filtered);
+  renderGrade(filtered);
+  renderSetups(filtered);
+  renderInstruments();
+}
+
+/* ── P&L chart ───────────────────────────────────────── */
+function renderPnlChart(signals) {
+  const resolved = [...signals]
+    .filter(s => s.pnl_pts != null)
+    .sort((a, b) => a.received_at > b.received_at ? 1 : -1);
+
+  const el = document.getElementById('pnlChart');
+  if (resolved.length < 2) {
+    document.getElementById('pnlChartLbl').textContent = 'not enough data';
+    el.parentElement.innerHTML = '<div class="empty-state" style="padding:24px 0 8px"><div class="empty-state-desc">Log trade outcomes to see performance chart.</div></div>';
+    return;
+  }
+
+  document.getElementById('pnlChartLbl').textContent = resolved.length + ' resolved trades';
+
+  let cum = 0;
+  const labels = [], data = [], ptColors = [];
+  for (const s of resolved) {
+    cum += s.pnl_pts;
+    labels.push(hhmm(s.received_at));
+    data.push(+cum.toFixed(1));
+    ptColors.push(cum >= 0 ? '#00d4a0' : '#ff3d5a');
+  }
+  const finalVal  = data[data.length - 1] ?? 0;
+  const lineColor = finalVal >= 0 ? '#00d4a0' : '#ff3d5a';
+  const fillColor = finalVal >= 0 ? 'rgba(0,212,160,.08)' : 'rgba(255,61,90,.08)';
+
+  const ctx = el.getContext('2d');
+  if (pnlChart) pnlChart.destroy();
+  pnlChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{ data, borderColor: lineColor, backgroundColor: fillColor, borderWidth: 2,
+        pointRadius: data.length > 50 ? 0 : 3, pointBackgroundColor: ptColors,
+        pointHoverRadius: 5, tension: 0.3, fill: true }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { ticks: { color: '#48486a', font: { size: 9 }, maxTicksLimit: 8 }, grid: { color: 'rgba(255,255,255,.04)' } },
+        y: { ticks: { color: '#48486a', font: { size: 9 }, callback: v => v + 'pts' }, grid: { color: 'rgba(255,255,255,.04)' } },
+      },
+    },
+  });
+}
+
+/* ── Donut chart ─────────────────────────────────────── */
+function renderDonut(w, l, be) {
+  const ctx = document.getElementById('donutChart').getContext('2d');
+  if (donutChart) donutChart.destroy();
+
+  if (w + l + be === 0) {
+    ctx.canvas.parentElement.innerHTML = '<div class="empty-state" style="padding:24px 0 8px"><div class="empty-state-desc">No resolved outcomes yet.</div></div>';
+    return;
+  }
+
+  donutChart = new Chart(ctx, {
+    type: 'doughnut',
+    data: {
+      labels: ['Win', 'Loss', 'BE'],
+      datasets: [{ data: [w, l, be],
+        backgroundColor: ['rgba(0,212,160,.7)', 'rgba(255,61,90,.7)', 'rgba(249,115,22,.7)'],
+        borderColor:     ['#00d4a0', '#ff3d5a', '#f97316'],
+        borderWidth: 2 }],
+    },
+    options: {
+      responsive: true, maintainAspectRatio: false, cutout: '65%',
+      plugins: {
+        legend: { position: 'bottom', labels: { color: '#8888aa', font: { size: 10 }, padding: 14 } },
+      },
+    },
+  });
+}
+
+/* ── Direction breakdown ─────────────────────────────── */
+function renderDirection(signals) {
+  const el = document.getElementById('dirCards');
+  const dirs = ['LONG', 'SHORT'];
+  el.innerHTML = dirs.map(dir => {
+    const grp  = signals.filter(s => s.direction === dir);
+    const { wins, res, wr } = compute(grp);
+    const color = dir === 'LONG' ? 'var(--green)' : 'var(--red)';
+    const arrow = dir === 'LONG' ? '▲' : '▼';
+    return `<div class="dir-card">
+      <div class="dir-card-lbl">${arrow} ${dir}</div>
+      <div class="dir-card-val" style="color:${color}">${wr != null ? (wr*100).toFixed(1)+'%' : '—'}</div>
+      <div class="dir-card-sub">${wins.length}W / ${grp.length - wins.length}L · ${grp.length} signals</div>
+    </div>`;
+  }).join('');
+}
+
+/* ── Grade breakdown ─────────────────────────────────── */
+function renderGrade(signals) {
+  const el = document.getElementById('gradeCards');
+  const grades = ['A+', 'A'];
+  el.innerHTML = grades.map(grade => {
+    const grp  = signals.filter(s => s.grade === grade);
+    const { wins, res, wr } = compute(grp);
+    const color = grade === 'A+' ? 'var(--yellow)' : 'var(--teal)';
+    return `<div class="dir-card">
+      <div class="dir-card-lbl">Grade ${grade}</div>
+      <div class="dir-card-val" style="color:${color}">${wr != null ? (wr*100).toFixed(1)+'%' : '—'}</div>
+      <div class="dir-card-sub">${wins.length}W / ${grp.length - wins.length}L · ${grp.length} signals</div>
+    </div>`;
+  }).join('');
+}
+
+/* ── Setup table ─────────────────────────────────────── */
+function renderSetups(signals) {
+  const el = document.getElementById('setupTable');
+  const map = {};
+  for (const s of signals) {
+    const k = s.setup || 'Unknown';
+    if (!map[k]) map[k] = { wins: 0, losses: 0, total: 0 };
+    map[k].total++;
+    if (s.result === 'WIN')  map[k].wins++;
+    if (s.result === 'LOSS') map[k].losses++;
+  }
+  const rows = Object.entries(map)
+    .filter(([, v]) => v.total >= 1)
+    .map(([setup, v]) => {
+      const res = v.wins + v.losses;
+      const wr  = res > 0 ? v.wins / res : null;
+      return { setup, wr, total: v.total, wins: v.wins };
+    })
+    .sort((a, b) => (b.wr ?? -1) - (a.wr ?? -1));
+
+  if (!rows.length) {
+    el.innerHTML = '<div style="padding:12px 0;font-size:11px;color:var(--text-muted)">No resolved trades to compute setup performance.</div>';
+    return;
+  }
+
+  el.innerHTML = rows.map(r => {
+    const wrPct   = r.wr != null ? r.wr * 100 : 0;
+    const wrStr   = r.wr != null ? wrPct.toFixed(1) + '%' : '—';
+    const fillClr = r.wr >= .6 ? 'var(--green)' : r.wr >= .45 ? 'var(--orange)' : 'var(--red)';
+    const wrCls   = r.wr >= .6 ? 'wr-hi' : r.wr >= .45 ? 'wr-mid' : 'wr-lo';
+    return `<div class="setup-row">
+      <span class="setup-name">${escH(r.setup)}</span>
+      <div class="setup-bar-wrap">
+        <div class="setup-bar-track">
+          <div class="setup-bar-fill" style="width:${wrPct}%;background:${fillClr}"></div>
+        </div>
+      </div>
+      <span class="setup-wr ${wrCls}">${wrStr}</span>
+      <span class="setup-cnt">${r.total}</span>
+    </div>`;
+  }).join('');
+}
+
+/* ── Instrument cards ────────────────────────────────── */
+function renderInstruments() {
+  const el    = document.getElementById('instCards');
+  const insts = ['MNQ', 'MGC', 'MES'];
+  const cards = insts.map(inst => {
+    const grp  = allJournal.filter(s => s.instrument === inst || (s.ticker || '').includes(inst));
+    const { wins, losses, bes, res, wr, avgW } = compute(grp);
+    const wrStr  = wr != null ? (wr * 100).toFixed(1) + '%' : '—';
+    const wrCls  = wrClass(wr ?? 0);
+    const clsMap = { MNQ: 'mnq', MGC: 'mgc', MES: 'other' };
+    return `<div class="inst-card">
+      <div class="inst-card-hdr">
+        <span class="inst-name ${clsMap[inst]}">${inst}</span>
+        <span class="badge badge-${wrCls.replace('wr-', 'be').replace('hi','win').replace('lo','loss').replace('mid','be')}" style="font-size:10px">${grp.length} signals</span>
+      </div>
+      <div class="inst-kv"><span class="inst-kv-lbl">Win Rate</span><span class="inst-kv-val ${wrCls}">${wrStr}</span></div>
+      <div class="inst-kv"><span class="inst-kv-lbl">W / L / BE</span><span class="inst-kv-val">${wins.length} / ${losses.length} / ${bes.length}</span></div>
+      <div class="inst-kv"><span class="inst-kv-lbl">Avg Win</span><span class="inst-kv-val" style="color:var(--green)">${avgW != null ? '+' + avgW.toFixed(1) + 'pts' : '—'}</span></div>
+    </div>`;
+  });
+  el.innerHTML = cards.join('');
+}
+
+/* ── Load ────────────────────────────────────────────── */
+async function load() {
+  try {
+    const res    = await fetch('/api/journal/signals?limit=500');
+    allJournal   = await res.json();
+    renderAll();
+    document.getElementById('refreshLbl').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) { console.error(e); }
+}
+
+load();
+setInterval(load, 120_000);
+</script>
+</body>
+</html>

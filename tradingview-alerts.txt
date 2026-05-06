@@ -1,0 +1,218 @@
+NQ SIGNAL PRO V3 — TradingView Alert Setup Guide
+=================================================
+
+HOW IT WORKS
+────────────
+When an alertcondition() fires, TradingView sends an HTTP POST to your
+webhook URL with a JSON body you define. Your server stores the signal
+and the dashboard displays it live.
+
+Webhook URL:   https://<your-domain>/webhook
+Secret header: x-webhook-secret: <your WEBHOOK_SECRET>   (optional but recommended)
+
+
+STEP-BY-STEP IN TRADINGVIEW
+────────────────────────────
+1. Open a NQ1! chart with "NQ Pro Signal Engine v4" applied.
+2. Right-click chart → Add Alert  (or Alt+A).
+3. Condition → pick "NQ Pro Signal Engine v4" → pick the sub-condition below.
+4. Expiration → Open-ended alert.
+5. Message → delete the default text, paste the matching JSON template below.
+6. Notifications → enable Webhook URL → paste your server URL.
+7. Click Create. Repeat for each condition you want.
+
+TradingView placeholders you can use in the Message field:
+  {{ticker}}   — e.g. NASDAQ:NQ1!
+  {{interval}} — chart timeframe in minutes
+  {{close}}    — close price of the alert bar
+  {{time}}     — bar open timestamp (Unix ms)
+
+
+═══════════════════════════════════════════════════════════════════════
+ALERT TEMPLATES
+═══════════════════════════════════════════════════════════════════════
+
+─── 1. ✅ A+ LONG NQ ────────────────────────────────────────────────
+{
+  "signal":        "LONG",
+  "grade":         "A+",
+  "ticker":        "{{ticker}}",
+  "timeframe":     "{{interval}}",
+  "entry":          {{close}},
+  "win_prob_tp1":  76,
+  "win_prob_tp2":  55,
+  "win_prob_tp3":  38,
+  "htf_bias":      "BULL"
+}
+
+─── 2. ✅ A+ SHORT NQ ───────────────────────────────────────────────
+{
+  "signal":        "SHORT",
+  "grade":         "A+",
+  "ticker":        "{{ticker}}",
+  "timeframe":     "{{interval}}",
+  "entry":          {{close}},
+  "win_prob_tp1":  76,
+  "win_prob_tp2":  55,
+  "win_prob_tp3":  38,
+  "htf_bias":      "BEAR"
+}
+
+─── 3. ✅ A LONG NQ ─────────────────────────────────────────────────
+{
+  "signal":        "LONG",
+  "grade":         "A",
+  "ticker":        "{{ticker}}",
+  "timeframe":     "{{interval}}",
+  "entry":          {{close}},
+  "win_prob_tp1":  65,
+  "win_prob_tp2":  47,
+  "win_prob_tp3":  33,
+  "htf_bias":      "BULL"
+}
+
+─── 4. ✅ A SHORT NQ ────────────────────────────────────────────────
+{
+  "signal":        "SHORT",
+  "grade":         "A",
+  "ticker":        "{{ticker}}",
+  "timeframe":     "{{interval}}",
+  "entry":          {{close}},
+  "win_prob_tp1":  65,
+  "win_prob_tp2":  47,
+  "win_prob_tp3":  33,
+  "htf_bias":      "BEAR"
+}
+
+─── 5. OTE+STDV LONG  (combo — highest priority) ────────────────────
+{
+  "signal":        "LONG",
+  "grade":         "A+",
+  "setup":         "OTE+STDV",
+  "ticker":        "{{ticker}}",
+  "timeframe":     "{{interval}}",
+  "entry":          {{close}},
+  "win_prob_tp1":  74,
+  "win_prob_tp2":  53,
+  "win_prob_tp3":  37,
+  "htf_bias":      "BULL"
+}
+
+─── 6. OTE+STDV SHORT  (combo — highest priority) ───────────────────
+{
+  "signal":        "SHORT",
+  "grade":         "A+",
+  "setup":         "OTE+STDV",
+  "ticker":        "{{ticker}}",
+  "timeframe":     "{{interval}}",
+  "entry":          {{close}},
+  "win_prob_tp1":  74,
+  "win_prob_tp2":  53,
+  "win_prob_tp3":  37,
+  "htf_bias":      "BEAR"
+}
+
+─── 7. ⚠ TAKE BE LONG ───────────────────────────────────────────────
+{
+  "signal":    "LONG",
+  "grade":     "BE",
+  "setup":     "BREAKEVEN",
+  "ticker":    "{{ticker}}",
+  "timeframe": "{{interval}}",
+  "entry":      {{close}}
+}
+
+─── 8. ⚠ TAKE BE SHORT ──────────────────────────────────────────────
+{
+  "signal":    "SHORT",
+  "grade":     "BE",
+  "setup":     "BREAKEVEN",
+  "ticker":    "{{ticker}}",
+  "timeframe": "{{interval}}",
+  "entry":      {{close}}
+}
+
+
+═══════════════════════════════════════════════════════════════════════
+GETTING LIVE SL / TP LEVELS (ADVANCED — uses alert() not alertcondition)
+═══════════════════════════════════════════════════════════════════════
+
+alertcondition() uses a static message, so Pine Script variables like
+longSL and longTP1 can't be embedded automatically. To send exact levels,
+replace the alertcondition() block at section T of the Pine Script with
+alert() calls that build the JSON string inline.
+
+Add these lines inside the existing longSig / shortSig blocks:
+
+  if longSig
+      alert('{"signal":"LONG"'
+          + ',"grade":"'        + gradeL                               + '"'
+          + ',"setup":"'        + f_setupL()                           + '"'
+          + ',"ticker":"'       + syminfo.ticker                       + '"'
+          + ',"entry":'         + str.tostring(close,       "#.00")
+          + ',"sl":'            + str.tostring(longSL,      "#.00")
+          + ',"tp1":'           + str.tostring(longTP1,     "#.00")
+          + ',"tp2":'           + str.tostring(longTP2,     "#.00")
+          + ',"tp3":'           + str.tostring(longTP3,     "#.00")
+          + ',"score":'         + str.tostring(lTotal)
+          + ',"win_prob_tp1":' + str.tostring(math.round(lWinProb    * 100))
+          + ',"win_prob_tp2":' + str.tostring(math.round(lWinProbTP2 * 100))
+          + ',"win_prob_tp3":' + str.tostring(math.round(lWinProbTP3 * 100))
+          + ',"htf_bias":"'    + htfBiasStr                            + '"'
+          + ',"session":"'     + f_sessName()                          + '"'
+          + '}',
+          alert.freq_once_per_bar_close)
+
+  if shortSig
+      alert('{"signal":"SHORT"'
+          + ',"grade":"'        + gradeS                               + '"'
+          + ',"setup":"'        + f_setupS()                           + '"'
+          + ',"ticker":"'       + syminfo.ticker                       + '"'
+          + ',"entry":'         + str.tostring(close,       "#.00")
+          + ',"sl":'            + str.tostring(shortSL,     "#.00")
+          + ',"tp1":'           + str.tostring(shortTP1,    "#.00")
+          + ',"tp2":'           + str.tostring(shortTP2,    "#.00")
+          + ',"tp3":'           + str.tostring(shortTP3,    "#.00")
+          + ',"score":'         + str.tostring(sTotal)
+          + ',"win_prob_tp1":' + str.tostring(math.round(sWinProb    * 100))
+          + ',"win_prob_tp2":' + str.tostring(math.round(sWinProbTP2 * 100))
+          + ',"win_prob_tp3":' + str.tostring(math.round(sWinProbTP3 * 100))
+          + ',"htf_bias":"'    + htfBiasStr                            + '"'
+          + ',"session":"'     + f_sessName()                          + '"'
+          + '}',
+          alert.freq_once_per_bar_close)
+
+When creating the TradingView alert with alert() calls:
+  Condition → NQ Pro Signal Engine v4 → "alert() function calls"
+  Message   → leave blank (the script provides it)
+  Webhook   → https://<your-domain>/webhook
+
+
+═══════════════════════════════════════════════════════════════════════
+TEST YOUR WEBHOOK
+═══════════════════════════════════════════════════════════════════════
+
+curl -X POST https://<your-domain>/webhook \
+  -H "Content-Type: application/json" \
+  -H "x-webhook-secret: <your-secret>" \
+  -d '{
+    "signal":        "LONG",
+    "grade":         "A+",
+    "setup":         "OTE+STDV",
+    "ticker":        "NQ1!",
+    "timeframe":     "3",
+    "entry":         21050.25,
+    "sl":            21025.25,
+    "tp1":           21075.25,
+    "tp2":           21100.25,
+    "tp3":           21125.25,
+    "score":         28,
+    "win_prob_tp1":  74,
+    "win_prob_tp2":  53,
+    "win_prob_tp3":  37,
+    "htf_bias":      "BULL ▲",
+    "session":       "NY Open ★"
+  }'
+
+Expected response: {"ok":true,"id":1}
+Then open https://<your-domain>/ — the signal card should appear immediately.

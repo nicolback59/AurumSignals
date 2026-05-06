@@ -1,0 +1,1083 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Home</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { overflow-y: auto; }
+
+    /* ── Home container ────────────────────────────── */
+    .home-wrap {
+      max-width: 860px;
+      margin: 0 auto;
+      padding: 0 16px 88px;
+    }
+
+    /* ── Page Header ───────────────────────────────── */
+    .page-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 20px 0 16px;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .page-hdr-title {
+      font-size: 22px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+      color: var(--text-primary);
+    }
+    .page-hdr-date {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 3px;
+    }
+    .page-hdr-right { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .market-badge {
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .05em;
+      border: 1px solid;
+    }
+    .market-badge.open   { background: var(--green-glow);  color: var(--green);       border-color: var(--green-border); }
+    .market-badge.closed { background: rgba(255,255,255,.04); color: var(--text-muted); border-color: var(--border-default); }
+    .market-badge.pre    { background: var(--yellow-glow); color: var(--yellow);      border-color: var(--yellow-border); }
+    .market-dot { width: 5px; height: 5px; border-radius: 50%; background: currentColor; }
+    .market-badge.open .market-dot { box-shadow: 0 0 6px var(--green); animation: livePulse 2s infinite; }
+    .session-pill {
+      padding: 4px 10px;
+      border-radius: 20px;
+      font-size: 10px;
+      font-weight: 600;
+      background: rgba(255,255,255,.05);
+      color: var(--text-secondary);
+      border: 1px solid var(--border-default);
+    }
+
+    /* ── Hero Signal Card ──────────────────────────── */
+    .hero-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      overflow: hidden;
+      margin-bottom: 14px;
+    }
+    .hero-card.long  { border-left: 3px solid var(--green); }
+    .hero-card.short { border-left: 3px solid var(--red); }
+    .hero-card.empty { border-left: 3px solid var(--border-strong); }
+    .hero-card-hdr {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 11px 16px 11px 18px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .hero-card-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .hero-section-lbl {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .status-pill {
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .04em;
+      border: 1px solid;
+    }
+    .status-pill.active { background: var(--blue-glow); color: var(--blue); border-color: var(--blue-border); animation: statusPulse 3s infinite; }
+    @keyframes statusPulse { 0%,100%{opacity:1} 50%{opacity:.6} }
+    .status-pill.win  { background: var(--green-glow);  color: var(--green);  border-color: var(--green-border); }
+    .status-pill.loss { background: var(--red-glow);    color: var(--red);    border-color: var(--red-border); }
+    .status-pill.be   { background: var(--orange-glow); color: var(--orange); border-color: var(--orange-border); }
+
+    .hero-card-body { padding: 16px 18px; }
+
+    /* Strength bar */
+    .strength-wrap { margin: 10px 0 14px; }
+    .strength-hdr {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 5px;
+    }
+    .strength-lbl { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); }
+    .strength-val { font-family: var(--font-mono); font-size: 14px; font-weight: 700; }
+    .strength-track {
+      background: rgba(255,255,255,.04);
+      border-radius: 8px;
+      height: 8px;
+      overflow: hidden;
+    }
+    .strength-fill { height: 100%; border-radius: 8px; transition: width .5s ease; }
+
+    /* Level pills */
+    .levels-row {
+      display: grid;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .level-pill {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      padding: 8px 10px;
+      text-align: center;
+    }
+    .level-pill-lbl { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); margin-bottom: 3px; }
+    .level-pill-val { font-family: var(--font-mono); font-size: 12px; font-weight: 700; }
+
+    /* ── Quick Stats 2×2 ───────────────────────────── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .stat-tile {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      padding: 16px 14px;
+    }
+    .stat-tile-lbl {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 8px;
+    }
+    .stat-tile-val {
+      font-family: var(--font-mono);
+      font-size: 26px;
+      font-weight: 700;
+      letter-spacing: -.02em;
+      line-height: 1;
+    }
+    .stat-tile-sub { font-size: 11px; color: var(--text-muted); margin-top: 5px; }
+
+    /* ── Recent Trades ─────────────────────────────── */
+    .recent-trade-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .recent-trade-row:last-child { border-bottom: none; }
+    .rt-time  { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); min-width: 38px; flex-shrink: 0; }
+    .rt-dir   { font-size: 11px; font-weight: 700; min-width: 14px; flex-shrink: 0; }
+    .rt-dir.long  { color: var(--green); }
+    .rt-dir.short { color: var(--red); }
+    .rt-setup { font-size: 11px; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .rt-style { font-size: 10px; color: var(--text-muted); min-width: 46px; flex-shrink: 0; }
+    .rt-pts   {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      min-width: 44px;
+      text-align: right;
+      flex-shrink: 0;
+    }
+    .rt-pts.pos { color: var(--green); }
+    .rt-pts.neg { color: var(--red); }
+    .rt-pts.flat { color: var(--orange); }
+
+    .view-all-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 9px 16px;
+      margin-top: 12px;
+      border-radius: 8px;
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-muted);
+      font: inherit;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      text-decoration: none;
+      transition: var(--t);
+    }
+    .view-all-btn:hover {
+      color: var(--text-primary);
+      border-color: var(--border-strong);
+      background: var(--bg-elevated);
+    }
+
+    /* ── Market Intelligence ───────────────────────── */
+    .intel-row {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 9px 0;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .intel-row:last-child { border-bottom: none; }
+    .intel-icon {
+      width: 30px;
+      height: 30px;
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 13px;
+      flex-shrink: 0;
+    }
+    .intel-icon.hot  { background: var(--green-glow); }
+    .intel-icon.cold { background: var(--red-glow); }
+    .intel-icon.info { background: var(--blue-glow); }
+    .intel-icon.warn { background: var(--yellow-glow); }
+    .intel-body { flex: 1; min-width: 0; }
+    .intel-title { font-size: 12px; font-weight: 600; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .intel-sub   { font-size: 10px; color: var(--text-muted); margin-top: 1px; }
+    .intel-right { font-family: var(--font-mono); font-size: 11px; font-weight: 700; flex-shrink: 0; }
+
+    /* ── Calendar Strip ────────────────────────────── */
+    .cal-strip { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 4px; scrollbar-width: none; }
+    .cal-strip::-webkit-scrollbar { display: none; }
+    .cal-cell { flex-shrink: 0; text-align: center; }
+    .cal-cell-lbl { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); margin-bottom: 3px; }
+    .cal-box {
+      width: 38px;
+      height: 38px;
+      border-radius: 8px;
+      border: 1px solid;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 10px;
+      font-weight: 700;
+      line-height: 1.2;
+    }
+    .cal-box.up   { background: var(--green-glow);  border-color: var(--green-border); color: var(--green); }
+    .cal-box.down { background: var(--red-glow);    border-color: var(--red-border);   color: var(--red); }
+    .cal-box.flat { background: var(--orange-glow); border-color: var(--orange-border);color: var(--orange); }
+    .cal-box.none { background: rgba(255,255,255,.03); border-color: var(--border-subtle); color: var(--text-muted); }
+    .cal-box.today { box-shadow: 0 0 0 2px var(--yellow); }
+
+    /* ── Record Bar ────────────────────────────────── */
+    .record-bar {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .record-tile {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      padding: 12px 10px;
+      text-align: center;
+    }
+    .record-tile-lbl {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .record-tile-val {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .record-tile-sub { font-size: 9px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Bot Status ─────────────────────────────────── */
+    .bot-status-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .bot-status-tile {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .bot-status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .bot-status-dot.active   { background: var(--green);  box-shadow: 0 0 8px var(--green);  animation: livePulse 2s infinite; }
+    .bot-status-dot.inactive { background: var(--red);    box-shadow: 0 0 8px var(--red); }
+    .bot-status-dot.unknown  { background: var(--text-muted); }
+    .bot-status-name { font-size: 13px; font-weight: 700; flex: 1; }
+    .bot-status-lbl  { font-size: 10px; font-weight: 600; }
+    .bot-status-lbl.active   { color: var(--green); }
+    .bot-status-lbl.inactive { color: var(--red); }
+    .bot-status-lbl.unknown  { color: var(--text-muted); }
+    .bot-status-sub  { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); margin-top: 1px; }
+
+    /* ── Live Charts ────────────────────────────────── */
+    .chart-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .chart-wrap {
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border-default);
+      background: var(--bg-surface);
+    }
+    .chart-lbl {
+      padding: 7px 12px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .tradingview-widget-container { height: 240px; width: 100%; }
+    .tradingview-widget-container__widget { height: 100%; width: 100%; }
+
+    /* ── Responsive ────────────────────────────────── */
+    @media (max-width: 600px) {
+      .record-bar { grid-template-columns: repeat(3, 1fr); }
+      .chart-pair { grid-template-columns: 1fr; }
+    }
+    @media (max-width: 480px) {
+      .levels-row { grid-template-columns: repeat(3, 1fr); }
+      .stat-tile-val { font-size: 22px; }
+      .record-tile-val { font-size: 16px; }
+    }
+    @media (max-width: 340px) {
+      .stats-grid { grid-template-columns: 1fr; }
+      .record-bar { grid-template-columns: repeat(2, 1fr); }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link active">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
+      <a href="/backtest" class="nav-link">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
+</header>
+
+<!-- ── HOME CONTENT ─────────────────────────────────── -->
+<div class="home-wrap">
+
+  <!-- Page Header -->
+  <div class="page-hdr">
+    <div>
+      <div class="page-hdr-title">Overview</div>
+      <div class="page-hdr-date" id="headerDate">—</div>
+    </div>
+    <div class="page-hdr-right">
+      <div class="market-badge closed" id="marketBadge">
+        <span class="market-dot"></span>
+        <span id="marketLabel">LOADING</span>
+      </div>
+      <div class="session-pill" id="sessionPill">—</div>
+    </div>
+  </div>
+
+  <!-- ── Signal Record Bar ─────────────────────────────── -->
+  <div class="record-bar">
+    <div class="record-tile">
+      <div class="record-tile-lbl">Wins</div>
+      <div class="record-tile-val" id="recWins" style="color:var(--green)">—</div>
+      <div class="record-tile-sub" id="recWinSub">resolved</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">Losses</div>
+      <div class="record-tile-val" id="recLoss" style="color:var(--red)">—</div>
+      <div class="record-tile-sub">resolved</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">B/E</div>
+      <div class="record-tile-val" id="recBE" style="color:var(--orange)">—</div>
+      <div class="record-tile-sub">break-even</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">Win Rate</div>
+      <div class="record-tile-val" id="recWR" style="color:var(--yellow)">—</div>
+      <div class="record-tile-sub" id="recWRSub">all time</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">Total Ticks</div>
+      <div class="record-tile-val" id="recTicks" style="color:var(--teal)">—</div>
+      <div class="record-tile-sub">pts earned</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">Total Signals</div>
+      <div class="record-tile-val" id="recTotal" style="color:var(--blue)">—</div>
+      <div class="record-tile-sub" id="recTotalSub">all time</div>
+    </div>
+  </div>
+
+  <!-- ── Bot Status ─────────────────────────────────────── -->
+  <div class="bot-status-row">
+    <div class="bot-status-tile">
+      <div class="bot-status-dot unknown" id="mnqDot"></div>
+      <div>
+        <div class="bot-status-name">MNQ Scanner</div>
+        <div class="bot-status-sub" id="mnqScanSub">checking…</div>
+      </div>
+      <div>
+        <div class="bot-status-lbl unknown" id="mnqStatus">—</div>
+      </div>
+    </div>
+    <div class="bot-status-tile">
+      <div class="bot-status-dot unknown" id="mgcDot"></div>
+      <div>
+        <div class="bot-status-name">MGC Scanner</div>
+        <div class="bot-status-sub" id="mgcScanSub">checking…</div>
+      </div>
+      <div>
+        <div class="bot-status-lbl unknown" id="mgcStatus">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Live Charts ─────────────────────────────────────── -->
+  <div class="chart-pair">
+    <div class="chart-wrap">
+      <div class="chart-lbl">MNQ — Micro NQ Futures · 15m</div>
+      <div class="tradingview-widget-container">
+        <div class="tradingview-widget-container__widget" id="tv-mnq"></div>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-lbl">MGC — Micro Gold Futures · 15m</div>
+      <div class="tradingview-widget-container">
+        <div class="tradingview-widget-container__widget" id="tv-mgc"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Hero Signal Card ────────────────────────────── -->
+  <div class="hero-card empty" id="heroCard">
+    <div class="hero-card-hdr">
+      <div class="hero-card-meta">
+        <span class="hero-section-lbl">Latest Signal</span>
+        <div id="heroMeta"><!-- badges go here --></div>
+      </div>
+      <span id="heroStatus" class="status-pill active" style="display:none">ACTIVE</span>
+    </div>
+    <div class="hero-card-body" id="heroBody">
+      <div class="empty-state" style="padding:28px 0 8px">
+        <div class="empty-state-icon">◈</div>
+        <div class="empty-state-title">No signals yet</div>
+        <div class="empty-state-desc">Waiting for TradingView webhook alerts.</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Quick Stats ─────────────────────────────────── -->
+  <div class="stats-grid">
+    <div class="stat-tile">
+      <div class="stat-tile-lbl">Today P&amp;L</div>
+      <div class="stat-tile-val" id="todayPnl" style="color:var(--text-primary)">—</div>
+      <div class="stat-tile-sub" id="todayPnlSub">pts</div>
+    </div>
+    <div class="stat-tile">
+      <div class="stat-tile-lbl">Last 24h Signals</div>
+      <div class="stat-tile-val" id="tradesToday" style="color:var(--blue)">—</div>
+      <div class="stat-tile-sub" id="todayTradeSub">signals fired</div>
+    </div>
+    <!-- hidden elements kept for JS compatibility -->
+    <span id="winRate" style="display:none"></span>
+    <span id="winRateSub" style="display:none"></span>
+    <span id="activeSigs" style="display:none"></span>
+  </div>
+
+  <!-- ── Mini P&L Chart ──────────────────────────────── -->
+  <div class="section-card" style="margin-bottom:14px">
+    <div class="section-card-header">
+      <span class="section-card-title">Performance — Cumulative P&amp;L</span>
+      <span id="perfChartSub" style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)">last 30 trades</span>
+    </div>
+    <div class="section-card-body" style="padding:12px 14px 10px">
+      <div style="position:relative;height:130px"><canvas id="perfChart"></canvas></div>
+    </div>
+  </div>
+
+  <!-- ── Recent Trades ───────────────────────────────── -->
+  <div class="section-card" style="margin-bottom:14px">
+    <div class="section-card-header">
+      <span class="section-card-title">Recent Trades</span>
+      <span style="font-size:10px;color:var(--text-muted)" id="recentTradeLbl">—</span>
+    </div>
+    <div class="section-card-body" style="padding:4px 14px 10px">
+      <div id="recentTradesFeed">
+        <div class="skeleton skeleton-line" style="margin-top:10px"></div>
+        <div class="skeleton skeleton-line skeleton-w-3" style="margin-top:8px"></div>
+        <div class="skeleton skeleton-line skeleton-w-2" style="margin-top:8px"></div>
+      </div>
+      <a href="/trades" class="view-all-btn">View All Trades →</a>
+    </div>
+  </div>
+
+  <!-- ── Market Intelligence ─────────────────────────── -->
+  <div class="section-card" style="margin-bottom:14px">
+    <div class="section-card-header">
+      <span class="section-card-title">Market Intelligence</span>
+      <span style="font-size:10px;color:var(--text-muted)" id="intelTimeLbl">—</span>
+    </div>
+    <div class="section-card-body" style="padding:4px 14px 10px">
+      <div id="intelFeed">
+        <div class="skeleton skeleton-line" style="margin-top:10px"></div>
+        <div class="skeleton skeleton-line skeleton-w-3" style="margin-top:8px"></div>
+        <div class="skeleton skeleton-line skeleton-w-2" style="margin-top:8px"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Calendar Preview ────────────────────────────── -->
+  <div class="section-card">
+    <div class="section-card-header">
+      <span class="section-card-title">Daily Results — Last 14 Days</span>
+    </div>
+    <div class="section-card-body" style="padding:10px 14px 14px">
+      <div class="cal-strip" id="calStrip">
+        <div class="skeleton" style="width:38px;height:52px;border-radius:8px;flex-shrink:0"></div>
+        <div class="skeleton" style="width:38px;height:52px;border-radius:8px;flex-shrink:0"></div>
+        <div class="skeleton" style="width:38px;height:52px;border-radius:8px;flex-shrink:0"></div>
+        <div class="skeleton" style="width:38px;height:52px;border-radius:8px;flex-shrink:0"></div>
+        <div class="skeleton" style="width:38px;height:52px;border-radius:8px;flex-shrink:0"></div>
+      </div>
+    </div>
+  </div>
+
+</div><!-- /home-wrap -->
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/"        class="bottom-nav-item active"><span class="bottom-nav-icon">⌂</span><span class="bottom-nav-label">Home</span></a>
+    <a href="/signals" class="bottom-nav-item"><span class="bottom-nav-icon">◈</span><span class="bottom-nav-label">Signals</span></a>
+    <a href="/trades"  class="bottom-nav-item"><span class="bottom-nav-icon">◉</span><span class="bottom-nav-label">Trades</span></a>
+    <a href="/journal" class="bottom-nav-item"><span class="bottom-nav-icon">◎</span><span class="bottom-nav-label">Journal</span></a>
+  </div>
+</nav>
+
+<script src="https://s3.tradingview.com/tv.js" async onload="initTVCharts()"></script>
+<script src="/ui-components.js"></script>
+<script>
+'use strict';
+
+let perfChart = null;
+let _tvChartsReady = false;
+
+function initTVCharts() {
+  if (_tvChartsReady || typeof TradingView === 'undefined') return;
+  _tvChartsReady = true;
+  const sharedOpts = {
+    width: '100%',
+    height: 240,
+    interval: '15',
+    timezone: 'America/New_York',
+    theme: 'dark',
+    style: '1',
+    locale: 'en',
+    hide_top_toolbar: false,
+    hide_legend: true,
+    hide_side_toolbar: true,
+    allow_symbol_change: false,
+    save_image: false,
+    withdateranges: false,
+    calendar: false,
+  };
+  new TradingView.widget({ ...sharedOpts, symbol: 'CME_MINI:MNQ1!', container_id: 'tv-mnq' });
+  new TradingView.widget({ ...sharedOpts, symbol: 'COMEX:MGC1!',     container_id: 'tv-mgc' });
+}
+
+/* ── Market status (NY time) ─────────────────────────── */
+function getMarketContext() {
+  const now = new Date();
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    hour: 'numeric', minute: 'numeric', hour12: false,
+    weekday: 'short',
+  }).formatToParts(now);
+  const hour    = parseInt(parts.find(p => p.type === 'hour').value);
+  const minute  = parseInt(parts.find(p => p.type === 'minute').value);
+  const weekday = parts.find(p => p.type === 'weekday').value;
+  const t = hour * 60 + minute;
+  // CME NQ futures: Sun 6 PM ET open → Fri 5 PM ET close (daily maint 5–6 PM ET)
+  if (weekday === 'Sat')                     return { cls: 'closed', label: 'MARKET CLOSED', session: 'Weekend' };
+  if (weekday === 'Sun' && t < 1080)         return { cls: 'closed', label: 'MARKET CLOSED', session: 'Weekend' };
+  if (weekday === 'Fri' && t >= 1020)        return { cls: 'closed', label: 'MARKET CLOSED', session: 'Weekend' };
+  if (t >= 1020 && t < 1080)                return { cls: 'closed', label: 'MAINTENANCE',   session: 'Overnight' };
+  if (t >= 1080 || t < 240)                 return { cls: 'open',   label: 'FUTURES OPEN',  session: 'Overnight' };
+  if (t < 570)   return { cls: 'pre',    label: 'PRE-MARKET',   session: 'Pre-Market' };
+  if (t < 690)   return { cls: 'open',   label: 'NYSE OPEN',    session: 'NY Open' };
+  if (t < 840)   return { cls: 'open',   label: 'NYSE OPEN',    session: 'Midday' };
+  if (t < 960)   return { cls: 'open',   label: 'NYSE OPEN',    session: 'Afternoon' };
+  return         { cls: 'pre',    label: 'AFTER HOURS',  session: 'After-Hours' };
+}
+
+/* ── Hero card ───────────────────────────────────────── */
+function renderHero(sig) {
+  const card = document.getElementById('heroCard');
+  if (!sig) return;
+
+  const isLong = sig.direction === 'LONG';
+  card.className = `hero-card ${isLong ? 'long' : 'short'}`;
+
+  // Header badges
+  document.getElementById('heroMeta').innerHTML =
+    directionBadge(sig.direction) +
+    ' ' + gradeBadge(sig.grade) +
+    (sig.setup ? ' ' + setupBadge(sig.setup) : '') +
+    `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${timeAgo(sig.received_at)}</span>`;
+
+  // Status pill
+  const statusEl = document.getElementById('heroStatus');
+  statusEl.style.display = '';
+  if (sig.result) {
+    statusEl.textContent = sig.result;
+    statusEl.className   = `status-pill ${sig.result.toLowerCase()}`;
+    if (sig.pnl_pts != null) statusEl.textContent += ` ${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts`;
+  } else {
+    const ageMs = Date.now() - new Date(sig.received_at + ' UTC').getTime();
+    statusEl.textContent = ageMs < 7200000 ? 'ACTIVE' : 'OPEN';
+    statusEl.className   = 'status-pill active';
+  }
+
+  // Strength bar
+  const pct   = Math.min(((sig.score || 0) / 35) * 100, 100).toFixed(1);
+  const color = sig.grade === 'A+' ? 'var(--yellow)' : 'var(--teal)';
+
+  // Levels
+  const levels = [
+    { lbl: 'ENTRY', val: fmt(sig.entry),  cls: 'entry' },
+    { lbl: 'STOP',  val: fmt(sig.sl),     cls: 'sl' },
+    { lbl: 'TP1',   val: fmt(sig.tp1),    cls: 'tp1' },
+    { lbl: 'TP2',   val: fmt(sig.tp2),    cls: 'tp2' },
+    { lbl: 'TP3',   val: fmt(sig.tp3),    cls: 'tp3' },
+  ];
+
+  // Context tags
+  const htfCls = sig.htf_bias
+    ? (sig.htf_bias.includes('BULL') ? 'bull' : sig.htf_bias.includes('BEAR') ? 'bear' : '')
+    : '';
+
+  document.getElementById('heroBody').innerHTML = `
+    <div class="strength-wrap">
+      <div class="strength-hdr">
+        <span class="strength-lbl">Signal Strength</span>
+        <span class="strength-val" style="color:${color}">${sig.score || 0} / 35</span>
+      </div>
+      <div class="strength-track">
+        <div class="strength-fill" style="width:${pct}%;background:${color}"></div>
+      </div>
+    </div>
+    <div class="levels-row">
+      ${levels.map(l => `
+        <div class="level-pill">
+          <div class="level-pill-lbl">${l.lbl}</div>
+          <div class="level-pill-val level-value ${l.cls}">${l.val}</div>
+        </div>`).join('')}
+    </div>
+    <div class="tag-list">
+      ${sig.htf_bias  ? `<span class="tag ${htfCls}">HTF: ${escH(sig.htf_bias)}</span>` : ''}
+      ${sig.session   ? `<span class="tag sess">${escH(sig.session)}</span>` : ''}
+      ${sig.ticker    ? `<span class="tag">${escH(sig.ticker)}</span>` : ''}
+      ${sig.timeframe ? `<span class="tag">${sig.timeframe}m</span>` : ''}
+      ${sig.trade_style ? `<span class="tag">${escH(sig.trade_style)}</span>` : ''}
+    </div>`;
+}
+
+/* ── Record bar ──────────────────────────────────────── */
+function renderRecordBar(stats, journalSigs) {
+  const outs = stats.outcomes || [];
+  const wins = (outs.find(o => o.result === 'WIN')  || {}).n || 0;
+  const loss = (outs.find(o => o.result === 'LOSS') || {}).n || 0;
+  const be   = (outs.find(o => o.result === 'BE')   || {}).n || 0;
+  const res  = wins + loss;
+  const wr   = res > 0 ? (wins / res * 100).toFixed(1) + '%' : '—';
+
+  document.getElementById('recWins').textContent  = wins;
+  document.getElementById('recLoss').textContent  = loss;
+  document.getElementById('recBE').textContent    = be;
+  document.getElementById('recWR').textContent    = wr;
+  document.getElementById('recWRSub').textContent = res > 0 ? `${res} resolved` : 'no outcomes yet';
+  document.getElementById('recTotal').textContent = stats.total || 0;
+  document.getElementById('recTotalSub').textContent = 'all time';
+
+  // Total ticks from resolved journal signals
+  const totalTicks = journalSigs.reduce((s, t) => s + (t.pnl_pts || 0), 0);
+  const ticksEl = document.getElementById('recTicks');
+  ticksEl.textContent = totalTicks !== 0 ? (totalTicks >= 0 ? '+' : '') + totalTicks : '0';
+  ticksEl.style.color = totalTicks > 0 ? 'var(--green)' : totalTicks < 0 ? 'var(--red)' : 'var(--teal)';
+}
+
+/* ── Bot status (heartbeat check) ────────────────────── */
+async function renderBotStatus() {
+  const instruments = [
+    { dot: 'mnqDot', lbl: 'mnqStatus', sub: 'mnqScanSub' },
+    { dot: 'mgcDot', lbl: 'mgcStatus', sub: 'mgcScanSub' },
+  ];
+  try {
+    const r  = await fetch('/api/scanner/heartbeat');
+    const d  = await r.json();
+    const isActive = d.online === true;
+    const cls      = isActive ? 'active' : 'inactive';
+    const subText  = isActive
+      ? `last scan ${d.ageMs != null ? Math.round(d.ageMs / 1000) + 's ago' : 'recently'}`
+      : 'scanner not responding';
+    for (const inst of instruments) {
+      document.getElementById(inst.dot).className  = `bot-status-dot ${cls}`;
+      const lblEl = document.getElementById(inst.lbl);
+      lblEl.textContent = isActive ? 'ACTIVE' : 'OFFLINE';
+      lblEl.className   = `bot-status-lbl ${cls}`;
+      document.getElementById(inst.sub).textContent = subText;
+    }
+  } catch {
+    for (const inst of instruments) {
+      document.getElementById(inst.sub).textContent = 'unavailable';
+    }
+  }
+}
+
+/* ── Quick stats ─────────────────────────────────────── */
+function renderStats(stats, recentSigs, journalSigs) {
+  // Win rate
+  const outs = stats.outcomes || [];
+  const wins = (outs.find(o => o.result === 'WIN')  || {}).n || 0;
+  const loss = (outs.find(o => o.result === 'LOSS') || {}).n || 0;
+  const be   = (outs.find(o => o.result === 'BE')   || {}).n || 0;
+  const res  = wins + loss;
+  const wr   = res > 0 ? (wins / res * 100).toFixed(1) + '%' : '—';
+
+  document.getElementById('winRate').textContent    = wr;
+  document.getElementById('winRateSub').textContent = res > 0 ? `${res} resolved` : 'no outcomes yet';
+  document.getElementById('tradesToday').textContent = stats.last24h || 0;
+  document.getElementById('todayTradeSub').textContent = 'last 24h';
+
+  // Today P&L from journal signals
+  const todayStr = new Date().toLocaleDateString('en-US');
+  const todayTrades = journalSigs.filter(s => {
+    if (!s.pnl_pts) return false;
+    const d = new Date(s.received_at + (s.received_at.includes('T') ? '' : ' UTC'));
+    return d.toLocaleDateString('en-US') === todayStr;
+  });
+  const todayPnl = todayTrades.reduce((s, t) => s + (t.pnl_pts || 0), 0);
+  const pnlEl    = document.getElementById('todayPnl');
+  pnlEl.textContent = todayTrades.length ? (todayPnl >= 0 ? '+' : '') + todayPnl + 'pts' : '—';
+  pnlEl.style.color = todayPnl > 0 ? 'var(--green)' : todayPnl < 0 ? 'var(--red)' : 'var(--text-muted)';
+  document.getElementById('todayPnlSub').textContent = todayTrades.length
+    ? `${todayTrades.length} resolved today`
+    : 'no resolved trades today';
+
+  // Active signals (no result, last 8h)
+  const cutoff = Date.now() - 8 * 3600 * 1000;
+  const active = recentSigs.filter(s => !s.result &&
+    new Date(s.received_at + ' UTC').getTime() > cutoff
+  ).length;
+  const activeEl = document.getElementById('activeSigs');
+  activeEl.textContent = active || '0';
+  activeEl.style.color = active > 0 ? 'var(--orange)' : 'var(--text-muted)';
+}
+
+/* ── Performance chart ───────────────────────────────── */
+function renderPerfChart(journalSigs) {
+  const resolved = [...journalSigs]
+    .filter(s => s.pnl_pts != null)
+    .reverse()
+    .slice(-30);
+
+  if (resolved.length < 2) {
+    document.getElementById('perfChart').parentElement.innerHTML =
+      '<div class="empty-state" style="padding:20px 0 8px"><div class="empty-state-desc">Log outcomes on the Signals page to see performance chart.</div></div>';
+    return;
+  }
+
+  document.getElementById('perfChartSub').textContent = `last ${resolved.length} resolved`;
+
+  let cumulative = 0;
+  const labels = [], data = [];
+  for (const s of resolved) {
+    cumulative += s.pnl_pts || 0;
+    labels.push(hhmm(s.received_at));
+    data.push(+cumulative.toFixed(1));
+  }
+
+  const finalVal = data[data.length - 1] ?? 0;
+  const lineColor = finalVal >= 0 ? '#00d4a0' : '#ff3d5a';
+  const fillColor = finalVal >= 0 ? 'rgba(0,212,160,.08)' : 'rgba(255,61,90,.08)';
+
+  const ctx = document.getElementById('perfChart').getContext('2d');
+  if (perfChart) perfChart.destroy();
+  perfChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data,
+        borderColor: lineColor,
+        backgroundColor: fillColor,
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHoverRadius: 4,
+        tension: 0.35,
+        fill: true,
+      }],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      plugins: { legend: { display: false } },
+      scales: {
+        x: { display: false },
+        y: {
+          ticks: { color: '#48486a', font: { size: 9 }, callback: v => v + 'pts' },
+          grid:  { color: 'rgba(255,255,255,.04)' },
+        },
+      },
+    },
+  });
+}
+
+/* ── Recent trades ───────────────────────────────────── */
+function renderRecentTrades(journalSigs) {
+  const el = document.getElementById('recentTradesFeed');
+  const last5 = journalSigs.slice(0, 5);
+  document.getElementById('recentTradeLbl').textContent = journalSigs.length + ' total';
+
+  if (!last5.length) {
+    el.innerHTML = buildEmptyState('◎', 'No trades yet', 'Mark signals as WIN / LOSS / BE on the Signals page.');
+    return;
+  }
+
+  el.innerHTML = last5.map(s => {
+    const pnl     = s.pnl_pts;
+    const ptsCls  = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'flat';
+    const ptsText = pnl != null ? (pnl >= 0 ? '+' : '') + pnl + 'pts' : '—';
+    return `<div class="recent-trade-row">
+      <span class="rt-time">${hhmm(s.received_at)}</span>
+      <span class="rt-dir ${s.direction === 'LONG' ? 'long' : 'short'}">${s.direction === 'LONG' ? '▲' : '▼'}</span>
+      <span class="rt-setup">${escH(s.setup || '—')}</span>
+      <span class="rt-style">${escH(s.trade_style || '')}</span>
+      ${outcomeBadge(s.result)}
+      <span class="rt-pts ${ptsCls}">${ptsText}</span>
+    </div>`;
+  }).join('');
+}
+
+/* ── Market intelligence ─────────────────────────────── */
+function renderIntel(learning, prices) {
+  const el = document.getElementById('intelFeed');
+  const items = [];
+
+  // Regime
+  const regime = learning?.regime;
+  if (regime) {
+    const regIcons = { trending: { icon: '↗', cls: 'hot', color: 'var(--green)' }, choppy: { icon: '↕', cls: 'warn', color: 'var(--yellow)' }, mixed: { icon: '↔', cls: 'info', color: 'var(--blue)' } };
+    const r = regIcons[regime] || regIcons.mixed;
+    items.push({ icon: r.icon, cls: r.cls, title: `Market Regime: ${regime.charAt(0).toUpperCase() + regime.slice(1)}`, sub: 'Based on last 15 resolved outcomes', right: '' });
+  }
+
+  // Prices
+  const priceKeys = Object.keys(prices || {});
+  if (priceKeys.length) {
+    const nqKey = priceKeys.find(k => k.includes('NQ') || k.includes('MNQ'));
+    const gcKey = priceKeys.find(k => k.includes('GC') || k.includes('MGC'));
+    if (nqKey) {
+      const p = prices[nqKey];
+      const c = p.change_pct ?? 0;
+      items.push({
+        icon: c >= 0 ? '▲' : '▼',
+        cls: c >= 0 ? 'hot' : 'cold',
+        title: `NQ / MNQ  ${p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—'}`,
+        sub: 'Latest price snapshot',
+        right: (c >= 0 ? '+' : '') + c.toFixed(2) + '%',
+        rightColor: c >= 0 ? 'var(--green)' : 'var(--red)',
+      });
+    }
+    if (gcKey) {
+      const p = prices[gcKey];
+      const c = p.change_pct ?? 0;
+      items.push({
+        icon: c >= 0 ? '▲' : '▼',
+        cls: c >= 0 ? 'hot' : 'cold',
+        title: `Gold / MGC  ${p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—'}`,
+        sub: 'Latest price snapshot',
+        right: (c >= 0 ? '+' : '') + c.toFixed(2) + '%',
+        rightColor: c >= 0 ? 'var(--green)' : 'var(--red)',
+      });
+    }
+  }
+
+  // Hottest / coldest setups
+  const setups = (learning?.bySetup || []).filter(s => s.total >= 3);
+  if (setups.length) {
+    const hot  = [...setups].sort((a,b) => b.win_pct - a.win_pct)[0];
+    const cold = [...setups].sort((a,b) => a.win_pct - b.win_pct)[0];
+    if (hot) items.push({ icon: '🔥', cls: 'hot', title: `Hot Setup: ${hot.setup}`, sub: `${hot.total} trades · Win rate above average`, right: hot.win_pct + '%', rightColor: 'var(--green)' });
+    if (cold && cold.setup !== hot?.setup) items.push({ icon: '❄', cls: 'cold', title: `Cold Setup: ${cold.setup}`, sub: `${cold.total} trades · Underperforming`, right: cold.win_pct + '%', rightColor: 'var(--red)' });
+  }
+
+  if (!items.length) {
+    el.innerHTML = '<div style="padding:10px 0;font-size:11px;color:var(--text-muted)">Collecting data — intelligence will appear after a few resolved trades.</div>';
+    return;
+  }
+
+  document.getElementById('intelTimeLbl').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  el.innerHTML = items.map(item => `
+    <div class="intel-row">
+      <div class="intel-icon ${item.cls}">${item.icon}</div>
+      <div class="intel-body">
+        <div class="intel-title">${escH(item.title)}</div>
+        <div class="intel-sub">${escH(item.sub)}</div>
+      </div>
+      ${item.right ? `<div class="intel-right" style="color:${item.rightColor || 'var(--text-muted)'}">${item.right}</div>` : ''}
+    </div>`).join('');
+}
+
+/* ── Calendar strip ──────────────────────────────────── */
+function renderCalendar(journalSigs) {
+  const el = document.getElementById('calStrip');
+  // Build daily P&L map from journal signals
+  const dailyMap = {};
+  for (const s of journalSigs) {
+    if (s.pnl_pts == null) continue;
+    const d = new Date(s.received_at + (s.received_at.includes('T') ? '' : ' UTC'));
+    const key = d.toISOString().slice(0, 10);
+    dailyMap[key] = (dailyMap[key] || 0) + s.pnl_pts;
+  }
+
+  // Build last 14 calendar days
+  const today = new Date();
+  const cells  = [];
+  for (let i = 13; i >= 0; i--) {
+    const d   = new Date(today);
+    d.setDate(today.getDate() - i);
+    const key = d.toISOString().slice(0, 10);
+    const pnl = dailyMap[key];
+    const dow = d.toLocaleDateString('en-US', { weekday: 'short' }).slice(0, 1);
+    const day = d.getDate();
+    const isToday = i === 0;
+    let cls = 'none';
+    let txt = '—';
+    if (pnl != null) {
+      cls = pnl > 0 ? 'up' : pnl < 0 ? 'down' : 'flat';
+      txt = (pnl >= 0 ? '+' : '') + pnl;
+    }
+    cells.push({ dow, day, cls, txt, isToday });
+  }
+
+  el.innerHTML = cells.map(c => `
+    <div class="cal-cell">
+      <div class="cal-cell-lbl">${c.dow}<br>${c.day}</div>
+      <div class="cal-box ${c.cls}${c.isToday ? ' today' : ''}">${c.txt}</div>
+    </div>`).join('');
+}
+
+/* ── Main load ───────────────────────────────────────── */
+async function load() {
+  // Update date/time header
+  const now = new Date();
+  document.getElementById('headerDate').textContent =
+    now.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+  // Market status
+  const mkt = getMarketContext();
+  const badge = document.getElementById('marketBadge');
+  badge.className = `market-badge ${mkt.cls}`;
+  document.getElementById('marketLabel').textContent = mkt.label;
+  document.getElementById('sessionPill').textContent = mkt.session;
+
+  try {
+    const [sigsRes, statsRes, journalRes, pricesRes, learningRes] = await Promise.all([
+      fetch('/api/signals?limit=30'),
+      fetch('/api/stats'),
+      fetch('/api/journal/signals?limit=100'),
+      fetch('/api/market/prices').catch(() => null),
+      fetch('/api/learning').catch(() => null),
+    ]);
+    const [sigs, stats, journal, prices, learning] = await Promise.all([
+      sigsRes.json(),
+      statsRes.json(),
+      journalRes.json(),
+      pricesRes ? pricesRes.json() : Promise.resolve({}),
+      learningRes ? learningRes.json() : Promise.resolve({}),
+    ]);
+
+    renderHero(sigs[0] || null);
+    renderRecordBar(stats, journal);
+    renderStats(stats, sigs, journal);
+    renderPerfChart(journal);
+    renderRecentTrades(journal);
+    renderIntel(learning, prices);
+    renderCalendar(journal);
+    renderBotStatus();
+
+    document.getElementById('refreshLbl').textContent = 'Updated ' + now.toLocaleTimeString();
+  } catch (e) {
+    console.error('Load error:', e);
+  }
+}
+
+/* ── Auto-refresh with countdown display ─────────────── */
+let _cdTimer = null;
+function startCountdown(secs) {
+  let remaining = secs;
+  if (_cdTimer) clearInterval(_cdTimer);
+  _cdTimer = setInterval(() => {
+    remaining--;
+    const lbl = document.getElementById('refreshLbl');
+    if (lbl) lbl.textContent = `Refresh in ${remaining}s`;
+    if (remaining <= 0) {
+      clearInterval(_cdTimer);
+      load().then(() => startCountdown(30));
+    }
+  }, 1000);
+}
+
+load().then(() => startCountdown(30));
+
+// Fallback: if tv.js loaded before its onload callback fired, init charts now
+if (typeof TradingView !== 'undefined') initTVCharts();
+</script>
+</body>
+</html>

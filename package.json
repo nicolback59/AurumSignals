@@ -1,0 +1,20 @@
+{
+  "name": "nq-signal-pro-v3",
+  "version": "3.0.0",
+  "description": "NQ Signal Pro V3 — TradingView webhook receiver and live signal dashboard for NQ/MNQ futures",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "scan": "node scanner.js",
+    "scan:dev": "node --watch scanner.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^9.6.0",
+    "express": "^4.19.2"
+  },
+  "engines": {
+    "node": "20.x"
+  },
+  "license": "MIT"
+}

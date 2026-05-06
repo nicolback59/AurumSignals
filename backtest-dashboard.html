@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Backtest</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    body { display: flex; flex-direction: column; min-height: 100dvh; }
+    .main-layout {
+      flex: 1;
+      display: grid;
+      grid-template-columns: 1fr 310px;
+      overflow: hidden;
+      min-height: 0;
+    }
+    @media (max-width: 900px) {
+      .main-layout { grid-template-columns: 1fr; }
+      .right-col { display: none; }
+    }
+    @media (max-width: 640px) {
+      .tv-row { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
+      <a href="/backtest" class="nav-link active">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
+</header>
+
+<!-- ── TICKER TAPE ───────────────────────────────────── -->
+<div class="ticker-wrap">
+  <div class="tradingview-widget-container" style="height:46px">
+    <div class="tradingview-widget-container__widget"></div>
+    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
+    {
+      "symbols":[
+        {"proName":"CME_MINI:NQ1!","title":"NQ Futures"},
+        {"proName":"COMEX:GC1!","title":"Gold GC"},
+        {"proName":"CME_MINI:MNQ1!","title":"MNQ"},
+        {"proName":"COMEX:MGC1!","title":"Micro Gold"}
+      ],
+      "showSymbolLogo":true,"isTransparent":true,"displayMode":"adaptive",
+      "colorTheme":"dark","locale":"en"
+    }
+    </script>
+  </div>
+</div>
+
+<!-- ── STAT BAR ─────────────────────────────────────── -->
+<div class="stat-bar">
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">MNQ Win Rate</div>
+    <div class="stat-bar-value" style="color:var(--mnq)" id="statMnqWr">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">MGC Win Rate</div>
+    <div class="stat-bar-value" style="color:var(--mgc)" id="statMgcWr">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Last Backtest</div>
+    <div class="stat-bar-value" style="color:var(--green)" id="statLastBt">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Total Runs</div>
+    <div class="stat-bar-value" id="statRuns">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Trades Tested</div>
+    <div class="stat-bar-value" id="statTrades">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Revisions</div>
+    <div class="stat-bar-value" id="statRevs">—</div>
+  </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Regime</div>
+    <div class="stat-bar-value" id="statRegime">—</div>
+  </div>
+</div>
+
+<!-- ── MAIN LAYOUT ───────────────────────────────────── -->
+<div class="main-layout">
+
+  <!-- LEFT COLUMN -->
+  <div class="main-col">
+
+    <!-- Live Prices (shown when available) -->
+    <div id="pricePair" style="display:none; grid-template-columns:1fr 1fr; gap:12px;">
+      <div class="price-box">
+        <div class="price-sym">@NQ.C.0 / MNQ</div>
+        <div class="price-val" id="nqPrice">—</div>
+        <div class="price-chg" id="nqChg">—</div>
+      </div>
+      <div class="price-box">
+        <div class="price-sym">@MGC.C.0 / GC</div>
+        <div class="price-val" id="gcPrice">—</div>
+        <div class="price-chg" id="gcChg">—</div>
+      </div>
+    </div>
+
+    <!-- Win Rate Over Time -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Win Rate Over Time</span>
+        <div class="tabs">
+          <button class="tab-btn on-mnq" id="tabMnq" onclick="setInst('MNQ',this)">MNQ</button>
+          <button class="tab-btn"        id="tabMgc" onclick="setInst('MGC',this)">MGC</button>
+          <button class="tab-btn"        id="tabAll" onclick="setInst('ALL',this)">Both</button>
+        </div>
+      </div>
+      <div class="section-card-body">
+        <div class="chart-wrap-lg"><canvas id="winRateChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- Backtest Activity -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Backtest Activity — Trades Tested per Run</span>
+      </div>
+      <div class="section-card-body">
+        <div class="chart-wrap"><canvas id="activityChart"></canvas></div>
+      </div>
+    </div>
+
+    <!-- TradingView Mini Charts -->
+    <div class="tv-row">
+      <div class="tv-box">
+        <div class="tv-box-lbl">NQ E-MINI (CME)</div>
+        <div class="tradingview-widget-container" style="height:100%">
+          <div class="tradingview-widget-container__widget" style="height:100%"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
+          {"symbol":"CME_MINI:NQ1!","width":"100%","height":"230","locale":"en","dateRange":"1D",
+           "colorTheme":"dark","isTransparent":true,"autosize":false,"largeChartUrl":""}
+          </script>
+        </div>
+      </div>
+      <div class="tv-box">
+        <div class="tv-box-lbl">GOLD GC (COMEX)</div>
+        <div class="tradingview-widget-container" style="height:100%">
+          <div class="tradingview-widget-container__widget" style="height:100%"></div>
+          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
+          {"symbol":"COMEX:GC1!","width":"100%","height":"230","locale":"en","dateRange":"1D",
+           "colorTheme":"dark","isTransparent":true,"autosize":false,"largeChartUrl":""}
+          </script>
+        </div>
+      </div>
+    </div>
+
+    <!-- Recent Backtest Runs -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Recent Backtest Runs</span>
+      </div>
+      <div style="overflow-x:auto">
+        <table class="data-table">
+          <thead><tr>
+            <th>#</th><th>Instrument</th><th>Run At</th><th>Bars</th>
+            <th>Trades</th><th>Win %</th><th>Sharpe</th><th>P/F</th><th>By</th>
+          </tr></thead>
+          <tbody id="runsBody">
+            <tr><td colspan="9">
+              <div class="empty-state" style="padding:24px">
+                <div class="empty-state-title">No backtest runs yet</div>
+                <div class="empty-state-desc">Scanner will run first backtest on startup.</div>
+              </div>
+            </td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+  </div><!-- /main-col -->
+
+  <!-- RIGHT COLUMN -->
+  <div class="right-col side-col">
+
+    <!-- Active Strategy Parameters -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Active Strategy Params</span>
+        <div class="tabs">
+          <button class="tab-btn on-mnq" id="paramTabMnq" onclick="showParams('MNQ')">MNQ</button>
+          <button class="tab-btn"        id="paramTabMgc" onclick="showParams('MGC')">MGC</button>
+        </div>
+      </div>
+      <div class="section-card-body">
+        <div id="paramsDisplay" class="params-grid"></div>
+        <div id="paramsVersion" style="margin-top:8px;font-size:9px;color:var(--text-muted)"></div>
+      </div>
+    </div>
+
+    <!-- Revision Timeline -->
+    <div class="section-card" style="flex:1">
+      <div class="section-card-header">
+        <span class="section-card-title">Revision Timeline</span>
+      </div>
+      <div class="section-card-body" id="revTimeline">
+        <div class="empty-state" style="padding:24px">
+          <div class="empty-state-icon">◎</div>
+          <div class="empty-state-desc">No revisions yet — strategy self-adjusts once sufficient backtest data is collected.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Learning Stats -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Learning Stats (30d)</span>
+      </div>
+      <div class="section-card-body" id="learningSetup"></div>
+    </div>
+
+  </div><!-- /right-col -->
+
+</div><!-- /main-layout -->
+
+<!-- ── BOTTOM NAV (mobile) ───────────────────────────── -->
+<nav class="bottom-nav">
+  <div class="bottom-nav-items">
+    <a href="/" class="bottom-nav-item">
+      <span class="bottom-nav-icon">⌂</span>
+      <span class="bottom-nav-label">Home</span>
+    </a>
+    <a href="/signals" class="bottom-nav-item">
+      <span class="bottom-nav-icon">◈</span>
+      <span class="bottom-nav-label">Signals</span>
+    </a>
+    <a href="/trades" class="bottom-nav-item">
+      <span class="bottom-nav-icon">◉</span>
+      <span class="bottom-nav-label">Trades</span>
+    </a>
+    <a href="/journal" class="bottom-nav-item">
+      <span class="bottom-nav-icon">◎</span>
+      <span class="bottom-nav-label">Journal</span>
+    </a>
+  </div>
+</nav>
+
+<script src="/ui-components.js"></script>
+<script>
+'use strict';
+
+const CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  plugins: {
+    legend: {
+      labels: { color: '#48486a', font: { size: 10, family: 'JetBrains Mono, Consolas' } },
+    },
+  },
+  scales: {
+    x: {
+      ticks: { color: '#48486a', font: { size: 9 }, maxTicksLimit: 10 },
+      grid:  { color: 'rgba(255,255,255,.04)' },
+    },
+    y: {
+      ticks: { color: '#48486a', font: { size: 9 } },
+      grid:  { color: 'rgba(255,255,255,.04)' },
+    },
+  },
+};
+
+let allRuns = [], allRevisions = [], allParams = {}, allLearning = {};
+let activeInst = 'MNQ', activeParamInst = 'MNQ';
+let winRateChart = null, activityChart = null;
+
+// ── Charts ───────────────────────────────────────────────────────────────────
+function buildWinRateChart(inst) {
+  const ctx = document.getElementById('winRateChart').getContext('2d');
+  if (winRateChart) winRateChart.destroy();
+
+  const mnqRuns = allRuns.filter(r => r.instrument === 'MNQ').slice(-40).reverse();
+  const mgcRuns = allRuns.filter(r => r.instrument === 'MGC').slice(-40).reverse();
+
+  const datasets = [];
+  if (inst === 'MNQ' || inst === 'ALL') datasets.push({
+    label: 'MNQ Win %',
+    borderColor: '#4db8ff',
+    backgroundColor: 'rgba(77,184,255,.06)',
+    pointRadius: 3, pointHoverRadius: 5, tension: 0.3, fill: true,
+    data: mnqRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
+  });
+  if (inst === 'MGC' || inst === 'ALL') datasets.push({
+    label: 'MGC Win %',
+    borderColor: '#f5c542',
+    backgroundColor: 'rgba(245,197,66,.05)',
+    pointRadius: 3, pointHoverRadius: 5, tension: 0.3,
+    data: mgcRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
+  });
+
+  winRateChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      ...CHART_OPTS,
+      parsing: { xAxisKey: 'x', yAxisKey: 'y' },
+      plugins: {
+        ...CHART_OPTS.plugins,
+        annotation: { annotations: {
+          target: { type:'line', yMin:50, yMax:50, borderColor:'rgba(0,212,160,.2)', borderWidth:1, borderDash:[4,4] },
+        }},
+      },
+      scales: {
+        ...CHART_OPTS.scales,
+        y: { ...CHART_OPTS.scales.y, min:30, max:100,
+             ticks: { ...CHART_OPTS.scales.y.ticks, callback: v => v + '%' } },
+      },
+    },
+  });
+}
+
+function buildActivityChart() {
+  const ctx = document.getElementById('activityChart').getContext('2d');
+  if (activityChart) activityChart.destroy();
+
+  const recent = [...allRuns].reverse().slice(-30);
+  activityChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels: recent.map(r => r.run_at.slice(5,16).replace('T',' ')),
+      datasets: [{
+        label: 'Trades Tested',
+        backgroundColor: recent.map(r => r.instrument === 'MNQ' ? 'rgba(77,184,255,.4)' : 'rgba(245,197,66,.35)'),
+        borderColor:      recent.map(r => r.instrument === 'MNQ' ? '#4db8ff' : '#f5c542'),
+        borderWidth: 1,
+        borderRadius: 3,
+        data: recent.map(r => r.trades_found),
+      }],
+    },
+    options: { ...CHART_OPTS, plugins: { legend: { display: false } } },
+  });
+}
+
+// ── Stat bar ─────────────────────────────────────────────────────────────────
+function updateStatBar(summary, learning) {
+  const mnq = summary.find(s => s.instrument === 'MNQ');
+  const mgc = summary.find(s => s.instrument === 'MGC');
+
+  document.getElementById('statMnqWr').textContent = mnq ? mnq.avg_win_pct + '%' : '—';
+  document.getElementById('statMgcWr').textContent = mgc ? mgc.avg_win_pct + '%' : '—';
+
+  const allLast = [...summary].sort((a,b) => new Date(b.last_run_at) - new Date(a.last_run_at))[0];
+  if (allLast) {
+    const mins = Math.round((Date.now() - new Date(allLast.last_run_at)) / 60000);
+    document.getElementById('statLastBt').textContent = mins < 60 ? mins + 'm ago' : Math.floor(mins/60) + 'h ago';
+  }
+
+  document.getElementById('statRuns').textContent   = summary.reduce((s,r) => s + r.total_runs, 0);
+  document.getElementById('statTrades').textContent = summary.reduce((s,r) => s + (r.total_trades_tested||0), 0).toLocaleString();
+  document.getElementById('statRevs').textContent   = summary.reduce((s,r) => s + (r.revisions_active||0), 0);
+
+  const regime = learning?.regime ?? '—';
+  const regEl  = document.getElementById('statRegime');
+  regEl.textContent = regime;
+  regEl.style.color = regime === 'trending' ? 'var(--green)' : regime === 'choppy' ? 'var(--orange)' : '';
+}
+
+// ── Revision timeline ────────────────────────────────────────────────────────
+function renderRevisions() {
+  const el = document.getElementById('revTimeline');
+  if (!allRevisions.length) {
+    el.innerHTML = '<div class="empty-state" style="padding:24px"><div class="empty-state-desc">No revisions yet.</div></div>';
+    return;
+  }
+  el.innerHTML = allRevisions.slice(0, 20).map(r => {
+    const wr_b    = r.win_rate_before != null ? (r.win_rate_before*100).toFixed(1) + '%' : '—';
+    const wr_a    = r.win_rate_after  != null ? (r.win_rate_after *100).toFixed(1) + '%' : '—';
+    const improved = r.win_rate_after > r.win_rate_before;
+    const wrBadge = improved
+      ? `<span class="badge badge-active">${wr_b} → ${wr_a}</span>`
+      : `<span class="badge badge-muted">${wr_b} → ${wr_a}</span>`;
+    return `<div class="revision-item ${r.status}">
+      <div class="revision-header">
+        <span class="revision-inst ${r.instrument.toLowerCase()}">${r.instrument}</span>
+        <span class="revision-time">${r.revised_at.slice(0,16).replace('T',' ')}</span>
+      </div>
+      <div class="revision-reason">${escH(r.reason || '—')}</div>
+      <div class="revision-badges">
+        ${statusBadge(r.status)}
+        ${wrBadge}
+      </div>
+    </div>`;
+  }).join('');
+}
+
+// ── Params display ────────────────────────────────────────────────────────────
+function showParams(inst) {
+  activeParamInst = inst;
+  document.getElementById('paramTabMnq').className = 'tab-btn' + (inst === 'MNQ' ? ' on-mnq' : '');
+  document.getElementById('paramTabMgc').className = 'tab-btn' + (inst === 'MGC' ? ' on-mgc' : '');
+  const p = allParams[inst];
+  if (!p) {
+    document.getElementById('paramsDisplay').innerHTML = '<div style="color:var(--text-muted);font-size:11px">No data</div>';
+    return;
+  }
+  const KEYS = ['minScore','slPts','oteHigh','oteLow','std2','std1','htfEmaF','htfEmaS','stdvLen','swingLook'];
+  document.getElementById('paramsDisplay').innerHTML = KEYS.filter(k => p[k] != null).map(k =>
+    `<div class="param-item"><div class="param-key">${k}</div><div class="param-val">${p[k]}</div></div>`
+  ).join('');
+  document.getElementById('paramsVersion').textContent =
+    `v${p.version ?? 0}  ·  updated ${p.updated_at ? p.updated_at.slice(0,16).replace('T',' ') : '—'}`;
+}
+
+// ── Runs table ────────────────────────────────────────────────────────────────
+function renderRunsTable() {
+  const tbody = document.getElementById('runsBody');
+  if (!allRuns.length) {
+    tbody.innerHTML = '<tr><td colspan="9"><div class="empty-state" style="padding:20px"><div class="empty-state-desc">No runs yet</div></div></td></tr>';
+    return;
+  }
+  tbody.innerHTML = allRuns.slice(0, 50).map(r => {
+    const wr   = (r.win_rate * 100).toFixed(1);
+    const cls  = wrClass(r.win_rate);
+    const inst = r.instrument === 'MNQ'
+      ? `<span style="color:var(--mnq);font-weight:700">MNQ</span>`
+      : `<span style="color:var(--mgc);font-weight:700">MGC</span>`;
+    return `<tr>
+      <td style="color:var(--text-muted)">${r.id}</td>
+      <td>${inst}</td>
+      <td style="color:var(--text-secondary)">${r.run_at.slice(0,16).replace('T',' ')}</td>
+      <td>${(r.bars_tested||0).toLocaleString()}</td>
+      <td>${r.trades_found ?? 0}</td>
+      <td class="${cls}">${wr}%</td>
+      <td>${r.sharpe ?? '—'}</td>
+      <td>${r.profit_factor ?? '—'}</td>
+      <td style="color:var(--text-muted)">${r.triggered_by ?? '—'}</td>
+    </tr>`;
+  }).join('');
+}
+
+// ── Learning stats ────────────────────────────────────────────────────────────
+function renderLearning() {
+  const el = document.getElementById('learningSetup');
+  const rows = allLearning?.bySetup ?? [];
+  if (!rows.length) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">Log outcomes on the Live Signals page to see learning stats.</div>';
+    return;
+  }
+  el.innerHTML = `<table class="data-table"><thead><tr>
+    <th>Setup</th><th>Trades</th><th>Win %</th><th>Delta</th>
+  </tr></thead><tbody>` +
+    rows.map(r => {
+      const delta = (allLearning?.adaptiveDeltas ?? {})[r.setup] ?? 0;
+      const dStr  = delta > 0
+        ? `<span style="color:var(--red)">+${delta}</span>`
+        : delta < 0
+          ? `<span style="color:var(--green)">${delta}</span>`
+          : '<span style="color:var(--text-muted)">—</span>';
+      return `<tr>
+        <td>${escH(r.setup)}</td>
+        <td>${r.total}</td>
+        <td class="${wrClass(r.win_pct / 100)}">${r.win_pct}%</td>
+        <td>${dStr}</td>
+      </tr>`;
+    }).join('') + '</tbody></table>';
+}
+
+// ── Market prices ─────────────────────────────────────────────────────────────
+function updatePrices(prices) {
+  const keys = Object.keys(prices);
+  if (!keys.length) return;
+  document.getElementById('pricePair').style.display = 'grid';
+
+  const nqKey = keys.find(k => k.includes('NQ'));
+  const gcKey = keys.find(k => k.includes('MGC') || k.includes('GC'));
+
+  if (nqKey) {
+    const p = prices[nqKey];
+    document.getElementById('nqPrice').textContent = p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
+    const c  = p.change_pct ?? 0;
+    const el = document.getElementById('nqChg');
+    el.textContent = (c >= 0 ? '+' : '') + c.toFixed(2) + '%';
+    el.className   = 'price-chg ' + (c >= 0 ? 'up' : 'dn');
+  }
+  if (gcKey) {
+    const p = prices[gcKey];
+    document.getElementById('gcPrice').textContent = p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
+    const c  = p.change_pct ?? 0;
+    const el = document.getElementById('gcChg');
+    el.textContent = (c >= 0 ? '+' : '') + c.toFixed(2) + '%';
+    el.className   = 'price-chg ' + (c >= 0 ? 'up' : 'dn');
+  }
+}
+
+// ── Tab switcher ──────────────────────────────────────────────────────────────
+function setInst(inst, btn) {
+  activeInst = inst;
+  document.getElementById('tabMnq').className = 'tab-btn' + (inst === 'MNQ' ? ' on-mnq' : '');
+  document.getElementById('tabMgc').className = 'tab-btn' + (inst === 'MGC' ? ' on-mgc' : '');
+  document.getElementById('tabAll').className = 'tab-btn' + (inst === 'ALL' ? ' on-all' : '');
+  buildWinRateChart(inst);
+}
+
+// ── Fetch all data ─────────────────────────────────────────────────────────────
+async function refresh() {
+  try {
+    const [runs, revisions, params, summary, learning, prices] = await Promise.all([
+      fetch('/api/backtest/runs?limit=100').then(r=>r.json()).catch(()=>[]),
+      fetch('/api/backtest/revisions?limit=30').then(r=>r.json()).catch(()=>[]),
+      fetch('/api/strategy/params').then(r=>r.json()).catch(()=>({})),
+      fetch('/api/backtest/summary').then(r=>r.json()).catch(()=>[]),
+      fetch('/api/learning').then(r=>r.json()).catch(()=>({})),
+      fetch('/api/market/prices').then(r=>r.json()).catch(()=>({})),
+    ]);
+
+    allRuns      = runs;
+    allRevisions = revisions;
+    allParams    = params;
+    allLearning  = learning;
+
+    updateStatBar(summary, learning);
+    buildWinRateChart(activeInst);
+    buildActivityChart();
+    renderRevisions();
+    renderRunsTable();
+    renderLearning();
+    showParams(activeParamInst);
+    updatePrices(prices);
+
+    document.getElementById('refreshLbl').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (err) {
+    console.error('Refresh error:', err);
+  }
+}
+
+refresh();
+setInterval(refresh, 120_000);
+</script>
+</body>
+</html>
