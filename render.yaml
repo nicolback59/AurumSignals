@@ -1,0 +1,71 @@
+services:
+  # ── 1. API Server + Website ($7/mo Starter web service) ──────────────────────
+  - type: web
+    name: nq-signal-pro-api
+    runtime: node
+    buildCommand: npm install
+    startCommand: node server.js
+    plan: starter
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
+      - key: DB_PATH
+        value: /data/signals.db
+      - key: WEBHOOK_SECRET
+        sync: false      # set this manually in Render dashboard
+      - key: NTFY_TOPIC
+        sync: false      # set this manually in Render dashboard
+      - key: NTFY_TOKEN
+        sync: false      # optional — leave blank if using public ntfy.sh
+    disk:
+      name: signals-db
+      mountPath: /data
+      sizeGB: 1
+
+  # ── 2. Background Scanner + Backtester ($7/mo Starter worker) ────────────────
+  - type: worker
+    name: nq-signal-pro-scanner
+    runtime: node
+    buildCommand: npm install
+    startCommand: node scanner.js
+    plan: starter
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: DB_PATH
+        value: /data/signals.db
+      - key: SCANNER_SYMBOL
+        value: NQ=F
+      - key: SCANNER_SYMBOL_MGC
+        value: GC=F
+      - key: SCAN_INTERVAL
+        value: 60
+      - key: SCANNER_COOLDOWN
+        value: 1
+      - key: SCANNER_MIN_SCORE
+        value: 12
+      - key: SCANNER_LOG_LEVEL
+        value: full          # change to 'signal' after first week
+      - key: SCANNER_RTH_ONLY
+        value: false
+      - key: BACKTEST_INTERVAL_H
+        value: 4
+      - key: BACKTEST_BARS
+        value: 10000
+      - key: BT_TARGET_TRADES
+        value: 250
+      - key: BT_SLIPPAGE
+        value: 0.5
+      - key: OPTIMIZER_INTERVAL_H
+        value: 12
+      - key: NTFY_TOPIC
+        sync: false
+      - key: NTFY_TOKEN
+        sync: false
+    disk:
+      name: signals-db      # SAME disk name — both services share one SQLite file
+      mountPath: /data
+      sizeGB: 1
