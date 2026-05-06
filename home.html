@@ -328,13 +328,15 @@
       flex-shrink: 0;
     }
     .bot-status-dot.active   { background: var(--green);  box-shadow: 0 0 8px var(--green);  animation: livePulse 2s infinite; }
-    .bot-status-dot.inactive { background: var(--red);    box-shadow: 0 0 8px var(--red); }
+    .bot-status-dot.inactive { background: var(--red);    box-shadow: 0 0 6px var(--red); }
     .bot-status-dot.unknown  { background: var(--text-muted); }
     .bot-status-name { font-size: 13px; font-weight: 700; flex: 1; }
     .bot-status-lbl  { font-size: 10px; font-weight: 600; }
     .bot-status-lbl.active   { color: var(--green); }
     .bot-status-lbl.inactive { color: var(--red); }
     .bot-status-lbl.unknown  { color: var(--text-muted); }
+    .bot-status-dot.paused   { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+    .bot-status-lbl.paused   { color: var(--yellow); }
     .bot-status-sub  { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); margin-top: 1px; }
 
     /* ── Live Charts ────────────────────────────────── */
@@ -626,8 +628,8 @@ function initTVCharts() {
     withdateranges: false,
     calendar: false,
   };
-  new TradingView.widget({ ...sharedOpts, symbol: 'CME_MINI:MNQ1!', container_id: 'tv-mnq' });
-  new TradingView.widget({ ...sharedOpts, symbol: 'COMEX:MGC1!',     container_id: 'tv-mgc' });
+  new TradingView.widget({ ...sharedOpts, symbol: 'CME_MINI:NQ1!',  container_id: 'tv-mnq' });  // NQ futures = same price as MNQ
+  new TradingView.widget({ ...sharedOpts, symbol: 'COMEX:GC1!',     container_id: 'tv-mgc' });  // Gold futures = same price as MGC
 }
 
 /* ── Market status (NY time) ─────────────────────────── */
@@ -753,26 +755,46 @@ function renderRecordBar(stats, journalSigs) {
 
 /* ── Bot status (scanner activity check) ─────────────── */
 async function renderBotStatus() {
+  // Use market_snapshots (updated every scan cycle, not throttled like diagnostics)
   const instruments = [
-    { key: 'MNQ', dot: 'mnqDot', lbl: 'mnqStatus', sub: 'mnqScanSub' },
-    { key: 'MGC', dot: 'mgcDot', lbl: 'mgcStatus', sub: 'mgcScanSub' },
+    { key: 'MNQ', sym: 'NQ=F',  dot: 'mnqDot', lbl: 'mnqStatus', sub: 'mnqScanSub' },
+    { key: 'MGC', sym: 'GC=F',  dot: 'mgcDot', lbl: 'mgcStatus', sub: 'mgcScanSub' },
   ];
-  for (const inst of instruments) {
-    try {
-      const r = await fetch(`/api/diagnostics/summary?instrument=${inst.key}&hours=1`);
-      const d = await r.json();
-      const scanCount = d.total || 0;
-      const isActive  = scanCount > 0;
-      const cls       = isActive ? 'active' : 'inactive';
-      document.getElementById(inst.dot).className = `bot-status-dot ${cls}`;
-      const lblEl = document.getElementById(inst.lbl);
-      lblEl.textContent = isActive ? 'ACTIVE' : 'OFFLINE';
+  try {
+    const r      = await fetch('/api/market/prices');
+    const prices = await r.json();
+    for (const inst of instruments) {
+      const snap     = prices[inst.sym] ?? prices[inst.key] ?? null;
+      const dotEl    = document.getElementById(inst.dot);
+      const lblEl    = document.getElementById(inst.lbl);
+      const subEl    = document.getElementById(inst.sub);
+      if (!snap?.snapped_at) {
+        dotEl.className     = 'bot-status-dot unknown';
+        lblEl.textContent   = '—';
+        lblEl.className     = 'bot-status-lbl unknown';
+        subEl.textContent   = 'awaiting first scan';
+        continue;
+      }
+      const ageMs   = Date.now() - new Date(snap.snapped_at + (snap.snapped_at.includes('T') ? '' : ' UTC')).getTime();
+      const ageMins = Math.max(0, Math.floor(ageMs / 60_000));
+      let cls, lbl, sub;
+      if (ageMs < 3 * 60_000) {        // < 3 min → actively scanning
+        cls = 'active';   lbl = 'ACTIVE';   sub = ageMins < 1 ? 'just scanned' : `scanned ${ageMins}m ago`;
+      } else if (ageMs < 30 * 60_000) { // 3–30 min → recently active
+        cls = 'active';   lbl = 'ACTIVE';   sub = `last scan ${ageMins}m ago`;
+      } else if (ageMs < 4 * 3600_000) {// 30 min–4 h → stale, likely paused
+        cls = 'paused';   lbl = 'PAUSED';   sub = `no scan for ${ageMins}m`;
+      } else {
+        cls = 'inactive'; lbl = 'OFFLINE';  sub = `offline ${Math.floor(ageMins/60)}h+`;
+      }
+      dotEl.className   = `bot-status-dot ${cls}`;
+      lblEl.textContent = lbl;
       lblEl.className   = `bot-status-lbl ${cls}`;
-      document.getElementById(inst.sub).textContent = isActive
-        ? `${scanCount} scan${scanCount !== 1 ? 's' : ''} last hour`
-        : 'no scans in last hour';
-    } catch {
-      document.getElementById(inst.sub).textContent = 'unavailable';
+      subEl.textContent = sub;
+    }
+  } catch {
+    for (const inst of instruments) {
+      document.getElementById(inst.sub).textContent = 'status unavailable';
     }
   }
 }
