@@ -8,6 +8,8 @@ services:
     plan: starter
     healthCheckPath: /api/health
     envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
       - key: NODE_ENV
         value: production
       - key: PORT
@@ -33,6 +35,8 @@ services:
     startCommand: node scanner.js
     plan: starter
     envVars:
+      - key: NODE_VERSION
+        value: 20.18.0
       - key: NODE_ENV
         value: production
       - key: DB_PATH
