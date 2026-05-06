@@ -23,7 +23,7 @@ const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || 'GC=F';
 const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL     || '60')  * 1000;
 const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '1');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
-const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '12');
+const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '8');
 
 // Diagnostic verbosity: 'full' logs every scan; 'signal' logs only fires; 'quiet' errors only
 const LOG_LEVEL = (process.env.SCANNER_LOG_LEVEL || 'full').toLowerCase();
@@ -33,7 +33,7 @@ const BT_INTERVAL_H  = parseFloat(process.env.BACKTEST_INTERVAL_H  || '4');
 const BT_BARS        = parseInt(process.env.BACKTEST_BARS           || '10000');
 const OPT_INTERVAL_H = parseFloat(process.env.OPTIMIZER_INTERVAL_H || '12');
 const BT_SLIPPAGE    = parseFloat(process.env.BT_SLIPPAGE           || '0.5');
-const BT_TARGET_TRADES = parseInt(process.env.BT_TARGET_TRADES      || '250');
+const BT_TARGET_TRADES = parseInt(process.env.BT_TARGET_TRADES      || '500');
 
 // ── Database ──────────────────────────────────────────────────────────────────
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -475,7 +475,7 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
 
     const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
 
-    const lossTrades = result.signalLog.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').slice(0, 100);
+    const lossTrades = result.signalLog.slice(0, 200); // store all trades (WIN+LOSS+BE) for better learning
     if (lossTrades.length > 0) {
       const insLoss = db.prepare(`
         INSERT INTO backtest_trades

@@ -465,6 +465,56 @@ app.get('/api/strategies/performance', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── NEWS (Google News RSS, cached 5 min) ──────────────────────────────────────────────────
+const _newsCache = { items: [], fetchedAt: 0 };
+const NEWS_TTL_MS = 5 * 60 * 1000;
+
+function parseRssItems(xml, category) {
+  const items = [];
+  const matches = xml.matchAll(/<item>([\s\S]*?)<\/item>/g);
+  for (const m of matches) {
+    const block = m[1];
+    const rawTitle = block.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/)?.[1]
+                  ?? block.match(/<title>([\s\S]*?)<\/title>/)?.[1] ?? '';
+    const link    = block.match(/<link>([\s\S]*?)<\/link>/)?.[1]?.trim() ?? '';
+    const pubDate = block.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1]?.trim() ?? '';
+    const source  = block.match(/<source[^>]*>([\s\S]*?)<\/source>/)?.[1]?.trim() ?? 'Google News';
+    const title   = rawTitle
+      .replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>')
+      .replace(/&#39;/g,"'").replace(/&quot;/g,'"').trim();
+    if (title) items.push({ title, link, pubDate, source, category });
+  }
+  return items;
+}
+
+app.get('/api/news', async (req, res) => {
+  const now = Date.now();
+  if (now - _newsCache.fetchedAt < NEWS_TTL_MS && _newsCache.items.length) {
+    return res.json(_newsCache.items);
+  }
+  const feeds = [
+    { q: 'NQ futures nasdaq futures stock market trading',                category: 'MARKET'      },
+    { q: 'gold futures commodities precious metals GC=F',                category: 'GOLD'        },
+    { q: 'geopolitical iran ukraine trade war tariffs sanctions war',     category: 'GEOPOLITICAL'},
+    { q: 'Federal Reserve FOMC interest rates inflation CPI economic',   category: 'MACRO'       },
+  ];
+  const all = [];
+  for (const feed of feeds) {
+    try {
+      const url = `https://news.google.com/rss/search?q=${encodeURIComponent(feed.q)}&hl=en-US&gl=US&ceid=US:en`;
+      const r   = await fetch(url, { headers: { 'User-Agent': 'Mozilla/5.0 NQ-Signal-Pro/3.0' }, signal: AbortSignal.timeout(8000) });
+      const xml = await r.text();
+      all.push(...parseRssItems(xml, feed.category).slice(0, 12));
+    } catch (err) {
+      console.error('[news]', feed.category, err.message);
+    }
+  }
+  all.sort((a, b) => new Date(b.pubDate) - new Date(a.pubDate));
+  _newsCache.items = all;
+  _newsCache.fetchedAt = now;
+  res.json(all);
+});
+
 // ── STATIC ────────────────────────────────────────────────────────────────────────────────
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'home.html')));
 app.get('/signals',  (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));

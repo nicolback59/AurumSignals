@@ -63,10 +63,13 @@
       border-radius: 50%;
       flex-shrink: 0;
     }
-    .news-cat-dot.market   { background: var(--blue); }
-    .news-cat-dot.analysis { background: var(--green); }
-    .news-cat-dot.strategy { background: var(--purple); }
-    .news-cat-dot.regime   { background: var(--yellow); }
+    .news-cat-dot.market      { background: var(--blue); }
+    .news-cat-dot.analysis    { background: var(--green); }
+    .news-cat-dot.strategy    { background: var(--purple); }
+    .news-cat-dot.regime      { background: var(--yellow); }
+    .news-cat-dot.geopolitical{ background: var(--red); }
+    .news-cat-dot.gold        { background: var(--yellow); }
+    .news-cat-dot.macro       { background: var(--teal); }
     .news-source { font-size: 10px; font-weight: 600; color: var(--text-muted); }
     .news-time   { font-family: var(--font-mono); font-size: 10px; color: var(--text-muted); margin-left: auto; }
     .news-title  { font-size: 13px; font-weight: 600; color: var(--text-primary); margin-bottom: 5px; line-height: 1.4; }
@@ -150,21 +153,18 @@
       <p>Internal analysis — no external news feed connected</p>
     </div>
     <div class="filter-chips" id="catFilter">
-      <button class="filter-chip active" onclick="setCat('ALL',   this)">All</button>
-      <button class="filter-chip"        onclick="setCat('MARKET',   this)">Market Data</button>
-      <button class="filter-chip"        onclick="setCat('ANALYSIS', this)">Analysis</button>
-      <button class="filter-chip"        onclick="setCat('STRATEGY', this)">Strategy</button>
+      <button class="filter-chip active" onclick="setCat('ALL',          this)">All</button>
+      <button class="filter-chip"        onclick="setCat('GEOPOLITICAL', this)">Geopolitical</button>
+      <button class="filter-chip"        onclick="setCat('MACRO',        this)">Macro / Fed</button>
+      <button class="filter-chip"        onclick="setCat('MARKET',       this)">NQ / Equities</button>
+      <button class="filter-chip"        onclick="setCat('GOLD',         this)">Gold / MGC</button>
+      <button class="filter-chip"        onclick="setCat('ANALYSIS',     this)">Bot Analysis</button>
     </div>
   </div>
 
-  <!-- API Notice -->
-  <div class="api-notice">
-    <span class="api-notice-icon">ℹ</span>
-    <div class="api-notice-body">
-      <strong>No external news API is connected.</strong> This page shows live market intelligence generated
-      from your own signal data — regime analysis, setup performance, price snapshots, and strategy updates.
-      To add real news, connect a financial data API and expose it at <code style="font-family:var(--font-mono);color:var(--blue);background:var(--blue-glow);padding:1px 5px;border-radius:3px">/api/news</code> in server.js.
-    </div>
+  <div class="api-notice" id="newsNotice" style="display:none">
+    <span class="api-notice-icon">⚠</span>
+    <div class="api-notice-body" id="newsNoticeText"></div>
   </div>
 
   <!-- Feed -->
@@ -200,20 +200,22 @@ function setCat(f, btn) {
   renderFeed();
 }
 
-function card({ cat, dotCls, source, time, title, body, tags, market }) {
+function card({ cat, dotCls, source, time, title, body, tags, market, link }) {
   const tagsHtml = (tags || []).map(t => `<span class="news-tag">${escH(t)}</span>`).join('');
   const mktBadge = market
     ? `<span class="news-market-badge ${market.toLowerCase()}">${market}</span>` : '';
-  return { cat, html: `<div class="news-card">
+  const wrapTag  = link ? `<a href="${escH(link)}" target="_blank" rel="noopener" style="text-decoration:none;display:block">` : '<div>';
+  const closeTag = link ? '</a>' : '</div>';
+  return { cat, html: `${wrapTag}<div class="news-card" style="${link?'cursor:pointer':''}">
     <div class="news-card-hdr">
       <span class="news-cat-dot ${dotCls}"></span>
       <span class="news-source">${escH(source)}</span>
       <span class="news-time">${time}</span>
     </div>
     <div class="news-title">${escH(title)}</div>
-    <div class="news-body">${escH(body)}</div>
+    ${body ? `<div class="news-body">${escH(body)}</div>` : ''}
     <div class="news-footer">${tagsHtml}${mktBadge}</div>
-  </div>` };
+  </div>${closeTag}` };
 }
 
 function renderFeed() {
@@ -226,110 +228,121 @@ function renderFeed() {
   el.innerHTML = filtered.map(i => i.html).join('');
 }
 
+const CAT_DOT = {
+  GEOPOLITICAL: 'geopolitical',
+  MARKET:       'market',
+  GOLD:         'gold',
+  MACRO:        'macro',
+  ANALYSIS:     'analysis',
+  STRATEGY:     'strategy',
+};
+const CAT_LABEL = {
+  GEOPOLITICAL: 'Geopolitical',
+  MARKET:       'NQ / Equities',
+  GOLD:         'Gold / MGC',
+  MACRO:        'Macro / Fed',
+  ANALYSIS:     'Bot Analysis',
+  STRATEGY:     'Bot Strategy',
+};
+
 async function load() {
   try {
-    const [pricesRes, learningRes, statsRes] = await Promise.all([
+    const now = new Date();
+    const [newsRes, pricesRes, learningRes, statsRes] = await Promise.all([
+      fetch('/api/news').catch(() => null),
       fetch('/api/market/prices').catch(() => null),
       fetch('/api/learning').catch(() => null),
-      fetch('/api/stats'),
+      fetch('/api/stats').catch(() => null),
     ]);
-    const prices   = pricesRes   ? await pricesRes.json()   : {};
-    const learning = learningRes ? await learningRes.json() : {};
-    const stats    = await statsRes.json();
+    const newsItems = newsRes   ? await newsRes.json()   : [];
+    const prices    = pricesRes ? await pricesRes.json() : {};
+    const learning  = learningRes ? await learningRes.json() : {};
+    const stats     = statsRes  ? await statsRes.json()  : {};
 
     allItems = [];
-    const now = new Date();
-    const ageStr = t => timeAgo(t);
 
-    // ── Market Data items ──────────────────────────────
-    for (const [sym, p] of Object.entries(prices)) {
-      const chg     = p.change_pct ?? 0;
-      const mkt     = sym.includes('MNQ') || sym.includes('NQ') ? 'MNQ' : sym.includes('MGC') || sym.includes('GC') ? 'MGC' : 'ALL';
-      const dir     = chg >= 0 ? 'up' : 'down';
-      const priceStr = p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
-      allItems.push(card({
-        cat: 'MARKET', dotCls: 'market', source: 'Price Feed', time: timeAgo(p.snapped_at),
-        title: `${sym} ${dir === 'up' ? '↑' : '↓'} ${Math.abs(chg).toFixed(2)}%`,
-        body:  `${sym} is trading at ${priceStr}. ${chg >= 0 ? 'Positive' : 'Negative'} momentum with a ${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% session change. High: ${p.high_24h ?? '—'} · Low: ${p.low_24h ?? '—'}.`,
-        tags:  [chg >= 0 ? 'Bullish' : 'Bearish', 'Price Update'],
-        market: mkt,
-      }));
+    // ── Real news from Google News RSS ────────────────────
+    const noticeEl = document.getElementById('newsNotice');
+    if (Array.isArray(newsItems) && newsItems.length) {
+      noticeEl.style.display = 'none';
+      for (const item of newsItems) {
+        const dot = CAT_DOT[item.category] ?? 'market';
+        const lbl = CAT_LABEL[item.category] ?? item.category;
+        const age = item.pubDate ? timeAgo(new Date(item.pubDate).toISOString()) : 'recent';
+        allItems.push(card({
+          cat:    item.category,
+          dotCls: dot,
+          source: item.source || lbl,
+          time:   age,
+          title:  item.title,
+          body:   '',
+          tags:   [lbl],
+          market: item.category === 'GOLD' ? 'MGC' : item.category === 'MARKET' ? 'MNQ' : null,
+          link:   item.link,
+        }));
+      }
+    } else {
+      noticeEl.style.display = 'flex';
+      document.getElementById('newsNoticeText').innerHTML =
+        '<strong>Live news feed temporarily unavailable.</strong> Showing bot intelligence below. News refreshes automatically every 5 minutes.';
     }
 
-    // ── Analysis items (regime) ────────────────────────
+    // ── Bot intelligence (always appended) ────────────────
     const regime = learning?.regime;
     if (regime) {
       const regDesc = {
-        trending: 'Strong directional bias detected. OTE and continuation setups are performing above average. Avoid fade trades.',
-        choppy:   'Market is oscillating without clear direction. Setups requiring trend confirmation are underperforming. Prefer range-bound strategies.',
-        mixed:    'No dominant regime identified. Mixed results across setup types. Reduce position sizing and be selective.',
+        trending: 'Strong directional bias — OTE and continuation setups outperforming. Avoid fade trades.',
+        choppy:   'Oscillating without clear direction — setups requiring trend confirmation underperforming.',
+        mixed:    'No dominant regime — mixed results across setups. Reduce size and be selective.',
       };
       allItems.push(card({
-        cat: 'ANALYSIS', dotCls: 'analysis', source: 'Regime Engine', time: timeAgo(now.toISOString()),
+        cat: 'ANALYSIS', dotCls: 'analysis', source: 'Regime Engine', time: 'live',
         title: `Market Regime: ${regime.charAt(0).toUpperCase() + regime.slice(1)}`,
-        body:  regDesc[regime] || 'Regime analysis is being computed from recent outcomes.',
+        body:  regDesc[regime] ?? '',
         tags:  ['Regime', 'Auto-Analysis'],
-        market: 'ALL',
       }));
     }
 
-    // Hot / cold setups
     const setups = (learning?.bySetup || []).filter(s => s.total >= 3);
     if (setups.length) {
       const hot  = [...setups].sort((a, b) => b.win_pct - a.win_pct)[0];
       const cold = [...setups].sort((a, b) => a.win_pct - b.win_pct)[0];
       if (hot) allItems.push(card({
         cat: 'ANALYSIS', dotCls: 'analysis', source: 'Setup Tracker', time: 'live',
-        title: `🔥 Hot Setup: ${hot.setup} — ${hot.win_pct}% win rate`,
-        body:  `${hot.setup} is your best-performing setup with ${hot.win_pct}% win rate across ${hot.total} trades. Consider increasing confidence when this setup fires.`,
-        tags:  ['Hot Setup', 'Performance'],
-        market: 'ALL',
+        title: `Hot Setup: ${hot.setup} — ${hot.win_pct}% win rate`,
+        body:  `${hot.total} trades. Increase confidence when this setup fires.`,
+        tags:  ['Hot Setup'],
       }));
       if (cold && cold.setup !== hot?.setup) allItems.push(card({
         cat: 'ANALYSIS', dotCls: 'analysis', source: 'Setup Tracker', time: 'live',
-        title: `❄ Cold Setup: ${cold.setup} — ${cold.win_pct}% win rate`,
-        body:  `${cold.setup} is underperforming with only ${cold.win_pct}% win rate across ${cold.total} trades. Review entry criteria or temporarily reduce size on this setup.`,
-        tags:  ['Cold Setup', 'Risk'],
-        market: 'ALL',
+        title: `Cold Setup: ${cold.setup} — ${cold.win_pct}% win rate`,
+        body:  `${cold.total} trades. Underperforming — review entry criteria.`,
+        tags:  ['Cold Setup'],
       }));
     }
 
-    // ── Strategy items ─────────────────────────────────
-    const outcomes = stats.outcomes || [];
-    const wins  = (outcomes.find(o => o.result === 'WIN')  || {}).n || 0;
-    const losses = (outcomes.find(o => o.result === 'LOSS') || {}).n || 0;
-    const total  = wins + losses;
-    const wr = total > 0 ? (wins / total * 100).toFixed(1) : null;
-
-    allItems.push(card({
-      cat: 'STRATEGY', dotCls: 'strategy', source: 'System Stats', time: 'live',
-      title: `System Overview — ${stats.total} total signals`,
-      body:  `${stats.total} signals received. ${total} resolved with ${wr ? wr + '% win rate' : 'no resolved outcomes yet'}. ${stats.last24h} signal${stats.last24h !== 1 ? 's' : ''} in the last 24 hours.`,
-      tags:  ['Summary', 'System'],
-      market: 'ALL',
-    }));
-
-    // Grade breakdown
-    const grades = stats.byGrade || [];
-    if (grades.length) {
-      const aplus = (grades.find(g => g.grade === 'A+') || {}).n || 0;
-      const a     = (grades.find(g => g.grade === 'A')  || {}).n || 0;
+    if (stats.total != null) {
+      const outcomes = stats.outcomes || [];
+      const wins  = (outcomes.find(o => o.result === 'WIN')  || {}).n || 0;
+      const losses= (outcomes.find(o => o.result === 'LOSS') || {}).n || 0;
+      const res   = wins + losses;
+      const wr    = res > 0 ? (wins / res * 100).toFixed(1) : null;
       allItems.push(card({
-        cat: 'STRATEGY', dotCls: 'strategy', source: 'Grading Engine', time: 'live',
-        title: `Grade Distribution — A+: ${aplus} · A: ${a}`,
-        body:  `${aplus} A+ grade signals (${total > 0 ? ((aplus / stats.total) * 100).toFixed(0) : '—'}% of total) and ${a} A grade signals recorded. A+ signals carry stricter entry criteria and typically higher conviction.`,
-        tags:  ['Grade', 'Quality Filter'],
-        market: 'ALL',
+        cat: 'STRATEGY', dotCls: 'strategy', source: 'System Stats', time: 'live',
+        title: `Bot Overview — ${stats.total} signals · ${wr ? wr + '% win rate' : 'awaiting outcomes'}`,
+        body:  `${stats.last24h ?? 0} signals in last 24h. ${res} resolved trades.`,
+        tags:  ['Summary'],
       }));
     }
 
+    document.getElementById('newsFeed').querySelectorAll('.skeleton').forEach(e => e.remove());
     renderFeed();
     document.getElementById('refreshLbl').textContent = 'Updated ' + now.toLocaleTimeString();
   } catch (e) { console.error(e); }
 }
 
 load();
-setInterval(load, 120_000);
+setInterval(load, 5 * 60_000); // refresh every 5 min (matches server-side cache TTL)
 </script>
 </body>
 </html>

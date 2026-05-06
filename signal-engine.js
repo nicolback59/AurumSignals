@@ -173,7 +173,7 @@ function calcStyleLevels(close, direction, tradeStyle, slPts, swingTp1, swingTp2
 function computeSignal(bars, htfBars, cfg = {}) {
   const C = {
     slPts:          cfg.slPts          ?? 25,
-    minScore:       cfg.minScore       ?? 12,
+    minScore:       cfg.minScore       ?? 8,
     oteHigh:        cfg.oteHigh        ?? 0.786,
     oteLow:         cfg.oteLow         ?? 0.618,
     swingLook:      cfg.swingLook      ?? 20,
@@ -264,18 +264,18 @@ function computeSignal(bars, htfBars, cfg = {}) {
   const lW   = Math.min(open, close) - low, uW = high - Math.max(open, close);
   const lWR  = cRng > 0 ? lW / cRng : 0, uWR = cRng > 0 ? uW / cRng : 0;
   const spike = cRng >= 4.5 * atrVal;
-  const dB    = cBody >= 0.5*atrVal && cLoc >= 0.62 && bull && !spike;
-  const dBr   = cBody >= 0.5*atrVal && cLoc <= 0.38 && bear && !spike;
-  const rU    = lWR >= 0.33 && lW > cBody * 0.4;
-  const rD    = uWR >= 0.33 && uW > cBody * 0.4;
+  const dB    = cBody >= 0.3*atrVal && cLoc >= 0.55 && bull && !spike;   // relaxed: 0.5→0.3 body, 0.62→0.55 loc
+  const dBr   = cBody >= 0.3*atrVal && cLoc <= 0.45 && bear && !spike;   // relaxed: 0.5→0.3 body, 0.38→0.45 loc
+  const rU    = lWR >= 0.25 && lW > cBody * 0.2;   // relaxed: 0.33→0.25 ratio, 0.4→0.2 size
+  const rD    = uWR >= 0.25 && uW > cBody * 0.2;
   const mB    = close > highs[i-1] && bull;
   const mBr   = close < lows[i-1]  && bear;
-  const vUp   = volume > (volAvgV[i] ?? 0) * 1.2;
+  const vUp   = volume > (volAvgV[i] ?? 0) * 1.05; // relaxed: 1.2→1.05
 
-  // Chop filter — 2.0× ATR (was 3.0) to allow signals in normal/moderate conditions
+  // Chop filter — 1.0× ATR: only block truly dead/flatline markets
   const cH   = Math.max(...highs.slice(Math.max(0,i-14), i+1));
   const cL   = Math.min(...lows.slice(Math.max(0,i-14),  i+1));
-  const chop = (cH - cL) < atrVal * 2.0;
+  const chop = (cH - cL) < atrVal * 1.0;
 
   // Pivot highs/lows → market structure
   const sl = C.swingL;
@@ -318,19 +318,19 @@ function computeSignal(bars, htfBars, cfg = {}) {
   const sess = getSessionInfo(timestamp);
   if (C.rthOnly && !sess.sessOK) return null;
 
-  // ── Three setup types ────────────────────────────────────────────────────────
-  // OTE PB: accept weak HTF (EMA-only alignment) as fallback — higher frequency
-  const s1L  = (htfBull || htfWeakBull) && inOTED && (dB  || (rU && mB))   && !chop;
-  const s1S  = (htfBear || htfWeakBear) && inOTEP && (dBr || (rD && mBr))  && !chop;
-  // STDV REV: remove chop filter — these reversions occur in ALL volatility regimes
-  const s2L  = blwV2 && (rU || dB) && !htfWeakBull;
-  const s2S  = abvV2 && (rD || dBr) && !htfWeakBear;
-  // STDV RST: accept weak HTF alignment — same logic relaxation as OTE PB
-  const s2CL = rstL && (htfBull || htfWeakBull) && (dB  || mB);
-  const s2CS = rstS && (htfBear || htfWeakBear) && (dBr || mBr);
-  // OTE+STDV: keep strict conditions — highest-quality combo setup unchanged
-  const s3L  = htfBull && inOTED && blwV1 && (dB || rU)  && !chop;
-  const s3S  = htfBear && inOTEP && abvV1 && (dBr || rD) && !chop;
+  // ── Setup conditions (relaxed for adequate signal frequency) ────────────────
+  // OTE PB: accept near-OTE zone, simpler candle req (dB OR rU, not both)
+  const s1L  = (htfBull || htfWeakBull) && (inOTED || nearOTED) && (dB || rU) && !chop;
+  const s1S  = (htfBear || htfWeakBear) && (inOTEP || nearOTEP) && (dBr || rD) && !chop;
+  // STDV REV: only block strict strong HTF trend (not weak), fire on any candle signal
+  const s2L  = blwV2 && (rU || dB) && !htfBull;   // was !htfWeakBull — too restrictive
+  const s2S  = abvV2 && (rD || dBr) && !htfBear;  // was !htfWeakBear
+  // STDV RST: accept rejection wicks too
+  const s2CL = rstL && (htfBull || htfWeakBull) && (dB || mB || rU);
+  const s2CS = rstS && (htfBear || htfWeakBear) && (dBr || mBr || rD);
+  // OTE+STDV: relax to weak HTF, include near-OTE
+  const s3L  = (htfBull || htfWeakBull) && (inOTED || nearOTED) && blwV1 && (dB || rU) && !chop;
+  const s3S  = (htfBear || htfWeakBear) && (inOTEP || nearOTEP) && abvV1 && (dBr || rD) && !chop;
 
   const anyL = s1L || s2L || s2CL || s3L;
   const anyS = s1S || s2S || s2CS || s3S;
@@ -345,8 +345,8 @@ function computeSignal(bars, htfBars, cfg = {}) {
   const sc  = sess.sessScore;
   const f1L = htfBull ? 6 : htfWeakBull ? 3 : 0;
   const f1S = htfBear ? 6 : htfWeakBear ? 3 : 0;
-  const f2L = inOTED ? 7 : nearOTED ? 3 : 0;
-  const f2S = inOTEP ? 7 : nearOTEP ? 3 : 0;
+  const f2L = inOTED ? 7 : nearOTED ? 4 : 0;
+  const f2S = inOTEP ? 7 : nearOTEP ? 4 : 0;
   const f3L = blwV2 ? 7 : blwV1 ? 4 : rstL ? 5 : atVwap ? 2 : 0;
   const f3S = abvV2 ? 7 : abvV1 ? 4 : rstS ? 5 : atVwap ? 2 : 0;
   const f4L = (dB ? 4 : rU ? 3 : 0) + (mB  ? 1 : 0) + (vUp ? 1 : 0);
@@ -360,7 +360,7 @@ function computeSignal(bars, htfBars, cfg = {}) {
 
   if (score < C.minScore) return null;
 
-  const grade    = score >= 24 ? 'A+' : score >= 12 ? 'A' : null;
+  const grade    = score >= 20 ? 'A+' : score >= 8 ? 'A' : null;
   if (!grade) return null;
 
   const isAplus = grade === 'A+';
@@ -489,17 +489,17 @@ function diagnoseSignal(bars, htfBars, cfg = {}) {
   const lW = Math.min(open, close) - low, uW = high - Math.max(open, close);
   const lWR = cRng > 0 ? lW / cRng : 0, uWR = cRng > 0 ? uW / cRng : 0;
   const spike = cRng >= 4.5 * atrVal;
-  const dB   = cBody >= 0.5*atrVal && cLoc >= 0.62 && bull && !spike;
-  const dBr  = cBody >= 0.5*atrVal && cLoc <= 0.38 && !bull && !spike;
-  const rU   = lWR >= 0.33 && lW > cBody * 0.4;
-  const rD   = uWR >= 0.33 && uW > cBody * 0.4;
+  const dB   = cBody >= 0.3*atrVal && cLoc >= 0.55 && bull && !spike;
+  const dBr  = cBody >= 0.3*atrVal && cLoc <= 0.45 && !bull && !spike;
+  const rU   = lWR >= 0.25 && lW > cBody * 0.2;
+  const rD   = uWR >= 0.25 && uW > cBody * 0.2;
   const mB   = close > highs[i-1] && bull;
   const mBr  = close < lows[i-1]  && !bull;
-  const vUp  = volume > (volAvgV[i] ?? 0) * 1.2;
+  const vUp  = volume > (volAvgV[i] ?? 0) * 1.05;
 
   const cH   = Math.max(...highs.slice(Math.max(0,i-14), i+1));
   const cLv  = Math.min(...lows.slice(Math.max(0,i-14),  i+1));
-  const chop = (cH - cLv) < atrVal * 2.0;
+  const chop = (cH - cLv) < atrVal * 1.0;
 
   const hj   = htfBars.length - 1;
   const htfEF = htfEmaFV[hj], htfES = htfEmaSV[hj], htfC = htfClose[hj];
@@ -513,21 +513,24 @@ function diagnoseSignal(bars, htfBars, cfg = {}) {
   const sess = getSessionInfo(timestamp);
   if (C.rthOnly && !sess.sessOK) reasons.push('rthOnly filter: outside RTH session');
 
-  const s1L  = (htfBull || htfWeakBull) && inOTED && (dB || (rU && mB)) && !chop;
-  const s1S  = (htfBear || htfWeakBear) && inOTEP && (dBr || (rD && mBr)) && !chop;
-  const s2L  = blwV2 && (rU || dB) && !htfWeakBull;
-  const s2S  = abvV2 && (rD || dBr) && !htfWeakBear;
-  const s2CL = rstL && (htfBull || htfWeakBull) && (dB || mB);
-  const s2CS = rstS && (htfBear || htfWeakBear) && (dBr || mBr);
-  const s3L  = htfBull && inOTED && blwV1 && (dB || rU) && !chop;
-  const s3S  = htfBear && inOTEP && abvV1 && (dBr || rD) && !chop;
+  const nearOTED = close >= odL - atrVal*0.5 && close <= odH + atrVal*0.3;
+  const nearOTEP = close >= opL - atrVal*0.3 && close <= opH + atrVal*0.5;
+
+  const s1L  = (htfBull || htfWeakBull) && (inOTED || nearOTED) && (dB || rU) && !chop;
+  const s1S  = (htfBear || htfWeakBear) && (inOTEP || nearOTEP) && (dBr || rD) && !chop;
+  const s2L  = blwV2 && (rU || dB) && !htfBull;
+  const s2S  = abvV2 && (rD || dBr) && !htfBear;
+  const s2CL = rstL && (htfBull || htfWeakBull) && (dB || mB || rU);
+  const s2CS = rstS && (htfBear || htfWeakBear) && (dBr || mBr || rD);
+  const s3L  = (htfBull || htfWeakBull) && (inOTED || nearOTED) && blwV1 && (dB || rU) && !chop;
+  const s3S  = (htfBear || htfWeakBear) && (inOTEP || nearOTEP) && abvV1 && (dBr || rD) && !chop;
 
   const anyL = s1L || s2L || s2CL || s3L;
   const anyS = s1S || s2S || s2CS || s3S;
 
   const f1L = htfBull ? 6 : htfWeakBull ? 3 : 0;
   const f1S = htfBear ? 6 : htfWeakBear ? 3 : 0;
-  const f2L = inOTED ? 7 : 0; const f2S = inOTEP ? 7 : 0;
+  const f2L = inOTED ? 7 : nearOTED ? 4 : 0; const f2S = inOTEP ? 7 : nearOTEP ? 4 : 0;
   const f3L = blwV2 ? 7 : blwV1 ? 4 : rstL ? 5 : atVwap ? 2 : 0;
   const f3S = abvV2 ? 7 : abvV1 ? 4 : rstS ? 5 : atVwap ? 2 : 0;
   const f4L = (dB ? 4 : rU ? 3 : 0) + (mB  ? 1 : 0) + (vUp ? 1 : 0);
@@ -555,14 +558,14 @@ function diagnoseSignal(bars, htfBars, cfg = {}) {
 
   if (!anyL && !anyS) {
     reasons.push('no setup condition met');
-    reasons.push(`  OTE PB L:  htfWkBull=${htfWeakBull} inOTED=${inOTED} candle=${dB||(rU&&mB)} chop=${chop}`);
-    reasons.push(`  OTE PB S:  htfWkBear=${htfWeakBear} inOTEP=${inOTEP} candle=${dBr||(rD&&mBr)} chop=${chop}`);
-    reasons.push(`  STDV REV L: blwV2=${blwV2} candle=${rU||dB} notHTF=${!htfWeakBull}`);
-    reasons.push(`  STDV REV S: abvV2=${abvV2} candle=${rD||dBr} notHTF=${!htfWeakBear}`);
-    reasons.push(`  STDV RST L: rstL=${rstL} htfWkBull=${htfBull||htfWeakBull} candle=${dB||mB}`);
-    reasons.push(`  STDV RST S: rstS=${rstS} htfWkBear=${htfBear||htfWeakBear} candle=${dBr||mBr}`);
-    reasons.push(`  OTE+STDV L: htfBull=${htfBull} inOTED=${inOTED} blwV1=${blwV1} candle=${dB||rU} chop=${chop}`);
-    reasons.push(`  OTE+STDV S: htfBear=${htfBear} inOTEP=${inOTEP} abvV1=${abvV1} candle=${dBr||rD} chop=${chop}`);
+    reasons.push(`  OTE PB L:  htfWkBull=${htfWeakBull} ote=${inOTED||nearOTED} candle=${dB||rU} chop=${chop}`);
+    reasons.push(`  OTE PB S:  htfWkBear=${htfWeakBear} ote=${inOTEP||nearOTEP} candle=${dBr||rD} chop=${chop}`);
+    reasons.push(`  STDV REV L: blwV2=${blwV2} candle=${rU||dB} notStrictBull=${!htfBull}`);
+    reasons.push(`  STDV REV S: abvV2=${abvV2} candle=${rD||dBr} notStrictBear=${!htfBear}`);
+    reasons.push(`  STDV RST L: rstL=${rstL} htfWkBull=${htfBull||htfWeakBull} candle=${dB||mB||rU}`);
+    reasons.push(`  STDV RST S: rstS=${rstS} htfWkBear=${htfBear||htfWeakBear} candle=${dBr||mBr||rD}`);
+    reasons.push(`  OTE+STDV L: htfWkBull=${htfBull||htfWeakBull} ote=${inOTED||nearOTED} blwV1=${blwV1} candle=${dB||rU} chop=${chop}`);
+    reasons.push(`  OTE+STDV S: htfWkBear=${htfBear||htfWeakBear} ote=${inOTEP||nearOTEP} abvV1=${abvV1} candle=${dBr||rD} chop=${chop}`);
   }
 
   const direction = anyL ? 'LONG' : anyS ? 'SHORT' : null;
