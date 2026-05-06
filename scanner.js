@@ -350,7 +350,8 @@ async function scanInstrument(symbol, instrument, bars1m, bars15m) {
         storeSignal({
           ...sig, source: 'strategy', instrument,
           ticker: `${instrument}1!`,
-          htf_bias: diag.indicators?.htfBias ?? null,
+          htf_bias:   diag.indicators?.htfBias ?? null,
+          indicators: diag.indicators ?? null,  // full context for learning
         }, minScore);
         stratFiredCount++;
       } else {
@@ -484,16 +485,18 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
 
     const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
 
-    const lossTrades = result.signalLog.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').slice(0, 50);
-    if (lossTrades.length > 0) {
-      const insLoss = db.prepare(`
+    // Store ALL trades (WIN + LOSS + BE) up to 200 per run so the optimizer
+    // and learning module have rich win/loss context, not just failures.
+    const allTrades = (result.signalLog ?? []).slice(0, 200);
+    if (allTrades.length > 0) {
+      const insTrade = db.prepare(`
         INSERT INTO backtest_trades
           (run_id, instrument, bar_idx, timestamp, direction, setup, trade_style, regime, entry, sl, tp1, outcome, score)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       db.transaction(() => {
-        for (const t of lossTrades) {
-          insLoss.run(runId, instrument, t.bar ?? null, t.timestamp ?? null, t.direction,
+        for (const t of allTrades) {
+          insTrade.run(runId, instrument, t.bar ?? null, t.timestamp ?? null, t.direction,
             t.setup ?? null, t.tradeStyle ?? null, t.regime ?? null,
             t.entry ?? null, t.sl ?? null, t.tp1 ?? null, t.outcome, t.score ?? null);
         }
@@ -571,12 +574,12 @@ function runStorageCleanup() {
   try {
     const before = db.prepare("SELECT page_count * page_size AS sz FROM pragma_page_count(), pragma_page_size()").get()?.sz ?? 0;
 
-    db.prepare(`DELETE FROM scan_diagnostics   WHERE scanned_at  < datetime('now','-60 days')`).run();
-    db.prepare(`DELETE FROM signal_rejections  WHERE rejected_at < datetime('now','-60 days')`).run();
-    // Keep only last 500 backtest trades per instrument (journal use only)
+    db.prepare(`DELETE FROM scan_diagnostics   WHERE scanned_at  < datetime('now','-90 days')`).run();
+    db.prepare(`DELETE FROM signal_rejections  WHERE rejected_at < datetime('now','-90 days')`).run();
+    // Keep last 2000 backtest trades (WIN+LOSS+BE across all runs) for learning
     db.prepare(`
       DELETE FROM backtest_trades WHERE id NOT IN (
-        SELECT id FROM backtest_trades ORDER BY id DESC LIMIT 500
+        SELECT id FROM backtest_trades ORDER BY id DESC LIMIT 2000
       )
     `).run();
     db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').run();

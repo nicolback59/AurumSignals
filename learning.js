@@ -1,6 +1,6 @@
 'use strict';
 
-const WINDOW     = 60;   // last N resolved trades to analyse
+const WINDOW     = 150;  // last N resolved trades to analyse (was 60 — more history = better adaptive thresholds)
 const MIN_SAMPLE = 10;   // minimum trades needed before adjusting thresholds
 
 // ── Per-setup adaptive deltas ─────────────────────────────────────────────────
