@@ -175,8 +175,9 @@ function savePrice(symbol, bars) {
 // ── Cooldown tracking ─────────────────────────────────────────────────────────
 const lastSignalTimes = { MNQ: 0, MGC: 0 };
 let scanCount = 0;
-// Track last diagnostic save per instrument (throttled to 1 per 5 minutes)
-const lastDiagSave = { MNQ: 0, MGC: 0 };
+// Throttle timers for diagnostic writes (per instrument)
+const lastDiagSave      = { MNQ: 0, MGC: 0 };  // scan_diagnostics: 1 per 30 min
+const lastRejectionSave = { MNQ: 0, MGC: 0 };  // signal_rejections: 1 per 10 min
 
 // ── Auto-resolve pending outcomes ─────────────────────────────────────────────
 function autoResolveOutcomes(bars1m, instrument) {
@@ -243,21 +244,29 @@ function storeSignal(signal, minScore) {
   return info.lastInsertRowid;
 }
 
-// ── Store rejected signal reason ──────────────────────────────────────────────
+// ── Store rejected signal reason (near-miss only, throttled to 1/10min/instrument)
+// Only persists when score >= BASE_SCORE-4 (signal was close to firing) to save disk space.
 function storeRejection(instrument, direction, setup, strategy, score, minScore, reason, indicators) {
   try {
+    const now = Date.now();
+    // Only write if this is a near-miss (score close to threshold) AND throttle window passed
+    const isNearMiss = score != null && minScore != null && score >= minScore - 4;
+    if (!isNearMiss) return;
+    if (now - (lastRejectionSave[instrument] ?? 0) < 10 * 60_000) return; // 10-min throttle
+    lastRejectionSave[instrument] = now;
     insertRejection.run(
       instrument, direction ?? null, setup ?? null, strategy ?? null,
       score ?? null, minScore ?? null, reason,
-      indicators ? JSON.stringify(indicators) : null
+      null  // skip indicators JSON to save disk space
     );
   } catch { /* diagnostic failures must never crash the scanner */ }
 }
 
-// ── Store scan diagnostic snapshot (throttled to 1/5min per instrument) ──────
+// ── Store scan diagnostic snapshot (throttled to 1/30min per instrument) ─────
+// At 2 instruments × 48 writes/day = 96 rows/day × ~1.5KB = ~144KB/day = ~52MB/year
 function storeScanDiag(instrument, diag, stratsFired, fired, rejectReason) {
   const now = Date.now();
-  if (now - (lastDiagSave[instrument] ?? 0) < 5 * 60_000) return; // 5-min throttle
+  if (now - (lastDiagSave[instrument] ?? 0) < 30 * 60_000) return; // 30-min throttle
   lastDiagSave[instrument] = now;
   try {
     insertScanDiag.run(
@@ -475,7 +484,7 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
 
     const runId = saveBacktestRun(db, instrument, params, metrics, triggeredBy);
 
-    const lossTrades = result.signalLog.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').slice(0, 100);
+    const lossTrades = result.signalLog.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').slice(0, 50);
     if (lossTrades.length > 0) {
       const insLoss = db.prepare(`
         INSERT INTO backtest_trades
@@ -555,6 +564,31 @@ async function runOptimizerCycle(instrument) {
 
 function ts() { return new Date().toISOString(); }
 
+// ── Daily storage cleanup — keeps DB well under 200MB forever ─────────────────
+// Trims diagnostic-only tables; real trading data (signals, outcomes, backtests)
+// is NEVER deleted so learning and analytics remain intact.
+function runStorageCleanup() {
+  try {
+    const before = db.prepare("SELECT page_count * page_size AS sz FROM pragma_page_count(), pragma_page_size()").get()?.sz ?? 0;
+
+    db.prepare(`DELETE FROM scan_diagnostics   WHERE scanned_at  < datetime('now','-60 days')`).run();
+    db.prepare(`DELETE FROM signal_rejections  WHERE rejected_at < datetime('now','-60 days')`).run();
+    // Keep only last 500 backtest trades per instrument (journal use only)
+    db.prepare(`
+      DELETE FROM backtest_trades WHERE id NOT IN (
+        SELECT id FROM backtest_trades ORDER BY id DESC LIMIT 500
+      )
+    `).run();
+    db.prepare('PRAGMA wal_checkpoint(TRUNCATE)').run();
+
+    const after = db.prepare("SELECT page_count * page_size AS sz FROM pragma_page_count(), pragma_page_size()").get()?.sz ?? 0;
+    const savedMB = +((before - after) / 1_048_576).toFixed(1);
+    console.log(`[${ts()}] 🗑️  Storage cleanup done — DB size: ${(after/1_048_576).toFixed(1)} MB${savedMB > 0 ? ` (freed ${savedMB} MB)` : ''}`);
+  } catch (err) {
+    console.error(`[${ts()}] Cleanup error:`, err.message);
+  }
+}
+
 // ── Startup ───────────────────────────────────────────────────────────────────
 console.log('NQ Signal Pro V3 — Multi-Strategy Scanner + Diagnostic Engine');
 console.log(`Symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: ${SCAN_INTERVAL/1000}s | Cooldown: ${COOLDOWN}min | LogLevel: ${LOG_LEVEL}`);
@@ -569,6 +603,10 @@ setTimeout(() => runOptimizerCycle('MGC'), 180_000);
 
 scan();
 setInterval(scan, SCAN_INTERVAL);
+
+// Daily cleanup at startup + every 24h
+setTimeout(runStorageCleanup, 10_000);
+setInterval(runStorageCleanup, 24 * 3_600_000);
 
 const BT_MS  = BT_INTERVAL_H  * 3_600_000;
 setInterval(() => runBacktestCycle('MNQ'), BT_MS);
