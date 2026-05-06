@@ -275,13 +275,106 @@
     .cal-box.none { background: rgba(255,255,255,.03); border-color: var(--border-subtle); color: var(--text-muted); }
     .cal-box.today { box-shadow: 0 0 0 2px var(--yellow); }
 
+    /* ── Record Bar ────────────────────────────────── */
+    .record-bar {
+      display: grid;
+      grid-template-columns: repeat(6, 1fr);
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+    .record-tile {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      padding: 12px 10px;
+      text-align: center;
+    }
+    .record-tile-lbl {
+      font-size: 9px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+    }
+    .record-tile-val {
+      font-family: var(--font-mono);
+      font-size: 20px;
+      font-weight: 700;
+      line-height: 1;
+    }
+    .record-tile-sub { font-size: 9px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Bot Status ─────────────────────────────────── */
+    .bot-status-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-bottom: 14px;
+    }
+    .bot-status-tile {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 10px;
+      padding: 12px 14px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .bot-status-dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+    .bot-status-dot.active   { background: var(--green);  box-shadow: 0 0 8px var(--green);  animation: livePulse 2s infinite; }
+    .bot-status-dot.inactive { background: var(--red);    box-shadow: 0 0 8px var(--red); }
+    .bot-status-dot.unknown  { background: var(--text-muted); }
+    .bot-status-name { font-size: 13px; font-weight: 700; flex: 1; }
+    .bot-status-lbl  { font-size: 10px; font-weight: 600; }
+    .bot-status-lbl.active   { color: var(--green); }
+    .bot-status-lbl.inactive { color: var(--red); }
+    .bot-status-lbl.unknown  { color: var(--text-muted); }
+    .bot-status-sub  { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); margin-top: 1px; }
+
+    /* ── Live Charts ────────────────────────────────── */
+    .chart-pair {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    .chart-wrap {
+      border-radius: 10px;
+      overflow: hidden;
+      border: 1px solid var(--border-default);
+      background: var(--bg-surface);
+    }
+    .chart-lbl {
+      padding: 7px 12px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .tradingview-widget-container { height: 240px; width: 100%; }
+    .tradingview-widget-container__widget { height: 100%; width: 100%; }
+
     /* ── Responsive ────────────────────────────────── */
+    @media (max-width: 600px) {
+      .record-bar { grid-template-columns: repeat(3, 1fr); }
+      .chart-pair { grid-template-columns: 1fr; }
+    }
     @media (max-width: 480px) {
       .levels-row { grid-template-columns: repeat(3, 1fr); }
       .stat-tile-val { font-size: 22px; }
+      .record-tile-val { font-size: 16px; }
     }
     @media (max-width: 340px) {
       .stats-grid { grid-template-columns: 1fr; }
+      .record-bar { grid-template-columns: repeat(2, 1fr); }
     }
   </style>
 </head>
@@ -326,6 +419,80 @@
     </div>
   </div>
 
+  <!-- ── Signal Record Bar ─────────────────────────────── -->
+  <div class="record-bar">
+    <div class="record-tile">
+      <div class="record-tile-lbl">Wins</div>
+      <div class="record-tile-val" id="recWins" style="color:var(--green)">—</div>
+      <div class="record-tile-sub" id="recWinSub">resolved</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">Losses</div>
+      <div class="record-tile-val" id="recLoss" style="color:var(--red)">—</div>
+      <div class="record-tile-sub">resolved</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">B/E</div>
+      <div class="record-tile-val" id="recBE" style="color:var(--orange)">—</div>
+      <div class="record-tile-sub">break-even</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">Win Rate</div>
+      <div class="record-tile-val" id="recWR" style="color:var(--yellow)">—</div>
+      <div class="record-tile-sub" id="recWRSub">all time</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">Total Ticks</div>
+      <div class="record-tile-val" id="recTicks" style="color:var(--teal)">—</div>
+      <div class="record-tile-sub">pts earned</div>
+    </div>
+    <div class="record-tile">
+      <div class="record-tile-lbl">Total Signals</div>
+      <div class="record-tile-val" id="recTotal" style="color:var(--blue)">—</div>
+      <div class="record-tile-sub" id="recTotalSub">all time</div>
+    </div>
+  </div>
+
+  <!-- ── Bot Status ─────────────────────────────────────── -->
+  <div class="bot-status-row">
+    <div class="bot-status-tile">
+      <div class="bot-status-dot unknown" id="mnqDot"></div>
+      <div>
+        <div class="bot-status-name">MNQ Scanner</div>
+        <div class="bot-status-sub" id="mnqScanSub">checking…</div>
+      </div>
+      <div>
+        <div class="bot-status-lbl unknown" id="mnqStatus">—</div>
+      </div>
+    </div>
+    <div class="bot-status-tile">
+      <div class="bot-status-dot unknown" id="mgcDot"></div>
+      <div>
+        <div class="bot-status-name">MGC Scanner</div>
+        <div class="bot-status-sub" id="mgcScanSub">checking…</div>
+      </div>
+      <div>
+        <div class="bot-status-lbl unknown" id="mgcStatus">—</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Live Charts ─────────────────────────────────────── -->
+  <div class="chart-pair">
+    <div class="chart-wrap">
+      <div class="chart-lbl">MNQ — Micro NQ Futures · 5m</div>
+      <div class="tradingview-widget-container">
+        <div class="tradingview-widget-container__widget" id="tv-mnq"></div>
+      </div>
+    </div>
+    <div class="chart-wrap">
+      <div class="chart-lbl">MGC — Micro Gold Futures · 5m</div>
+      <div class="tradingview-widget-container">
+        <div class="tradingview-widget-container__widget" id="tv-mgc"></div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Hero Signal Card ────────────────────────────── -->
   <div class="hero-card empty" id="heroCard">
     <div class="hero-card-hdr">
@@ -352,20 +519,14 @@
       <div class="stat-tile-sub" id="todayPnlSub">pts</div>
     </div>
     <div class="stat-tile">
-      <div class="stat-tile-lbl">Win Rate</div>
-      <div class="stat-tile-val" id="winRate" style="color:var(--yellow)">—</div>
-      <div class="stat-tile-sub" id="winRateSub">all time</div>
-    </div>
-    <div class="stat-tile">
-      <div class="stat-tile-lbl">Trades Today</div>
+      <div class="stat-tile-lbl">Last 24h Signals</div>
       <div class="stat-tile-val" id="tradesToday" style="color:var(--blue)">—</div>
-      <div class="stat-tile-sub" id="todayTradeSub">signals</div>
+      <div class="stat-tile-sub" id="todayTradeSub">signals fired</div>
     </div>
-    <div class="stat-tile">
-      <div class="stat-tile-lbl">Active Signals</div>
-      <div class="stat-tile-val" id="activeSigs" style="color:var(--orange)">—</div>
-      <div class="stat-tile-sub">last 8h, unresolved</div>
-    </div>
+    <!-- hidden elements kept for JS compatibility -->
+    <span id="winRate" style="display:none"></span>
+    <span id="winRateSub" style="display:none"></span>
+    <span id="activeSigs" style="display:none"></span>
   </div>
 
   <!-- ── Mini P&L Chart ──────────────────────────────── -->
@@ -438,11 +599,36 @@
   </div>
 </nav>
 
+<script src="https://s3.tradingview.com/tv.js" async onload="initTVCharts()"></script>
 <script src="/ui-components.js"></script>
 <script>
 'use strict';
 
 let perfChart = null;
+let _tvChartsReady = false;
+
+function initTVCharts() {
+  if (_tvChartsReady || typeof TradingView === 'undefined') return;
+  _tvChartsReady = true;
+  const sharedOpts = {
+    width: '100%',
+    height: 240,
+    interval: '5',
+    timezone: 'America/New_York',
+    theme: 'dark',
+    style: '1',
+    locale: 'en',
+    hide_top_toolbar: false,
+    hide_legend: true,
+    hide_side_toolbar: true,
+    allow_symbol_change: false,
+    save_image: false,
+    withdateranges: false,
+    calendar: false,
+  };
+  new TradingView.widget({ ...sharedOpts, symbol: 'CME_MINI:MNQ1!', container_id: 'tv-mnq' });
+  new TradingView.widget({ ...sharedOpts, symbol: 'COMEX:MGC1!',     container_id: 'tv-mgc' });
+}
 
 /* ── Market status (NY time) ─────────────────────────── */
 function getMarketContext() {
@@ -539,6 +725,56 @@ function renderHero(sig) {
       ${sig.timeframe ? `<span class="tag">${sig.timeframe}m</span>` : ''}
       ${sig.trade_style ? `<span class="tag">${escH(sig.trade_style)}</span>` : ''}
     </div>`;
+}
+
+/* ── Record bar ──────────────────────────────────────── */
+function renderRecordBar(stats, journalSigs) {
+  const outs = stats.outcomes || [];
+  const wins = (outs.find(o => o.result === 'WIN')  || {}).n || 0;
+  const loss = (outs.find(o => o.result === 'LOSS') || {}).n || 0;
+  const be   = (outs.find(o => o.result === 'BE')   || {}).n || 0;
+  const res  = wins + loss;
+  const wr   = res > 0 ? (wins / res * 100).toFixed(1) + '%' : '—';
+
+  document.getElementById('recWins').textContent  = wins;
+  document.getElementById('recLoss').textContent  = loss;
+  document.getElementById('recBE').textContent    = be;
+  document.getElementById('recWR').textContent    = wr;
+  document.getElementById('recWRSub').textContent = res > 0 ? `${res} resolved` : 'no outcomes yet';
+  document.getElementById('recTotal').textContent = stats.total || 0;
+  document.getElementById('recTotalSub').textContent = 'all time';
+
+  // Total ticks from resolved journal signals
+  const totalTicks = journalSigs.reduce((s, t) => s + (t.pnl_pts || 0), 0);
+  const ticksEl = document.getElementById('recTicks');
+  ticksEl.textContent = totalTicks !== 0 ? (totalTicks >= 0 ? '+' : '') + totalTicks : '0';
+  ticksEl.style.color = totalTicks > 0 ? 'var(--green)' : totalTicks < 0 ? 'var(--red)' : 'var(--teal)';
+}
+
+/* ── Bot status (scanner activity check) ─────────────── */
+async function renderBotStatus() {
+  const instruments = [
+    { key: 'MNQ', dot: 'mnqDot', lbl: 'mnqStatus', sub: 'mnqScanSub' },
+    { key: 'MGC', dot: 'mgcDot', lbl: 'mgcStatus', sub: 'mgcScanSub' },
+  ];
+  for (const inst of instruments) {
+    try {
+      const r = await fetch(`/api/diagnostics/summary?instrument=${inst.key}&hours=1`);
+      const d = await r.json();
+      const scanCount = d.total || 0;
+      const isActive  = scanCount > 0;
+      const cls       = isActive ? 'active' : 'inactive';
+      document.getElementById(inst.dot).className = `bot-status-dot ${cls}`;
+      const lblEl = document.getElementById(inst.lbl);
+      lblEl.textContent = isActive ? 'ACTIVE' : 'OFFLINE';
+      lblEl.className   = `bot-status-lbl ${cls}`;
+      document.getElementById(inst.sub).textContent = isActive
+        ? `${scanCount} scan${scanCount !== 1 ? 's' : ''} last hour`
+        : 'no scans in last hour';
+    } catch {
+      document.getElementById(inst.sub).textContent = 'unavailable';
+    }
+  }
 }
 
 /* ── Quick stats ─────────────────────────────────────── */
@@ -806,11 +1042,13 @@ async function load() {
     ]);
 
     renderHero(sigs[0] || null);
+    renderRecordBar(stats, journal);
     renderStats(stats, sigs, journal);
     renderPerfChart(journal);
     renderRecentTrades(journal);
     renderIntel(learning, prices);
     renderCalendar(journal);
+    renderBotStatus();
 
     document.getElementById('refreshLbl').textContent = 'Updated ' + now.toLocaleTimeString();
   } catch (e) {
@@ -835,6 +1073,9 @@ function startCountdown(secs) {
 }
 
 load().then(() => startCountdown(30));
+
+// Fallback: if tv.js loaded before its onload callback fired, init charts now
+if (typeof TradingView !== 'undefined') initTVCharts();
 </script>
 </body>
 </html>
