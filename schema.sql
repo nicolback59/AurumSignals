@@ -199,3 +199,24 @@ CREATE TABLE IF NOT EXISTS scan_diagnostics (
   indicators       TEXT    -- JSON snapshot of key indicator values
 );
 CREATE INDEX IF NOT EXISTS idx_scan_diag ON scan_diagnostics(instrument, scanned_at DESC);
+
+-- Scanner heartbeat — single row updated every scan for live status tracking
+CREATE TABLE IF NOT EXISTS scanner_heartbeat (
+  id         INTEGER PRIMARY KEY CHECK(id = 1),
+  last_scan  TEXT    NOT NULL DEFAULT (datetime('now')),
+  scan_count INTEGER NOT NULL DEFAULT 0
+);
+
+-- Google News RSS items — geopolitical, macro, MNQ, MGC
+CREATE TABLE IF NOT EXISTS news_items (
+  id           INTEGER PRIMARY KEY AUTOINCREMENT,
+  category     TEXT    NOT NULL,
+  title        TEXT    NOT NULL,
+  source       TEXT,
+  link         TEXT,
+  summary      TEXT,
+  published_at TEXT,
+  fetched_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(title, category)
+);
+CREATE INDEX IF NOT EXISTS idx_news_items ON news_items(fetched_at DESC);

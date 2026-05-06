@@ -5,14 +5,14 @@ const { runBacktest } = require('./backtest-engine');
 // ── Default parameters per instrument ────────────────────────────────────────
 const DEFAULT_PARAMS = {
   MNQ: {
-    slPts: 25, minScore: 16, oteHigh: 0.786, oteLow: 0.618,
+    slPts: 25, minScore: 8, oteHigh: 0.786, oteLow: 0.618,
     swingLook: 20, stdvLen: 20, std2: 2.0, std1: 1.0,
     htfEmaF: 9, htfEmaS: 21, atrLen: 14, swingL: 7,
     emaF: 9, emaS: 21, emaT: 50,
     instrument: 'MNQ', tradeStyleMode: 'auto',
   },
   MGC: {
-    slPts: 12, minScore: 16, oteHigh: 0.786, oteLow: 0.618,
+    slPts: 12, minScore: 8, oteHigh: 0.786, oteLow: 0.618,
     swingLook: 15, stdvLen: 15, std2: 2.0, std1: 1.0,
     htfEmaF: 9, htfEmaS: 21, atrLen: 14, swingL: 5,
     emaF: 9, emaS: 21, emaT: 50,
@@ -24,24 +24,24 @@ const DEFAULT_PARAMS = {
 const DEFAULT_PARAMS_BY_STYLE = {
   MNQ_SCALP: {
     ...DEFAULT_PARAMS.MNQ,
-    slPts: 16, minScore: 14, stdvLen: 15, std2: 2.2, swingLook: 15,
+    slPts: 16, minScore: 7, stdvLen: 15, std2: 2.2, swingLook: 15,
     tradeStyleMode: 'scalp',
   },
   MNQ_INTRADAY: {
     ...DEFAULT_PARAMS.MNQ,
-    slPts: 28, minScore: 16, stdvLen: 20, std2: 2.0,
+    slPts: 28, minScore: 8, stdvLen: 20, std2: 2.0,
     tradeStyleMode: 'intraday',
   },
   MNQ_SWING: {
     ...DEFAULT_PARAMS.MNQ,
-    slPts: 25, minScore: 20, oteHigh: 0.80, oteLow: 0.65,
+    slPts: 25, minScore: 10, oteHigh: 0.80, oteLow: 0.65,
     stdvLen: 25, std2: 1.8, swingLook: 25, swingL: 9,
     swingTp1: 50, swingTp2: 100, swingTp3: 150,
     tradeStyleMode: 'swing',
   },
   MGC_SCALP: {
     ...DEFAULT_PARAMS.MGC,
-    slPts: 10, minScore: 16, stdvLen: 12, std2: 2.2, swingLook: 12,
+    slPts: 10, minScore: 7, stdvLen: 12, std2: 2.2, swingLook: 12,
     tradeStyleMode: 'scalp',
   },
 };
@@ -49,7 +49,7 @@ const DEFAULT_PARAMS_BY_STYLE = {
 // Hard bounds — adjustments never exceed these limits
 const PARAM_BOUNDS = {
   slPts:     { min: 10,   max: 60    },
-  minScore:  { min: 12,   max: 26    },
+  minScore:  { min: 6,    max: 20    },
   oteHigh:   { min: 0.72, max: 0.92  },
   oteLow:    { min: 0.50, max: 0.72  },
   stdvLen:   { min: 8,    max: 40    },

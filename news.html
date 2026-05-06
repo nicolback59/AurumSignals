@@ -147,23 +147,14 @@
   <div class="news-hdr">
     <div>
       <h1>Market Intelligence</h1>
-      <p>Internal analysis — no external news feed connected</p>
+      <p>Geopolitical &amp; macro news · refreshes every 30 min</p>
     </div>
     <div class="filter-chips" id="catFilter">
-      <button class="filter-chip active" onclick="setCat('ALL',   this)">All</button>
-      <button class="filter-chip"        onclick="setCat('MARKET',   this)">Market Data</button>
-      <button class="filter-chip"        onclick="setCat('ANALYSIS', this)">Analysis</button>
-      <button class="filter-chip"        onclick="setCat('STRATEGY', this)">Strategy</button>
-    </div>
-  </div>
-
-  <!-- API Notice -->
-  <div class="api-notice">
-    <span class="api-notice-icon">ℹ</span>
-    <div class="api-notice-body">
-      <strong>No external news API is connected.</strong> This page shows live market intelligence generated
-      from your own signal data — regime analysis, setup performance, price snapshots, and strategy updates.
-      To add real news, connect a financial data API and expose it at <code style="font-family:var(--font-mono);color:var(--blue);background:var(--blue-glow);padding:1px 5px;border-radius:3px">/api/news</code> in server.js.
+      <button class="filter-chip active"  onclick="setCat('ALL',          this)">All</button>
+      <button class="filter-chip"         onclick="setCat('GEOPOLITICAL', this)">Geopolitical</button>
+      <button class="filter-chip"         onclick="setCat('MACRO',        this)">Macro</button>
+      <button class="filter-chip"         onclick="setCat('MNQ',          this)">MNQ</button>
+      <button class="filter-chip"         onclick="setCat('MGC',          this)">MGC</button>
     </div>
   </div>
 
@@ -226,110 +217,58 @@ function renderFeed() {
   el.innerHTML = filtered.map(i => i.html).join('');
 }
 
+const CAT_META = {
+  GEOPOLITICAL: { dotCls: 'regime',   label: 'Geopolitical' },
+  MACRO:        { dotCls: 'analysis', label: 'Macro' },
+  MNQ:          { dotCls: 'market',   label: 'MNQ' },
+  MGC:          { dotCls: 'strategy', label: 'MGC' },
+};
+
 async function load() {
   try {
-    const [pricesRes, learningRes, statsRes] = await Promise.all([
-      fetch('/api/market/prices').catch(() => null),
-      fetch('/api/learning').catch(() => null),
-      fetch('/api/stats'),
-    ]);
-    const prices   = pricesRes   ? await pricesRes.json()   : {};
-    const learning = learningRes ? await learningRes.json() : {};
-    const stats    = await statsRes.json();
+    const res   = await fetch('/api/news?limit=80');
+    const items = await res.json();
 
-    allItems = [];
-    const now = new Date();
-    const ageStr = t => timeAgo(t);
-
-    // ── Market Data items ──────────────────────────────
-    for (const [sym, p] of Object.entries(prices)) {
-      const chg     = p.change_pct ?? 0;
-      const mkt     = sym.includes('MNQ') || sym.includes('NQ') ? 'MNQ' : sym.includes('MGC') || sym.includes('GC') ? 'MGC' : 'ALL';
-      const dir     = chg >= 0 ? 'up' : 'down';
-      const priceStr = p.price?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
-      allItems.push(card({
-        cat: 'MARKET', dotCls: 'market', source: 'Price Feed', time: timeAgo(p.snapped_at),
-        title: `${sym} ${dir === 'up' ? '↑' : '↓'} ${Math.abs(chg).toFixed(2)}%`,
-        body:  `${sym} is trading at ${priceStr}. ${chg >= 0 ? 'Positive' : 'Negative'} momentum with a ${chg >= 0 ? '+' : ''}${chg.toFixed(2)}% session change. High: ${p.high_24h ?? '—'} · Low: ${p.low_24h ?? '—'}.`,
-        tags:  [chg >= 0 ? 'Bullish' : 'Bearish', 'Price Update'],
-        market: mkt,
-      }));
+    if (!Array.isArray(items) || !items.length) {
+      allItems = [];
+      renderFeed();
+      document.getElementById('newsFeed').innerHTML =
+        buildEmptyState('◈', 'No news yet', 'News updates every 30 minutes — check back shortly.');
+      return;
     }
 
-    // ── Analysis items (regime) ────────────────────────
-    const regime = learning?.regime;
-    if (regime) {
-      const regDesc = {
-        trending: 'Strong directional bias detected. OTE and continuation setups are performing above average. Avoid fade trades.',
-        choppy:   'Market is oscillating without clear direction. Setups requiring trend confirmation are underperforming. Prefer range-bound strategies.',
-        mixed:    'No dominant regime identified. Mixed results across setup types. Reduce position sizing and be selective.',
-      };
-      allItems.push(card({
-        cat: 'ANALYSIS', dotCls: 'analysis', source: 'Regime Engine', time: timeAgo(now.toISOString()),
-        title: `Market Regime: ${regime.charAt(0).toUpperCase() + regime.slice(1)}`,
-        body:  regDesc[regime] || 'Regime analysis is being computed from recent outcomes.',
-        tags:  ['Regime', 'Auto-Analysis'],
-        market: 'ALL',
-      }));
-    }
+    const meta = (cat) => CAT_META[cat] || { dotCls: 'market', label: cat };
 
-    // Hot / cold setups
-    const setups = (learning?.bySetup || []).filter(s => s.total >= 3);
-    if (setups.length) {
-      const hot  = [...setups].sort((a, b) => b.win_pct - a.win_pct)[0];
-      const cold = [...setups].sort((a, b) => a.win_pct - b.win_pct)[0];
-      if (hot) allItems.push(card({
-        cat: 'ANALYSIS', dotCls: 'analysis', source: 'Setup Tracker', time: 'live',
-        title: `🔥 Hot Setup: ${hot.setup} — ${hot.win_pct}% win rate`,
-        body:  `${hot.setup} is your best-performing setup with ${hot.win_pct}% win rate across ${hot.total} trades. Consider increasing confidence when this setup fires.`,
-        tags:  ['Hot Setup', 'Performance'],
-        market: 'ALL',
-      }));
-      if (cold && cold.setup !== hot?.setup) allItems.push(card({
-        cat: 'ANALYSIS', dotCls: 'analysis', source: 'Setup Tracker', time: 'live',
-        title: `❄ Cold Setup: ${cold.setup} — ${cold.win_pct}% win rate`,
-        body:  `${cold.setup} is underperforming with only ${cold.win_pct}% win rate across ${cold.total} trades. Review entry criteria or temporarily reduce size on this setup.`,
-        tags:  ['Cold Setup', 'Risk'],
-        market: 'ALL',
-      }));
-    }
-
-    // ── Strategy items ─────────────────────────────────
-    const outcomes = stats.outcomes || [];
-    const wins  = (outcomes.find(o => o.result === 'WIN')  || {}).n || 0;
-    const losses = (outcomes.find(o => o.result === 'LOSS') || {}).n || 0;
-    const total  = wins + losses;
-    const wr = total > 0 ? (wins / total * 100).toFixed(1) : null;
-
-    allItems.push(card({
-      cat: 'STRATEGY', dotCls: 'strategy', source: 'System Stats', time: 'live',
-      title: `System Overview — ${stats.total} total signals`,
-      body:  `${stats.total} signals received. ${total} resolved with ${wr ? wr + '% win rate' : 'no resolved outcomes yet'}. ${stats.last24h} signal${stats.last24h !== 1 ? 's' : ''} in the last 24 hours.`,
-      tags:  ['Summary', 'System'],
-      market: 'ALL',
-    }));
-
-    // Grade breakdown
-    const grades = stats.byGrade || [];
-    if (grades.length) {
-      const aplus = (grades.find(g => g.grade === 'A+') || {}).n || 0;
-      const a     = (grades.find(g => g.grade === 'A')  || {}).n || 0;
-      allItems.push(card({
-        cat: 'STRATEGY', dotCls: 'strategy', source: 'Grading Engine', time: 'live',
-        title: `Grade Distribution — A+: ${aplus} · A: ${a}`,
-        body:  `${aplus} A+ grade signals (${total > 0 ? ((aplus / stats.total) * 100).toFixed(0) : '—'}% of total) and ${a} A grade signals recorded. A+ signals carry stricter entry criteria and typically higher conviction.`,
-        tags:  ['Grade', 'Quality Filter'],
-        market: 'ALL',
-      }));
-    }
+    allItems = items.map(item => {
+      const m       = meta(item.category);
+      const pubTime = item.published_at
+        ? timeAgo(new Date(item.published_at).toISOString())
+        : timeAgo(item.fetched_at);
+      const market = item.category === 'MNQ' ? 'MNQ'
+                   : item.category === 'MGC' ? 'MGC' : 'ALL';
+      return card({
+        cat:    item.category,
+        dotCls: m.dotCls,
+        source: item.source || 'Google News',
+        time:   pubTime,
+        title:  item.title,
+        body:   item.summary || '',
+        tags:   [m.label],
+        market,
+      });
+    });
 
     renderFeed();
-    document.getElementById('refreshLbl').textContent = 'Updated ' + now.toLocaleTimeString();
-  } catch (e) { console.error(e); }
+    document.getElementById('refreshLbl').textContent = 'Updated ' + new Date().toLocaleTimeString();
+  } catch (e) {
+    console.error(e);
+    document.getElementById('newsFeed').innerHTML =
+      buildEmptyState('⚠', 'Failed to load news', e.message);
+  }
 }
 
 load();
-setInterval(load, 120_000);
+setInterval(load, 30 * 60_000);
 </script>
 </body>
 </html>

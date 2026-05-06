@@ -480,13 +480,13 @@
   <!-- ── Live Charts ─────────────────────────────────────── -->
   <div class="chart-pair">
     <div class="chart-wrap">
-      <div class="chart-lbl">MNQ — Micro NQ Futures · 5m</div>
+      <div class="chart-lbl">MNQ — Micro NQ Futures · 15m</div>
       <div class="tradingview-widget-container">
         <div class="tradingview-widget-container__widget" id="tv-mnq"></div>
       </div>
     </div>
     <div class="chart-wrap">
-      <div class="chart-lbl">MGC — Micro Gold Futures · 5m</div>
+      <div class="chart-lbl">MGC — Micro Gold Futures · 15m</div>
       <div class="tradingview-widget-container">
         <div class="tradingview-widget-container__widget" id="tv-mgc"></div>
       </div>
@@ -613,7 +613,7 @@ function initTVCharts() {
   const sharedOpts = {
     width: '100%',
     height: 240,
-    interval: '5',
+    interval: '15',
     timezone: 'America/New_York',
     theme: 'dark',
     style: '1',
@@ -751,27 +751,29 @@ function renderRecordBar(stats, journalSigs) {
   ticksEl.style.color = totalTicks > 0 ? 'var(--green)' : totalTicks < 0 ? 'var(--red)' : 'var(--teal)';
 }
 
-/* ── Bot status (scanner activity check) ─────────────── */
+/* ── Bot status (heartbeat check) ────────────────────── */
 async function renderBotStatus() {
   const instruments = [
-    { key: 'MNQ', dot: 'mnqDot', lbl: 'mnqStatus', sub: 'mnqScanSub' },
-    { key: 'MGC', dot: 'mgcDot', lbl: 'mgcStatus', sub: 'mgcScanSub' },
+    { dot: 'mnqDot', lbl: 'mnqStatus', sub: 'mnqScanSub' },
+    { dot: 'mgcDot', lbl: 'mgcStatus', sub: 'mgcScanSub' },
   ];
-  for (const inst of instruments) {
-    try {
-      const r = await fetch(`/api/diagnostics/summary?instrument=${inst.key}&hours=1`);
-      const d = await r.json();
-      const scanCount = d.total || 0;
-      const isActive  = scanCount > 0;
-      const cls       = isActive ? 'active' : 'inactive';
-      document.getElementById(inst.dot).className = `bot-status-dot ${cls}`;
+  try {
+    const r  = await fetch('/api/scanner/heartbeat');
+    const d  = await r.json();
+    const isActive = d.online === true;
+    const cls      = isActive ? 'active' : 'inactive';
+    const subText  = isActive
+      ? `last scan ${d.ageMs != null ? Math.round(d.ageMs / 1000) + 's ago' : 'recently'}`
+      : 'scanner not responding';
+    for (const inst of instruments) {
+      document.getElementById(inst.dot).className  = `bot-status-dot ${cls}`;
       const lblEl = document.getElementById(inst.lbl);
       lblEl.textContent = isActive ? 'ACTIVE' : 'OFFLINE';
       lblEl.className   = `bot-status-lbl ${cls}`;
-      document.getElementById(inst.sub).textContent = isActive
-        ? `${scanCount} scan${scanCount !== 1 ? 's' : ''} last hour`
-        : 'no scans in last hour';
-    } catch {
+      document.getElementById(inst.sub).textContent = subText;
+    }
+  } catch {
+    for (const inst of instruments) {
       document.getElementById(inst.sub).textContent = 'unavailable';
     }
   }

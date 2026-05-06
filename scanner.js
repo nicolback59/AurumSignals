@@ -12,18 +12,22 @@ const {
   proposeRevision, evaluateShadow, multiObjectiveScore,
 } = require('./strategy-params');
 const { runFullOptimizationCycle } = require('./strategy-optimizer');
+const { fetchAllNews }              = require('./news-fetcher');
 
 // ── Config ────────────────────────────────────────────────────────────────────
-const DB_PATH        = process.env.DB_PATH           || path.join(__dirname, 'signals.db');
-const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
-const NTFY_TOPIC     = process.env.NTFY_TOPIC        || '';
-const NTFY_TOKEN     = process.env.NTFY_TOKEN        || '';
-const SYMBOL         = process.env.SCANNER_SYMBOL     || 'NQ=F';
-const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || 'GC=F';
-const SCAN_INTERVAL  = Math.min(parseInt(process.env.SCAN_INTERVAL || '15') * 1000, 60_000);
-const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '1');
-const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
-const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '12');
+const DB_PATH          = process.env.DB_PATH             || path.join(__dirname, 'signals.db');
+const NTFY_URL         = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
+const NTFY_TOPIC       = process.env.NTFY_TOPIC          || '';
+const NTFY_TOKEN       = process.env.NTFY_TOKEN          || '';
+const SYMBOL           = process.env.SCANNER_SYMBOL       || 'NQ=F';
+const SYMBOL_MGC       = process.env.SCANNER_SYMBOL_MGC   || 'GC=F';
+const SCAN_INTERVAL    = Math.min(parseInt(process.env.SCAN_INTERVAL    || '15') * 1000, 60_000);
+// 90-min cooldown keeps signal frequency ~7-10/day per instrument (max 15)
+const COOLDOWN         = parseInt(process.env.SCANNER_COOLDOWN          || '90');
+const RTH_ONLY         = process.env.SCANNER_RTH_ONLY === 'true';
+// Lowered to 6 so more setups qualify; daily cap enforces max 15/day
+const BASE_SCORE       = parseInt(process.env.SCANNER_MIN_SCORE         || '6');
+const DAILY_SIGNAL_CAP = parseInt(process.env.DAILY_SIGNAL_CAP          || '15');
 
 // Diagnostic verbosity: 'full' logs every scan; 'signal' logs only fires; 'quiet' errors only
 const LOG_LEVEL = (process.env.SCANNER_LOG_LEVEL || 'full').toLowerCase();
@@ -94,6 +98,25 @@ const insertScanDiag = db.prepare(`
      any_setup_l, any_setup_s, fired, strategies_fired, reject_reason, indicators)
   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
+
+const upsertHeartbeat = db.prepare(`
+  INSERT INTO scanner_heartbeat (id, last_scan, scan_count) VALUES (1, datetime('now'), 1)
+  ON CONFLICT(id) DO UPDATE SET last_scan = datetime('now'), scan_count = scan_count + 1
+`);
+
+const insertNews = db.prepare(`
+  INSERT OR IGNORE INTO news_items (category, title, source, link, summary, published_at)
+  VALUES (?, ?, ?, ?, ?, ?)
+`);
+
+const pruneNews = db.prepare(`
+  DELETE FROM news_items WHERE id NOT IN (SELECT id FROM news_items ORDER BY id DESC LIMIT 500)
+`);
+
+// Prepared query for daily cap check
+const dailySignalCount = db.prepare(
+  `SELECT COUNT(*) cnt FROM signals WHERE instrument=? AND date(received_at)=date('now')`
+);
 
 // ── ntfy push notifications ───────────────────────────────────────────────────
 function sendNtfy(s) {
@@ -321,6 +344,15 @@ async function scanInstrument(symbol, instrument, bars15m, bars45m, bars1h, bars
   const barMs = 60_000;
   if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) return;
 
+  // Daily cap — stop firing after DAILY_SIGNAL_CAP signals for this instrument today
+  const todayCount = dailySignalCount.get(instrument)?.cnt ?? 0;
+  if (todayCount >= DAILY_SIGNAL_CAP) {
+    if (LOG_LEVEL === 'full') {
+      console.log(`[${ts()}] 🚫 ${instrument} daily cap reached (${todayCount}/${DAILY_SIGNAL_CAP} today)`);
+    }
+    return;
+  }
+
   const dbParams = getParams(db, instrument);
 
   // [primaryBars, htfBars, timeframe label (minutes)]
@@ -479,6 +511,27 @@ async function scan() {
 
   } catch (err) {
     console.error(`[${ts()}] Scan error:`, err.message);
+  } finally {
+    // Always update heartbeat so the UI can detect the scanner is alive
+    try { upsertHeartbeat.run(); } catch { /* never crash on heartbeat failure */ }
+  }
+}
+
+// ── News fetch & store ────────────────────────────────────────────────────────
+async function fetchAndStoreNews() {
+  try {
+    const items = await fetchAllNews();
+    if (!items.length) return;
+    db.transaction(() => {
+      for (const item of items) {
+        insertNews.run(item.category, item.title, item.source || null,
+          item.link || null, item.summary || null, item.pubDate || null);
+      }
+      pruneNews.run();
+    })();
+    console.log(`[${ts()}] 📰 News updated: ${items.length} items`);
+  } catch (err) {
+    console.error(`[${ts()}] News fetch error:`, err.message);
   }
 }
 
@@ -640,12 +693,17 @@ console.log(`Symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: ${SCAN_INTERVAL/10
 console.log(`Timeframes: 15m+1h, 45m+1h, 1h+4h (MNQ & MGC only)`);
 console.log(`Backtests: ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
 console.log(`Optimizer: ${OPT_INTERVAL_H}h | Strategies: EMA Cross, VWAP PB, BB, MACD Mom, SR Break + 4-factor primary`);
+console.log(`Signal cap: ${DAILY_SIGNAL_CAP}/day per instrument | BASE_SCORE: ${BASE_SCORE}`);
 if (!NTFY_TOPIC) console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
 
 setTimeout(() => runBacktestCycle('MNQ', 'startup'),   5_000);
 setTimeout(() => runBacktestCycle('MGC', 'startup'),  35_000);
 setTimeout(() => runOptimizerCycle('MNQ'), 120_000);
 setTimeout(() => runOptimizerCycle('MGC'), 180_000);
+
+// Fetch news at startup (delayed) and every 30 min
+setTimeout(fetchAndStoreNews, 8_000);
+setInterval(fetchAndStoreNews, 30 * 60_000);
 
 scan();
 setInterval(scan, SCAN_INTERVAL);

@@ -465,6 +465,36 @@ app.get('/api/strategies/performance', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ── NEWS ──────────────────────────────────────────────────────────────────────────────────
+app.get('/api/news', (req, res) => {
+  try {
+    const limit    = Math.min(Number(req.query.limit) || 60, 200);
+    const category = (req.query.category || '').toUpperCase();
+    let sql  = 'SELECT * FROM news_items';
+    const args = [];
+    if (category && category !== 'ALL') {
+      sql += ' WHERE category = ?';
+      args.push(category);
+    }
+    sql += ' ORDER BY fetched_at DESC, id DESC LIMIT ?';
+    args.push(limit);
+    const items = db.prepare(sql).all(...args);
+    res.json(items);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── SCANNER HEARTBEAT ─────────────────────────────────────────────────────────────────────
+app.get('/api/scanner/heartbeat', (req, res) => {
+  try {
+    const row = db.prepare('SELECT * FROM scanner_heartbeat WHERE id = 1').get();
+    if (!row) return res.json({ online: false, lastScan: null, scanCount: 0, ageMs: null });
+    // SQLite stores datetime('now') in UTC without trailing Z — parse accordingly
+    const lastMs = new Date(row.last_scan.replace(' ', 'T') + 'Z').getTime();
+    const ageMs  = Date.now() - lastMs;
+    res.json({ online: ageMs < 120_000, lastScan: row.last_scan, scanCount: row.scan_count, ageMs });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 // ── STATIC ────────────────────────────────────────────────────────────────────────────────
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'home.html')));
 app.get('/signals',  (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
