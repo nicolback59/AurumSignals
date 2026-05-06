@@ -3,7 +3,8 @@
 const Database              = require('better-sqlite3');
 const path                  = require('path');
 const fs                    = require('fs');
-const { computeSignal }     = require('./signal-engine');
+const { computeSignal, diagnoseSignal }   = require('./signal-engine');
+const { runAllStrategies, diagnoseStrategies } = require('./strategies');
 const { getAdaptiveMinScore, getMarketRegime } = require('./learning');
 const { runBacktest }       = require('./backtest-engine');
 const {
@@ -17,21 +18,17 @@ const DB_PATH        = process.env.DB_PATH           || path.join(__dirname, 'si
 const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
 const NTFY_TOPIC     = process.env.NTFY_TOPIC        || '';
 const NTFY_TOKEN     = process.env.NTFY_TOKEN        || '';
-// Yahoo Finance symbols — no API key needed, free, real-time futures data
-const SYMBOL         = process.env.SCANNER_SYMBOL     || 'NQ=F';   // NQ futures (same price as MNQ)
-const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || 'GC=F';   // Gold futures (same price as MGC)
+const SYMBOL         = process.env.SCANNER_SYMBOL     || 'NQ=F';
+const SYMBOL_MGC     = process.env.SCANNER_SYMBOL_MGC || 'GC=F';
 const SCAN_INTERVAL  = parseInt(process.env.SCAN_INTERVAL     || '60')  * 1000;
 const COOLDOWN       = parseInt(process.env.SCANNER_COOLDOWN  || '1');
 const RTH_ONLY       = process.env.SCANNER_RTH_ONLY === 'true';
 const BASE_SCORE     = parseInt(process.env.SCANNER_MIN_SCORE || '12');
 
-// Backtest symbols (Yahoo Finance)
-const BT_SYMBOLS = {
-  MNQ: process.env.SCANNER_BT_MNQ || 'NQ=F',
-  MGC: process.env.SCANNER_BT_MGC || 'GC=F',
-};
+// Diagnostic verbosity: 'full' logs every scan; 'signal' logs only fires; 'quiet' errors only
+const LOG_LEVEL = (process.env.SCANNER_LOG_LEVEL || 'full').toLowerCase();
 
-// Backtest schedule
+const BT_SYMBOLS = { MNQ: process.env.SCANNER_BT_MNQ || 'NQ=F', MGC: process.env.SCANNER_BT_MGC || 'GC=F' };
 const BT_INTERVAL_H  = parseFloat(process.env.BACKTEST_INTERVAL_H  || '4');
 const BT_BARS        = parseInt(process.env.BACKTEST_BARS           || '10000');
 const OPT_INTERVAL_H = parseFloat(process.env.OPTIMIZER_INTERVAL_H || '12');
@@ -85,41 +82,50 @@ const getPendingSignals = db.prepare(`
   ORDER BY s.received_at ASC
 `);
 
+// Prepared statements for diagnostic tables
+const insertRejection = db.prepare(`
+  INSERT INTO signal_rejections (instrument, direction, setup, strategy, score, min_score, reason, details)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertScanDiag = db.prepare(`
+  INSERT INTO scan_diagnostics
+    (instrument, last_close, htf_bias, chop, atr, score_l, score_s,
+     any_setup_l, any_setup_s, fired, strategies_fired, reject_reason, indicators)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
 // ── ntfy push notifications ───────────────────────────────────────────────────
 function sendNtfy(s) {
   if (!NTFY_TOPIC) return;
   const arrow    = s.direction === 'LONG' ? '▲' : '▼';
   const priority = s.grade === 'A+' ? 'urgent' : 'high';
   const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
+  const stratTag = s.source === 'strategy' ? `[${s.strategy ?? s.setup}] ` : '';
   const body = [
-    s.setup        ? `Setup:   ${s.setup}`              : null,
-    s.tradeStyle   ? `Style:   ${s.tradeStyle}`         : null,
-    s.entry != null? `Entry:   ${s.entry}`              : null,
-    s.sl    != null? `SL:      ${s.sl}`                 : null,
-    s.tp1   != null? `TP1:     ${s.tp1}`                : null,
-    s.tp2   != null? `TP2:     ${s.tp2}`                : null,
-    s.tp3   != null? `TP3:     ${s.tp3}`                : null,
-    s.rr    != null? `RR:      ${s.rr}`                 : null,
-    s.score != null? `Score:   ${s.score}`              : null,
-    s.win_prob_tp1 != null ? `Win%:  ${s.win_prob_tp1}%`: null,
-    s.session      ? `Session: ${s.session}`            : null,
+    s.setup        ? `Setup:   ${stratTag}${s.setup}`   : null,
+    s.tradeStyle   ? `Style:   ${s.tradeStyle}`          : null,
+    s.entry != null? `Entry:   ${s.entry}`               : null,
+    s.sl    != null? `SL:      ${s.sl}`                  : null,
+    s.tp1   != null? `TP1:     ${s.tp1}`                 : null,
+    s.tp2   != null? `TP2:     ${s.tp2}`                 : null,
+    s.tp3   != null? `TP3:     ${s.tp3}`                 : null,
+    s.rr    != null? `RR:      ${s.rr}`                  : null,
+    s.score != null? `Score:   ${s.score}`               : null,
+    s.win_prob_tp1 != null ? `Win%:  ${s.win_prob_tp1}%` : null,
+    s.session      ? `Session: ${s.session}`             : null,
   ].filter(Boolean).join('\n');
   const headers = {
     'Content-Type': 'text/plain',
     'Title':    `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker ?? s.instrument}`,
-    'Priority': priority,
-    'Tags':     tags,
+    'Priority': priority, 'Tags': tags,
   };
   if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
   fetch(`${NTFY_URL}/${NTFY_TOPIC}`, { method: 'POST', headers, body })
     .catch(err => console.error('[ntfy]', err.message));
 }
 
-// ── Market data (Yahoo Finance — free, no API key) ────────────────────────────
-function yahooInterval(timeframe) {
-  return timeframe.startsWith('1M') ? '1m' : '15m';
-}
-
+// ── Market data (Yahoo Finance) ───────────────────────────────────────────────
 async function fetchYahooBars(symbol, interval, range) {
   const url = `https://query1.finance.yahoo.com/v8/finance/chart/${symbol}`
     + `?interval=${interval}&range=${range}`;
@@ -140,6 +146,8 @@ async function fetchYahooBars(symbol, interval, range) {
   })).filter(b => b.open != null && b.close != null);
 }
 
+function yahooInterval(tf) { return tf.startsWith('1M') ? '1m' : '15m'; }
+
 async function fetchBarsForSymbol(symbol, timeframe, limit) {
   const interval = yahooInterval(timeframe);
   const range    = interval === '1m' ? '2d' : '5d';
@@ -147,7 +155,6 @@ async function fetchBarsForSymbol(symbol, timeframe, limit) {
   return bars.slice(-limit);
 }
 
-// Historical fetch for backtests — Yahoo gives up to 7d of 1m data (~10k bars)
 async function fetchAllBars(symbol, timeframe, maxBars) {
   const interval = yahooInterval(timeframe);
   const range    = interval === '1m' ? '7d' : '60d';
@@ -165,11 +172,13 @@ function savePrice(symbol, bars) {
   upsertPrice.run(symbol, last.close, first.open, +chg.toFixed(3), high, low);
 }
 
-// ── Cooldown tracking (per instrument) ───────────────────────────────────────
+// ── Cooldown tracking ─────────────────────────────────────────────────────────
 const lastSignalTimes = { MNQ: 0, MGC: 0 };
 let scanCount = 0;
+// Track last diagnostic save per instrument (throttled to 1 per 5 minutes)
+const lastDiagSave = { MNQ: 0, MGC: 0 };
 
-// ── Auto-resolve pending outcomes against fresh bars ──────────────────────────
+// ── Auto-resolve pending outcomes ─────────────────────────────────────────────
 function autoResolveOutcomes(bars1m, instrument) {
   const pending = getPendingSignals.all(instrument);
   if (!pending.length) return;
@@ -179,8 +188,7 @@ function autoResolveOutcomes(bars1m, instrument) {
     const futureBars = bars1m.filter(b => new Date(b.timestamp).getTime() > sigTime);
     if (futureBars.length < 2) continue;
 
-    let resolved = null;
-    let exitBar  = null;
+    let resolved = null, exitBar = null;
     for (const bar of futureBars) {
       if (sig.direction === 'LONG') {
         if (bar.high >= sig.tp1) { resolved = { result: 'WIN',  exitPrice: sig.tp1 }; exitBar = bar; break; }
@@ -190,7 +198,6 @@ function autoResolveOutcomes(bars1m, instrument) {
         if (bar.high >= sig.sl)  { resolved = { result: 'LOSS', exitPrice: sig.sl  }; exitBar = bar; break; }
       }
     }
-
     if (resolved) {
       const pnlPts = sig.direction === 'LONG'
         ? resolved.exitPrice - sig.entry
@@ -202,29 +209,11 @@ function autoResolveOutcomes(bars1m, instrument) {
   }
 }
 
-// ── Per-instrument signal scan ────────────────────────────────────────────────
-async function scanInstrument(symbol, instrument, bars1m, bars15m) {
-  const barMs = 60_000;
-  if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) return;
-
-  const signal = computeSignal(bars1m, bars15m, {
-    rthOnly:    RTH_ONLY,
-    minScore:   BASE_SCORE,
-    instrument,
-  });
-  if (!signal) return;
-
-  const minScore = getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, BASE_SCORE);
-  if (signal.score < minScore) {
-    console.log(`[${ts()}] Suppressed ${instrument} ${signal.setup} (score=${signal.score} < adaptive=${minScore})`);
-    return;
-  }
-
-  lastSignalTimes[instrument] = Date.now();
-
+// ── Store a fired signal ──────────────────────────────────────────────────────
+function storeSignal(signal, minScore) {
   const info = insertSignal.run({
-    ticker:       signal.ticker,
-    timeframe:    signal.timeframe,
+    ticker:       signal.ticker ?? `${signal.instrument}1!`,
+    timeframe:    signal.timeframe ?? '1',
     direction:    signal.direction,
     grade:        signal.grade,
     setup:        signal.setup,
@@ -237,23 +226,176 @@ async function scanInstrument(symbol, instrument, bars1m, bars15m) {
     win_prob_tp1: signal.win_prob_tp1,
     win_prob_tp2: signal.win_prob_tp2,
     win_prob_tp3: signal.win_prob_tp3,
-    htf_bias:     signal.htf_bias,
+    htf_bias:     signal.htf_bias    ?? signal.htfBias ?? null,
     session:      signal.session,
-    trade_style:  signal.tradeStyle,
+    trade_style:  signal.tradeStyle  ?? signal.trade_style ?? null,
     instrument:   signal.instrument,
     rr:           signal.rr,
     raw_payload:  JSON.stringify(signal),
   });
 
   console.log(
-    `[${ts()}] SIGNAL #${info.lastInsertRowid} | ${instrument} ${signal.direction} ${signal.grade} | ` +
-    `${signal.setup} [${signal.tradeStyle}] | score=${signal.score}/${minScore} | ` +
-    `entry=${signal.entry} | rr=${signal.rr} | regime=${getMarketRegime(db)}`
+    `[${ts()}] ✅ SIGNAL #${info.lastInsertRowid} | ${signal.instrument} ${signal.direction} ${signal.grade} | ` +
+    `${signal.setup} [${signal.tradeStyle ?? signal.source ?? 'unknown'}] | ` +
+    `score=${signal.score}/${minScore} | entry=${signal.entry} | rr=${signal.rr}`
   );
   sendNtfy(signal);
+  return info.lastInsertRowid;
 }
 
-// ── Live scan — both MNQ and MGC in parallel ──────────────────────────────────
+// ── Store rejected signal reason ──────────────────────────────────────────────
+function storeRejection(instrument, direction, setup, strategy, score, minScore, reason, indicators) {
+  try {
+    insertRejection.run(
+      instrument, direction ?? null, setup ?? null, strategy ?? null,
+      score ?? null, minScore ?? null, reason,
+      indicators ? JSON.stringify(indicators) : null
+    );
+  } catch { /* diagnostic failures must never crash the scanner */ }
+}
+
+// ── Store scan diagnostic snapshot (throttled to 1/5min per instrument) ──────
+function storeScanDiag(instrument, diag, stratsFired, fired, rejectReason) {
+  const now = Date.now();
+  if (now - (lastDiagSave[instrument] ?? 0) < 5 * 60_000) return; // 5-min throttle
+  lastDiagSave[instrument] = now;
+  try {
+    insertScanDiag.run(
+      instrument,
+      diag.indicators?.close   ?? null,
+      diag.indicators?.htfBias ?? null,
+      diag.indicators?.chop    ? 1 : 0,
+      diag.indicators?.atr     ?? null,
+      diag.scores?.scoreL      ?? null,
+      diag.scores?.scoreS      ?? null,
+      diag.setups ? (Object.values(diag.setups).some((v, i) => i < 4 && v) ? 1 : 0) : 0,
+      diag.setups ? (Object.values(diag.setups).some((v, i) => i >= 4 && v) ? 1 : 0) : 0,
+      fired ? 1 : 0,
+      stratsFired.length ? JSON.stringify(stratsFired) : null,
+      rejectReason ?? null,
+      diag.indicators ? JSON.stringify(diag.indicators) : null
+    );
+  } catch { /* diagnostic failures must never crash the scanner */ }
+}
+
+// ── Per-instrument signal scan ────────────────────────────────────────────────
+async function scanInstrument(symbol, instrument, bars1m, bars15m) {
+  const barMs = 60_000;
+  if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) return;
+
+  // Load optimised strategy params from DB (falls back to defaults if none saved)
+  const dbParams = getParams(db, instrument);
+
+  // ── 1. Primary 4-factor signal engine ────────────────────────────────────
+  const signal = computeSignal(bars1m, bars15m, {
+    ...dbParams,
+    rthOnly:  RTH_ONLY,
+    instrument,
+  });
+
+  // Diagnostic breakdown (also used for logging regardless of signal)
+  const diag = diagnoseSignal(bars1m, bars15m, {
+    ...dbParams,
+    rthOnly:  RTH_ONLY,
+    instrument,
+  });
+
+  // ── 2. 5-strategy engine ─────────────────────────────────────────────────
+  const stratResults = diagnoseStrategies(bars1m, instrument);
+  const stratSignals = stratResults.filter(r => r.fired && r.signal);
+  const stratsFiredNames = stratSignals.map(r => r.strategy);
+
+  // ── 3. Evaluate primary signal ────────────────────────────────────────────
+  let primaryFired = false;
+  if (signal) {
+    const minScore = getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, dbParams.minScore ?? BASE_SCORE);
+    if (signal.score >= minScore) {
+      lastSignalTimes[instrument] = Date.now();
+      storeSignal({ ...signal, source: 'primary', ticker: `${instrument}1!` }, minScore);
+      primaryFired = true;
+    } else {
+      const reason = `adaptive score filter: ${signal.score} < ${minScore} (setup=${signal.setup})`;
+      if (LOG_LEVEL === 'full') {
+        console.log(`[${ts()}] ⚠️  Suppressed ${instrument} ${signal.setup} — ${reason}`);
+      }
+      storeRejection(instrument, signal.direction, signal.setup, 'primary',
+        signal.score, minScore, reason, diag.indicators);
+    }
+  }
+
+  // ── 4. Evaluate strategy signals ─────────────────────────────────────────
+  let stratFiredCount = 0;
+  for (const result of stratResults) {
+    if (result.fired && result.signal) {
+      const sig      = result.signal;
+      const minScore = getAdaptiveMinScore(db, sig.setup, null, BASE_SCORE);
+      if (sig.score >= minScore) {
+        // Respect per-instrument cooldown for strategy signals too
+        if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) {
+          if (LOG_LEVEL === 'full') {
+            console.log(`[${ts()}] ⏳ Cooldown: strategy ${result.strategy} ${instrument} suppressed`);
+          }
+          continue;
+        }
+        lastSignalTimes[instrument] = Date.now();
+        storeSignal({
+          ...sig, source: 'strategy', instrument,
+          ticker: `${instrument}1!`,
+          htf_bias: diag.indicators?.htfBias ?? null,
+        }, minScore);
+        stratFiredCount++;
+      } else {
+        const reason = `score ${sig.score} < min ${minScore}`;
+        if (LOG_LEVEL === 'full') {
+          console.log(`[${ts()}] ⚠️  Strategy ${result.strategy} ${instrument} rejected — ${reason}`);
+        }
+        storeRejection(instrument, sig.direction, sig.setup, result.strategy,
+          sig.score, minScore, reason, null);
+      }
+    } else if (!result.fired && LOG_LEVEL === 'full') {
+      console.log(`[${ts()}] ⬜ ${instrument} ${result.strategy}: ${result.reason ?? result.error ?? 'no signal'}`);
+    }
+  }
+
+  // ── 5. Diagnostic log ─────────────────────────────────────────────────────
+  const totalFired = primaryFired || stratFiredCount > 0;
+
+  if (LOG_LEVEL === 'full') {
+    const ind = diag.indicators ?? {};
+    const regime = getMarketRegime(db);
+    const parts = [
+      `htf=${ind.htfBias ?? '?'}`,
+      `chop=${ind.chop ? '⛔' : '✅'}`,
+      `atr=${ind.atr ?? '?'}`,
+      `close=${ind.close ?? '?'}`,
+      `blwV2=${ind.blwV2} blwV1=${ind.blwV1} abvV2=${ind.abvV2}`,
+      `inOTED=${ind.inOTED} inOTEP=${ind.inOTEP}`,
+      `dB=${ind.dB} dBr=${ind.dBr} rU=${ind.rU} rD=${ind.rD} mB=${ind.mB}`,
+      `rstL=${ind.rstL} rstS=${ind.rstS}`,
+      `scoreL=${diag.scores?.scoreL ?? 0} scoreS=${diag.scores?.scoreS ?? 0}`,
+      `regime=${regime}`,
+      `strats=${stratsFiredNames.length ? stratsFiredNames.join(',') : 'none'}`,
+    ];
+    console.log(`[${ts()}] 📊 ${instrument} | ${parts.join(' | ')}`);
+
+    if (!totalFired && diag.rejectReasons?.length) {
+      console.log(`[${ts()}] ❌ ${instrument} no signal — reasons:`);
+      for (const r of diag.rejectReasons) console.log(`         ${r}`);
+    }
+  } else if (!totalFired && LOG_LEVEL === 'signal') {
+    // In signal-only mode, log concise rejection summary once every ~10 scans
+    if (scanCount % 10 === 0) {
+      const top = diag.rejectReasons?.[0] ?? 'no setup met';
+      console.log(`[${ts()}] ${instrument} — no signal (${top})`);
+    }
+  }
+
+  // Throttled persistence of scan diagnostics
+  const rejectReason = !totalFired ? (diag.rejectReasons?.[0] ?? 'no setup') : null;
+  storeScanDiag(instrument, diag, stratsFiredNames, totalFired, rejectReason);
+}
+
+// ── Live scan ─────────────────────────────────────────────────────────────────
 async function scan() {
   scanCount++;
   try {
@@ -271,7 +413,7 @@ async function scan() {
     const mgcReady = mgcBars1m.length >= 60 && mgcBars15m.length >= 30;
 
     if (!mnqReady && !mgcReady) {
-      console.log(`[${ts()}] Waiting for bars (MNQ: ${mnqBars1m.length} 1m, MGC: ${mgcBars1m.length} 1m)`);
+      console.log(`[${ts()}] ⏳ Waiting for bars: MNQ ${mnqBars1m.length} 1m, MGC ${mgcBars1m.length} 1m`);
       return;
     }
 
@@ -288,13 +430,13 @@ async function scan() {
   }
 }
 
-// ── Quick backtest cycle (revision check only) ────────────────────────────────
+// ── Quick backtest cycle ──────────────────────────────────────────────────────
 async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
   const symbol = BT_SYMBOLS[instrument];
   if (!symbol) return;
 
   try {
-    console.log(`[${ts()}] BACKTEST START: ${instrument} (${symbol}, up to ${BT_BARS} bars, target ${BT_TARGET_TRADES} trades)`);
+    console.log(`[${ts()}] BACKTEST START: ${instrument} (up to ${BT_BARS} bars, target ${BT_TARGET_TRADES} trades)`);
 
     const pendingShadow = db.prepare(
       `SELECT id FROM strategy_revisions WHERE instrument=? AND status='shadow' LIMIT 1`
@@ -306,7 +448,7 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
         savePrice(symbol, barsForShadow);
         const result = evaluateShadow(db, instrument, barsForShadow, { slippage: BT_SLIPPAGE });
         if (result?.promoted) {
-          console.log(`[${ts()}] REVISION PROMOTED: ${instrument} ${(result.before*100).toFixed(1)}% → ${(result.after*100).toFixed(1)}%`);
+          console.log(`[${ts()}] ✅ REVISION PROMOTED: ${instrument} ${(result.before*100).toFixed(1)}% → ${(result.after*100).toFixed(1)}%`);
         } else if (result) {
           console.log(`[${ts()}] Shadow discarded for ${instrument}`);
         }
@@ -364,11 +506,8 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
 
     console.log(
       `[${ts()}] BACKTEST DONE: ${instrument} | ` +
-      `trades=${metrics.tradeCount} (cd=${result.cooldownUsed}) | ` +
-      `win=${(metrics.winRate*100).toFixed(1)}% | sharpe=${metrics.sharpe} | ` +
-      `pf=${metrics.profitFactor} | dd=${metrics.maxDrawdown}R | ` +
-      `consistency=${(metrics.regimeConsistency ?? 1).toFixed(2)} | ` +
-      `wf=${result.walkForward?.consistency ?? 'n/a'} | run#${runId}`
+      `trades=${metrics.tradeCount} | win=${(metrics.winRate*100).toFixed(1)}% | ` +
+      `sharpe=${metrics.sharpe} | pf=${metrics.profitFactor} | run#${runId}`
     );
 
     const best = proposeRevision(db, instrument, bars1m, runId,
@@ -386,7 +525,7 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
   }
 }
 
-// ── Full optimizer cycle (less frequent, deeper search) ──────────────────────
+// ── Full optimizer cycle ──────────────────────────────────────────────────────
 async function runOptimizerCycle(instrument) {
   const symbol = BT_SYMBOLS[instrument];
   if (!symbol) return;
@@ -399,17 +538,14 @@ async function runOptimizerCycle(instrument) {
     savePrice(symbol, bars1m);
 
     const report = await runFullOptimizationCycle(db, instrument, bars1m, {
-      targetTrades:  BT_TARGET_TRADES,
-      slippage:      BT_SLIPPAGE,
+      targetTrades: BT_TARGET_TRADES,
+      slippage:     BT_SLIPPAGE,
     });
 
     console.log(report.summary);
     console.log(
       `[${ts()}] OPTIMIZER DONE: ${instrument} | ` +
-      `live=${(report.liveWinRate*100).toFixed(1)}% | ` +
-      `atTarget=${report.atTarget} | ` +
-      `promoted=${report.globalPromoted} | ` +
-      `wf-consistency=${report.walkForwardConsistency ?? 'n/a'}`
+      `live=${(report.liveWinRate*100).toFixed(1)}% | promoted=${report.globalPromoted}`
     );
 
   } catch (err) {
@@ -420,29 +556,24 @@ async function runOptimizerCycle(instrument) {
 function ts() { return new Date().toISOString(); }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
-console.log('NQ Signal Pro V3 — Enhanced Scanner + Backtesting Framework');
-console.log(`Live symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: every ${SCAN_INTERVAL/1000}s | Cooldown: ${COOLDOWN}min/instrument | Base score: ${BASE_SCORE} | RTH-only: ${RTH_ONLY}`);
-console.log(`Backtests: every ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
-console.log(`Optimizer: every ${OPT_INTERVAL_H}h | Instruments: MNQ (scalp/intraday/swing), MGC (scalp)`);
+console.log('NQ Signal Pro V3 — Multi-Strategy Scanner + Diagnostic Engine');
+console.log(`Symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: ${SCAN_INTERVAL/1000}s | Cooldown: ${COOLDOWN}min | LogLevel: ${LOG_LEVEL}`);
+console.log(`Backtests: ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
+console.log(`Optimizer: ${OPT_INTERVAL_H}h | Strategies: EMA Cross, VWAP PB, BB, MACD Mom, SR Break + 4-factor primary`);
 if (!NTFY_TOPIC) console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
-console.log('Market data: Yahoo Finance (free, no API key required)');
 
-// Warmup on startup (staggered to avoid rate-limiting)
 setTimeout(() => runBacktestCycle('MNQ', 'startup'),   5_000);
 setTimeout(() => runBacktestCycle('MGC', 'startup'),  35_000);
 setTimeout(() => runOptimizerCycle('MNQ'), 120_000);
 setTimeout(() => runOptimizerCycle('MGC'), 180_000);
 
-// Live scan
 scan();
 setInterval(scan, SCAN_INTERVAL);
 
-// Quick backtest cycles
 const BT_MS  = BT_INTERVAL_H  * 3_600_000;
 setInterval(() => runBacktestCycle('MNQ'), BT_MS);
 setInterval(() => runBacktestCycle('MGC'), BT_MS + BT_MS / 2);
 
-// Full optimizer cycles
 const OPT_MS = OPT_INTERVAL_H * 3_600_000;
 setInterval(() => runOptimizerCycle('MNQ'), OPT_MS);
 setInterval(() => runOptimizerCycle('MGC'), OPT_MS + OPT_MS / 3);

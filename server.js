@@ -27,10 +27,12 @@ db.exec(schema);
 const insertSignal = db.prepare(`
   INSERT INTO signals
     (ticker, timeframe, direction, grade, setup, entry, sl, tp1, tp2, tp3,
-     score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session, raw_payload)
+     score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
+     trade_style, instrument, rr, raw_payload)
   VALUES
     (@ticker, @timeframe, @direction, @grade, @setup, @entry, @sl, @tp1, @tp2, @tp3,
-     @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session, @raw_payload)
+     @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
+     @trade_style, @instrument, @rr, @raw_payload)
 `);
 
 const upsertOutcome = db.prepare(`
@@ -102,11 +104,11 @@ app.post('/webhook', (req, res) => {
 
   try {
     const info = insertSignal.run({
-      ticker:       b.ticker    || 'NQ1!',
-      timeframe:    b.timeframe || b.interval || null,
+      ticker:       b.ticker       || 'NQ1!',
+      timeframe:    b.timeframe    || b.interval || null,
       direction,
       grade,
-      setup:        b.setup     || null,
+      setup:        b.setup        || null,
       entry:        num(b.entry),
       sl:           num(b.sl),
       tp1:          num(b.tp1),
@@ -116,8 +118,11 @@ app.post('/webhook', (req, res) => {
       win_prob_tp1: num(b.win_prob_tp1),
       win_prob_tp2: num(b.win_prob_tp2),
       win_prob_tp3: num(b.win_prob_tp3),
-      htf_bias:     b.htf_bias || null,
-      session:      b.session  || null,
+      htf_bias:     b.htf_bias     || null,
+      session:      b.session      || null,
+      trade_style:  b.trade_style  || b.tradeStyle || null,
+      instrument:   b.instrument   || null,
+      rr:           num(b.rr),
       raw_payload:  raw,
     });
     console.log(`[${new Date().toISOString()}] ${direction} ${grade} | setup=${b.setup||'?'} | score=${b.score||'?'} | id=${info.lastInsertRowid}`);
@@ -352,6 +357,111 @@ app.delete('/api/journal/entries/:id', (req, res) => {
   try {
     db.prepare('DELETE FROM journal_entries WHERE id = ?').run(Number(req.params.id));
     res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── BACKTEST TRADES ───────────────────────────────────────────────────────────────────────
+app.get('/api/backtest/trades/:runId', (req, res) => {
+  const runId = Number(req.params.runId);
+  if (!runId) return res.status(400).json({ error: 'invalid runId' });
+  const rows = db.prepare(
+    'SELECT * FROM backtest_trades WHERE run_id = ? ORDER BY bar_idx ASC'
+  ).all(runId);
+  res.json(rows);
+});
+
+// ── DIAGNOSTICS ───────────────────────────────────────────────────────────────────────────
+// Last N scan diagnostic snapshots — explains what each scan saw and why signals did/didn't fire
+app.get('/api/diagnostics', (req, res) => {
+  const instrument = (req.query.instrument || '').toUpperCase() || null;
+  const limit      = Math.min(Number(req.query.limit) || 100, 500);
+  try {
+    const rows = instrument
+      ? db.prepare('SELECT * FROM scan_diagnostics WHERE instrument=? ORDER BY scanned_at DESC LIMIT ?').all(instrument, limit)
+      : db.prepare('SELECT * FROM scan_diagnostics ORDER BY scanned_at DESC LIMIT ?').all(limit);
+    // Parse JSON columns before sending
+    res.json(rows.map(r => ({
+      ...r,
+      indicators:      r.indicators      ? JSON.parse(r.indicators)      : null,
+      strategies_fired: r.strategies_fired ? JSON.parse(r.strategies_fired) : [],
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Summary counts for the diagnostics view
+app.get('/api/diagnostics/summary', (req, res) => {
+  try {
+    const instrument = (req.query.instrument || '').toUpperCase() || null;
+    const hours      = Number(req.query.hours) || 24;
+    const since      = `datetime('now', '-${hours} hours')`;
+    const base = instrument
+      ? `FROM scan_diagnostics WHERE instrument='${instrument}' AND scanned_at >= ${since}`
+      : `FROM scan_diagnostics WHERE scanned_at >= ${since}`;
+    const total    = db.prepare(`SELECT COUNT(*) n ${base}`).get().n;
+    const fired    = db.prepare(`SELECT COUNT(*) n ${base} AND fired=1`).get().n;
+    const byInst   = db.prepare(`SELECT instrument, COUNT(*) total, SUM(fired) fired ${base} GROUP BY instrument`).all();
+    const topReasons = db.prepare(`
+      SELECT reject_reason, COUNT(*) n ${base} AND reject_reason IS NOT NULL
+      GROUP BY reject_reason ORDER BY n DESC LIMIT 10
+    `).all();
+    res.json({ total, fired, missRate: total > 0 ? +((1 - fired/total)*100).toFixed(1) : 0, byInst, topReasons });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── REJECTIONS ────────────────────────────────────────────────────────────────────────────
+// Every signal that almost fired but was blocked by a filter
+app.get('/api/rejections', (req, res) => {
+  const instrument = (req.query.instrument || '').toUpperCase() || null;
+  const limit      = Math.min(Number(req.query.limit) || 100, 500);
+  const strategy   = req.query.strategy || null;
+  try {
+    let sql = 'SELECT * FROM signal_rejections';
+    const args = [];
+    const where = [];
+    if (instrument) { where.push('instrument=?'); args.push(instrument); }
+    if (strategy)   { where.push('strategy=?');   args.push(strategy); }
+    if (where.length) sql += ' WHERE ' + where.join(' AND ');
+    sql += ' ORDER BY rejected_at DESC LIMIT ?';
+    args.push(limit);
+    const rows = db.prepare(sql).all(...args);
+    res.json(rows.map(r => ({
+      ...r,
+      details: r.details ? JSON.parse(r.details) : null,
+    })));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── STRATEGY PERFORMANCE ──────────────────────────────────────────────────────────────────
+// Per-strategy signal counts, win rates, and recent history
+app.get('/api/strategies/performance', (req, res) => {
+  try {
+    const period = req.query.days ? `datetime('now','-${Number(req.query.days)} days')` : `datetime('now','-30 days')`;
+    const byStrategy = db.prepare(`
+      SELECT s.setup                                                             AS strategy,
+             COUNT(*)                                                            AS total,
+             SUM(CASE WHEN o.result='WIN'  THEN 1 ELSE 0 END)                  AS wins,
+             SUM(CASE WHEN o.result='LOSS' THEN 1 ELSE 0 END)                  AS losses,
+             ROUND(AVG(CASE WHEN o.result='WIN' THEN 1.0 ELSE 0 END)*100, 1)   AS win_pct,
+             ROUND(AVG(CASE WHEN o.result IS NOT NULL THEN s.score ELSE NULL END),1) AS avg_score
+      FROM   signals s
+      LEFT   JOIN outcomes o ON o.signal_id = s.id
+      WHERE  s.received_at >= ${period}
+      GROUP  BY s.setup
+      ORDER  BY total DESC
+    `).all();
+
+    const rejectionsByStrategy = db.prepare(`
+      SELECT strategy, COUNT(*) n, ROUND(AVG(score),1) avg_score
+      FROM   signal_rejections
+      WHERE  rejected_at >= ${period}
+      GROUP  BY strategy
+      ORDER  BY n DESC
+    `).all();
+
+    const totalSignals   = db.prepare(`SELECT COUNT(*) n FROM signals WHERE received_at >= ${period}`).get().n;
+    const totalRejected  = db.prepare(`SELECT COUNT(*) n FROM signal_rejections WHERE rejected_at >= ${period}`).get().n;
+
+    res.json({ byStrategy, rejectionsByStrategy, totalSignals, totalRejected });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

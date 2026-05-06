@@ -164,3 +164,38 @@ CREATE TABLE IF NOT EXISTS market_snapshots (
   low_24h     REAL,
   snapped_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Signals that almost fired but failed a filter (diagnostic)
+CREATE TABLE IF NOT EXISTS signal_rejections (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  instrument  TEXT    NOT NULL,
+  direction   TEXT,
+  setup       TEXT,
+  strategy    TEXT,
+  score       INTEGER,
+  min_score   INTEGER,
+  reason      TEXT    NOT NULL,
+  details     TEXT,   -- JSON: indicator snapshot at rejection time
+  rejected_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_rejections ON signal_rejections(instrument, rejected_at DESC);
+
+-- Per-scan diagnostic snapshot (one row per instrument per scan cycle)
+CREATE TABLE IF NOT EXISTS scan_diagnostics (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  instrument       TEXT    NOT NULL,
+  scanned_at       TEXT    NOT NULL DEFAULT (datetime('now')),
+  last_close       REAL,
+  htf_bias         TEXT,
+  chop             INTEGER,
+  atr              REAL,
+  score_l          INTEGER,
+  score_s          INTEGER,
+  any_setup_l      INTEGER DEFAULT 0,
+  any_setup_s      INTEGER DEFAULT 0,
+  fired            INTEGER DEFAULT 0,
+  strategies_fired TEXT,   -- JSON array of strategy names that fired
+  reject_reason    TEXT,
+  indicators       TEXT    -- JSON snapshot of key indicator values
+);
+CREATE INDEX IF NOT EXISTS idx_scan_diag ON scan_diagnostics(instrument, scanned_at DESC);
