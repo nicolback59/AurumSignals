@@ -51,7 +51,7 @@ class Scanner extends EventEmitter {
     this.cfg = {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
       symbolMgc:       config.symbolMgc       || process.env.SCANNER_SYMBOL_MGC   || 'GC=F',
-      scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '120') * 1000, 300_000),
+      scanInterval:    config.scanInterval    || Math.max(90_000, Math.min(parseInt(process.env.SCAN_INTERVAL || '120') * 1000, 300_000)),
       cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '30'),
       baseScore:       config.baseScore       || parseInt(process.env.SCANNER_MIN_SCORE   || '6'),
       dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '25'),
@@ -937,35 +937,40 @@ class Scanner extends EventEmitter {
 
     const cfg = this.cfg;
 
+    const safe = (label, fn) => (...args) => {
+      try { const p = fn.apply(this, args); if (p?.catch) p.catch(e => this._err(label, e)); }
+      catch (e) { this._err(label, e); }
+    };
+
     // Immediate first scan
-    this.scan();
-    this._intervals.push(setInterval(() => this.scan(), cfg.scanInterval));
+    safe('scan', this.scan)();
+    this._intervals.push(setInterval(safe('scan', this.scan), cfg.scanInterval));
 
     // Startup backtests — delayed well past first scan to avoid rate-limit collision
-    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'),  5 * 60_000);   // 5 min
-    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 12 * 60_000);   // 12 min
+    setTimeout(safe('bt-startup-MNQ', () => this.runBacktestCycle('MNQ', 'startup')),  5 * 60_000);
+    setTimeout(safe('bt-startup-MGC', () => this.runBacktestCycle('MGC', 'startup')), 12 * 60_000);
 
     // Startup optimizers (after backtests settle)
-    setTimeout(() => this.runOptimizerCycle('MNQ'), 25 * 60_000);
-    setTimeout(() => this.runOptimizerCycle('MGC'), 35 * 60_000);
+    setTimeout(safe('opt-MNQ', () => this.runOptimizerCycle('MNQ')), 25 * 60_000);
+    setTimeout(safe('opt-MGC', () => this.runOptimizerCycle('MGC')), 35 * 60_000);
 
     // News at startup + every 30 min
-    setTimeout(() => this.fetchAndStoreNews(), 8_000);
-    this._intervals.push(setInterval(() => this.fetchAndStoreNews(), 30 * 60_000));
+    setTimeout(safe('news', () => this.fetchAndStoreNews()), 8_000);
+    this._intervals.push(setInterval(safe('news', () => this.fetchAndStoreNews()), 30 * 60_000));
 
     // Storage cleanup
-    setTimeout(() => this.runStorageCleanup(), 15_000);
-    this._intervals.push(setInterval(() => this.runStorageCleanup(), 24 * 3_600_000));
+    setTimeout(safe('cleanup', () => this.runStorageCleanup()), 15_000);
+    this._intervals.push(setInterval(safe('cleanup', () => this.runStorageCleanup()), 24 * 3_600_000));
 
     // Periodic backtests (staggered so they don't overlap)
     const btMs  = cfg.btIntervalH * 3_600_000;
-    this._intervals.push(setInterval(() => this.runBacktestCycle('MNQ'), btMs));
-    this._intervals.push(setInterval(() => this.runBacktestCycle('MGC'), btMs + btMs / 2));
+    this._intervals.push(setInterval(safe('bt-MNQ', () => this.runBacktestCycle('MNQ')), btMs));
+    this._intervals.push(setInterval(safe('bt-MGC', () => this.runBacktestCycle('MGC')), btMs + btMs / 2));
 
     // Periodic optimizers
     const optMs = cfg.optIntervalH * 3_600_000;
-    this._intervals.push(setInterval(() => this.runOptimizerCycle('MNQ'), optMs));
-    this._intervals.push(setInterval(() => this.runOptimizerCycle('MGC'), optMs + optMs / 3));
+    this._intervals.push(setInterval(safe('opt-MNQ', () => this.runOptimizerCycle('MNQ')), optMs));
+    this._intervals.push(setInterval(safe('opt-MGC', () => this.runOptimizerCycle('MGC')), optMs + optMs / 3));
 
     this._log(
       `Scanner started — symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +

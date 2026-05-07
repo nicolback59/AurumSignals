@@ -7,6 +7,16 @@ const { getLearningStats } = require('./learning');
 const { getParams }        = require('./strategy-params');
 const { Scanner }          = require('./scanner-core');
 
+// ── Global crash guards ─────────────────────────────────────────────────────
+// Node 15+ terminates on unhandled rejections — log and keep running instead.
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('[UNHANDLED REJECTION]', reason?.message ?? reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('[UNCAUGHT EXCEPTION]', err?.message ?? err);
+  // Keep process alive — the HTTP server is still functional
+});
+
 const PORT           = process.env.PORT           || 3000;
 const DB_PATH        = process.env.DB_PATH        || path.join(__dirname, 'signals.db');
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
@@ -577,7 +587,12 @@ app.get('/api/scanner/stream', (req, res) => {
 
 function _broadcastSSE(event, data) {
   if (!_sseClients.size) return;
-  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  let payload;
+  try {
+    payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  } catch {
+    payload = `event: ${event}\ndata: ${JSON.stringify({ error: 'serialize_failed' })}\n\n`;
+  }
   for (const client of _sseClients) {
     try { client.write(payload); } catch { _sseClients.delete(client); }
   }
