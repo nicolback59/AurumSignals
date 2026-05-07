@@ -1,9 +1,145 @@
 'use strict';
 
-const WINDOW     = 150;  // last N resolved trades to analyse (was 60 — more history = better adaptive thresholds)
-const MIN_SAMPLE = 10;   // minimum trades needed before adjusting thresholds
+const WINDOW     = 300;  // last N resolved trades to analyse
+const MIN_SAMPLE = 5;    // minimum trades before adjusting
 
-// ── Per-setup adaptive deltas ─────────────────────────────────────────────────
+// ── Per-strategy learned threshold bounds ─────────────────────────────────────
+// Thresholds evolve after every backtest cycle.
+// Low win rate → raise (be more selective). High win rate → lower (cast wider net).
+
+const THRESHOLD_BOUNDS = {
+  MNQ_INTRADAY: { min: 58, max: 80, default: 68 },
+  MNQ_SWING:    { min: 62, max: 82, default: 72 },
+  MNQ_50PT:     { min: 65, max: 84, default: 78 },
+  MGC_SCALP:    { min: 54, max: 78, default: 65 },
+  MGC_INTRADAY: { min: 52, max: 75, default: 63 },
+};
+
+// ── Learned threshold persistence ─────────────────────────────────────────────
+
+function getLearnedThresholds(db) {
+  try {
+    const row = db.prepare(
+      "SELECT params_json FROM strategy_params WHERE instrument = 'THRESHOLDS'"
+    ).get();
+    if (row) {
+      const stored = JSON.parse(row.params_json);
+      // Merge stored with defaults so new strategies always have a value
+      const defaults = {};
+      for (const [k, b] of Object.entries(THRESHOLD_BOUNDS)) defaults[k] = b.default;
+      return { ...defaults, ...stored };
+    }
+  } catch {}
+  const defaults = {};
+  for (const [k, b] of Object.entries(THRESHOLD_BOUNDS)) defaults[k] = b.default;
+  return defaults;
+}
+
+function getLearnedThreshold(db, strategyName, fallback) {
+  const all = getLearnedThresholds(db);
+  return all[strategyName] ?? fallback;
+}
+
+/**
+ * Adjust per-strategy confidence thresholds based on backtest win rates.
+ *
+ * Learning rules:
+ *   WR < 35%  → +4 pts  (very poor — tighten hard)
+ *   WR < 45%  → +3 pts  (poor — tighten)
+ *   WR < 52%  → +1 pt   (below average — nudge up)
+ *   WR 52–58% → no change
+ *   WR 58–65% → -1 pt   (decent — slightly lower to get more signals)
+ *   WR 65–72% → -2 pts  (good — lower threshold)
+ *   WR > 72%  → -3 pts  (excellent — cast wider net)
+ *
+ * @param {object} db
+ * @param {object} btMetricsByStrategy - { strategyName: { winRate, tradeCount } }
+ * @returns {{ thresholds, changes }}
+ */
+function updateLearnedThresholds(db, btMetricsByStrategy) {
+  const current = getLearnedThresholds(db);
+  const changes = {};
+
+  for (const [strat, metrics] of Object.entries(btMetricsByStrategy)) {
+    const bounds = THRESHOLD_BOUNDS[strat];
+    if (!bounds) continue;
+    if ((metrics.tradeCount ?? 0) < MIN_SAMPLE) continue;
+
+    const wr     = metrics.winRate ?? 0;
+    const thresh = current[strat] ?? bounds.default;
+    let delta    = 0;
+
+    if      (wr < 0.35) delta = +4;
+    else if (wr < 0.45) delta = +3;
+    else if (wr < 0.52) delta = +1;
+    else if (wr >= 0.72) delta = -3;
+    else if (wr >= 0.65) delta = -2;
+    else if (wr >= 0.58) delta = -1;
+
+    if (delta !== 0) {
+      const newVal = Math.max(bounds.min, Math.min(bounds.max, thresh + delta));
+      changes[strat] = {
+        from:   thresh,
+        to:     newVal,
+        wr:     +(wr * 100).toFixed(1),
+        trades: metrics.tradeCount,
+        delta,
+      };
+      current[strat] = newVal;
+    }
+  }
+
+  if (Object.keys(changes).length > 0) {
+    db.prepare(`
+      INSERT INTO strategy_params (instrument, params_json, updated_at, version)
+      VALUES ('THRESHOLDS', ?, datetime('now'), 1)
+      ON CONFLICT(instrument) DO UPDATE SET
+        params_json = excluded.params_json,
+        updated_at  = excluded.updated_at,
+        version     = version + 1
+    `).run(JSON.stringify(current));
+  }
+
+  return { thresholds: current, changes };
+}
+
+// ── Aggregate backtest win rates (last N runs) ────────────────────────────────
+/**
+ * Compute per-strategy win rates from backtest_trades for the last N runs
+ * of the given instrument. Used to seed learning before live trade data builds up.
+ */
+function getBacktestWinRates(db, instrument, lastNRuns = 3) {
+  try {
+    const rows = db.prepare(`
+      SELECT t.strategy_name,
+             COUNT(*)                                            AS total,
+             SUM(CASE WHEN t.outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
+      FROM   backtest_trades t
+      WHERE  t.instrument = ?
+        AND  t.run_id IN (
+          SELECT id FROM backtest_runs
+          WHERE  instrument = ?
+          ORDER  BY run_at DESC
+          LIMIT  ?
+        )
+      GROUP  BY t.strategy_name
+      HAVING total >= ?
+    `).all(instrument, instrument, lastNRuns, MIN_SAMPLE);
+
+    const result = {};
+    for (const r of rows) {
+      result[r.strategy_name] = {
+        winRate:    r.total > 0 ? r.wins / r.total : 0,
+        tradeCount: r.total,
+      };
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
+// ── Per-setup adaptive deltas (live signals) ──────────────────────────────────
 
 function computeAdaptiveDeltas(db) {
   const rows = db.prepare(`
@@ -29,16 +165,15 @@ function computeAdaptiveDeltas(db) {
   for (const [setup, { wins, total }] of Object.entries(bySetup)) {
     if (total < MIN_SAMPLE) continue;
     const wr = wins / total;
-    if      (wr >= 0.70) deltas[setup] = -2;   // hot setup: lower threshold
-    else if (wr <= 0.40) deltas[setup] = +4;   // cold setup: raise threshold
+    if      (wr >= 0.70) deltas[setup] = -2;
+    else if (wr <= 0.40) deltas[setup] = +4;
   }
   return deltas;
 }
 
-// ── Per-style adaptive deltas ─────────────────────────────────────────────────
+// ── Per-style adaptive deltas (live signals) ──────────────────────────────────
 
 function computeAdaptiveDeltasByStyle(db) {
-  // Uses raw_payload JSON if trade_style column not present (migration-safe)
   let rows = [];
   try {
     rows = db.prepare(`
@@ -50,7 +185,6 @@ function computeAdaptiveDeltasByStyle(db) {
       LIMIT  ?
     `).all(WINDOW);
   } catch {
-    // Column doesn't exist yet — fall back to setup-only deltas
     return {};
   }
 
@@ -90,17 +224,19 @@ function getMarketRegime(db) {
   return wr >= 0.60 ? 'trending' : wr <= 0.38 ? 'choppy' : 'mixed';
 }
 
-// ── Adaptive min-score (setup + style aware) ──────────────────────────────────
+// ── Adaptive min-score (fixed to work on 0-100 confidence scale) ──────────────
 /**
- * Returns the adjusted minimum score for a given setup and optional trade style.
- * Choppy regime adds a further +2 penalty across all setups.
- * @param {Object} db
- * @param {string} setup       - e.g. 'OTE PB', 'STDV REV'
- * @param {string} [style]     - 'scalp' | 'intraday' | 'swing' | undefined
- * @param {number} [baseMin]   - base minimum score (default 16)
+ * Returns the adjusted minimum confidence for a given setup/style.
+ *
+ * Previously broken: was capping output at 28 even when called with 0-100 scale values.
+ * Now detects scale automatically and returns values in the same range.
+ *
+ * @param {object} db
+ * @param {string} setup
+ * @param {string|number} style
+ * @param {number} baseMin  - base threshold (0-100 confidence scale OR legacy 0-25 scale)
  */
 function getAdaptiveMinScore(db, setup, style, baseMin = 16) {
-  // Handle legacy 3-arg call: (db, setup, baseMin)
   if (typeof style === 'number') { baseMin = style; style = undefined; }
 
   try {
@@ -112,10 +248,15 @@ function getAdaptiveMinScore(db, setup, style, baseMin = 16) {
     const styleKey    = style ? `${style}::${setup}` : null;
     const styleDelta  = styleKey ? (styleDeltas[styleKey] ?? 0) : 0;
 
-    // Use the more conservative (larger) of the two deltas to avoid false positives
     const combinedDelta = Math.max(setupDelta, styleDelta);
     const regimeDelta   = regime === 'choppy' ? 2 : 0;
 
+    // Auto-detect scale: confidence 0-100 vs legacy 0-25
+    if (baseMin > 30) {
+      // 0-100 confidence scale — scale up delta proportionally
+      const scaledDelta = (combinedDelta + regimeDelta) * 3;
+      return Math.max(50, Math.min(85, Math.round(baseMin + scaledDelta)));
+    }
     return Math.max(12, Math.min(28, baseMin + combinedDelta + regimeDelta));
   } catch {
     return baseMin;
@@ -180,22 +321,51 @@ function getLearningStats(db) {
     ORDER  BY win_pct DESC
   `).all();
 
+  // Also pull backtest win rates by strategy for the last 5 runs
+  const btByStrategy = {};
+  try {
+    const btRows = db.prepare(`
+      SELECT t.strategy_name,
+             COUNT(*)                                            AS total,
+             SUM(CASE WHEN t.outcome='WIN' THEN 1 ELSE 0 END)  AS wins
+      FROM   backtest_trades t
+      WHERE  t.run_id IN (
+        SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5
+      )
+      GROUP  BY t.strategy_name
+    `).all();
+    for (const r of btRows) {
+      btByStrategy[r.strategy_name] = {
+        total:   r.total,
+        wins:    r.wins,
+        win_pct: r.total > 0 ? +(r.wins / r.total * 100).toFixed(1) : 0,
+      };
+    }
+  } catch {}
+
   return {
     bySetup,
     bySession,
     byHtf,
-    byStyle:        getStylePerformance(db),
-    adaptiveDeltas: computeAdaptiveDeltas(db),
-    regime:         getMarketRegime(db),
-    windowTrades:   WINDOW,
+    byStyle:            getStylePerformance(db),
+    adaptiveDeltas:     computeAdaptiveDeltas(db),
+    learnedThresholds:  getLearnedThresholds(db),
+    btByStrategy,
+    regime:             getMarketRegime(db),
+    windowTrades:       WINDOW,
   };
 }
 
 module.exports = {
   getAdaptiveMinScore,
+  getLearnedThreshold,
+  getLearnedThresholds,
+  updateLearnedThresholds,
+  getBacktestWinRates,
   getLearningStats,
   getMarketRegime,
   getStylePerformance,
   computeAdaptiveDeltas,
   computeAdaptiveDeltasByStyle,
+  THRESHOLD_BOUNDS,
 };

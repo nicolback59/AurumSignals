@@ -65,12 +65,12 @@ const PARAM_BOUNDS = {
 
 // Safeguards for autonomous revisions
 const SAFEGUARDS = {
-  minTrades:        20,    // backtest must find at least this many trades
-  minWinRateGain:   0.04,  // 4pp absolute improvement required
-  minSharpeDelta:   0.08,  // Sharpe ratio must improve by at least this much
+  minTrades:        15,    // backtest must find at least this many trades
+  minWinRateGain:   0.025, // 2.5pp absolute improvement required
+  minSharpeDelta:   0.06,  // Sharpe ratio must improve by at least this much
   cooldownHours:    6,     // minimum hours between revisions
   maxScoreShift:    4,     // minScore can't shift more than ±4 per revision
-  perturbTrials:    50,    // total candidates per cycle (perturbation + crossover)
+  perturbTrials:    80,    // total candidates per cycle (perturbation + crossover)
   eliteCount:       5,     // top-N kept for crossover breeding
 };
 

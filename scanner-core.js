@@ -25,7 +25,7 @@ const {
   aggregate1hTo4h,
   aggregate1hToDaily,
 } = require('./strategies/shared-indicators');
-const { getAdaptiveMinScore, getMarketRegime } = require('./learning');
+const { getAdaptiveMinScore, getMarketRegime, getLearnedThreshold, updateLearnedThresholds, getBacktestWinRates } = require('./learning');
 const { runBacktest }          = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
@@ -545,13 +545,17 @@ class Scanner extends EventEmitter {
         continue;
       }
 
-      // Adaptive confidence gate (relaxed if below daily minimum)
-      const minConf = getAdaptiveMinScore(this.db, sig.setup, sig.trade_style, sig.confidence) + minConfBonus;
-      if (sig.confidence < minConf) {
-        const reason = `confidence ${sig.confidence} < adaptive min ${minConf}${minConfBonus < 0 ? ' (min-guarantee mode)' : ''}`;
+      // Learned confidence gate — threshold evolves based on backtest win rates.
+      // Strategies already pre-filter by their hardcoded floor; this gate can raise
+      // the bar further (poor backtest WR) or lower it slightly (strong WR).
+      const learnedMin = getLearnedThreshold(this.db, sig.strategy_name, sig.confidence * 0.9);
+      const effectiveMin = Math.round(learnedMin + minConfBonus);
+      if (sig.confidence < effectiveMin) {
+        const reason = `confidence ${sig.confidence} < learned threshold ${effectiveMin}` +
+          (minConfBonus < 0 ? ' (min-guarantee relaxed)' : '');
         this._log(`⚠️  ${sig.strategy_name} ${instrument} — ${reason}`);
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
-          sig.confidence, minConf, reason);
+          sig.confidence, effectiveMin, reason);
         continue;
       }
 
@@ -832,6 +836,18 @@ class Scanner extends EventEmitter {
         `win=${(metrics.winRate * 100).toFixed(1)}% | sharpe=${metrics.sharpe} | ` +
         `pf=${metrics.profitFactor} | totalReturn=${metrics.totalReturn ?? '?'} | run#${runId}`
       );
+
+      // ── Learning feedback: update thresholds from last 3 backtest runs ─────────
+      try {
+        const btWinRates  = getBacktestWinRates(this.db, instrument, 3);
+        const learnResult = updateLearnedThresholds(this.db, btWinRates);
+        for (const [strat, { from, to, wr, trades, delta }] of Object.entries(learnResult.changes)) {
+          const dir = delta > 0 ? '↑' : '↓';
+          this._log(`📚 LEARNED [${strat}]: threshold ${from} ${dir} ${to} (WR=${wr}%, ${trades} trades)`);
+        }
+      } catch (e) {
+        this._log(`LEARN ERR: ${e.message}`);
+      }
 
       this.emit('backtest', { instrument, runId, metrics });
 
