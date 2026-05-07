@@ -7,6 +7,18 @@ const { getLearningStats } = require('./learning');
 const { getParams }        = require('./strategy-params');
 const { Scanner }          = require('./scanner-core');
 
+// ── Global crash guards ───────────────────────────────────────────────────────
+// Prevent unhandled promise rejections or thrown errors from killing the server.
+// The scanner catches its own errors, but these backstops ensure the HTTP server
+// never goes down due to an async scanner fault.
+process.on('unhandledRejection', (reason) => {
+  console.error(`[${new Date().toISOString()}] Unhandled rejection:`, reason?.message ?? reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error(`[${new Date().toISOString()}] Uncaught exception:`, err.message, err.stack);
+  // Do NOT exit — the server must keep serving HTTP even if something throws.
+});
+
 const PORT           = process.env.PORT           || 3000;
 const DB_PATH        = process.env.DB_PATH        || path.join(__dirname, 'signals.db');
 const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
