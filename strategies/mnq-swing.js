@@ -62,20 +62,19 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const vwapArr = calcVwap(bars);
   const vwap    = vwapArr[n];
 
-  // Daily EMA 50 / 200
-  const dlyCloses  = htf2Bars.map(b => b.close);
-  const dly50Arr   = ema(dlyCloses, 50);
-  const dly200Arr  = ema(dlyCloses, 200);
-  const dn         = dlyCloses.length - 1;
-  const dly50      = dly50Arr[dn];
-  const dly200     = dly200Arr[dn];
-  const dlyClose   = htf2Bars[dn].close;
+  // Daily trend — use EMA50 only (EMA200 needs 200 daily bars; we only have ~60).
+  // Use the 4h bars as the macro HTF instead.
+  const dlyCloses = htf2Bars.map(b => b.close);
+  const dly21Arr  = ema(dlyCloses, 21);
+  const dn        = dlyCloses.length - 1;
+  const dly21     = dly21Arr[dn];
+  const dlyClose  = htf2Bars[dn].close;
 
-  // HTF bias from daily EMAs
-  const dailyBull  = dly50 > dly200 && dlyClose > dly50;
-  const dailyBear  = dly50 < dly200 && dlyClose < dly50;
+  // Macro bias: price above/below daily EMA21
+  const dailyBull = dly21 != null && dlyClose > dly21;
+  const dailyBear = dly21 != null && dlyClose < dly21;
 
-  if (!dailyBull && !dailyBear) return null; // unclear trend
+  if (!dailyBull && !dailyBear) return null;
 
   // 1h EMA 9/21
   const ema9Arr  = ema(closes, 9);
@@ -86,7 +85,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   // ADX on 1h (trend strength)
   const { adx: adxArr } = calcAdx(bars, 14);
   const adx = adxArr[n];
-  if (adx != null && adx < 15) return null; // weak trend
+  if (adx != null && adx < 12) return null; // weak trend
 
   // ── Market structure on 1h ───────────────────────────────────────────────────
   const struct = detectMarketStructure(bars, 30);
@@ -128,10 +127,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
     const { histogram } = calcMacd(closes);
-    const hist = histogram[n], histPrev = histogram[n - 1];
-    const macdOk = isBull
-      ? hist != null && hist > (histPrev ?? -Infinity)
-      : hist != null && hist < (histPrev ?? Infinity);
+    const hist = histogram[n];
+    const macdOk = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
     if (!macdOk) continue;
 
     // ── Stop-loss ────────────────────────────────────────────────────────────

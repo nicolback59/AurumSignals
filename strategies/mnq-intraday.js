@@ -74,7 +74,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const ema50 = ema50Arr[n];
 
   // ── No-trade filters ─────────────────────────────────────────────────────────
-  if (isChoppingAroundVwap(bars, vwapArr, 8, 3)) return null;
+  if (isChoppingAroundVwap(bars, vwapArr, 8, 4)) return null;
 
   const sess = getSessionInfo(last.timestamp);
   // Skip dead sessions
@@ -85,51 +85,55 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const htf2Bias = htf2Bars && htf2Bars.length >= 21 ? calcHtfBias(htf2Bars, 9, 21) : 0;
 
   // ── Determine direction candidates ───────────────────────────────────────────
+  // EMA9 > EMA21 is sufficient — EMA50 alignment is scored, not required as a gate.
+  // HTF must not be directly opposed (neutral is fine).
   const directions = [];
-  if (last.close > vwap && ema9 > ema21 && ema21 > ema50 && htfBias >= 0)  directions.push('LONG');
-  if (last.close < vwap && ema9 < ema21 && ema21 < ema50 && htfBias <= 0)  directions.push('SHORT');
+  if (ema9 > ema21 && htfBias >= 0)  directions.push('LONG');
+  if (ema9 < ema21 && htfBias <= 0)  directions.push('SHORT');
 
   for (const dir of directions) {
     const isBull = dir === 'LONG';
 
     // ── EMA stack score ─────────────────────────────────────────────────────
+    // Allow partial stack (1) — full stack (2) gives higher confidence score.
     const esScore = emaStackScore(closes, 9, 21, 50, dir);
-    if (esScore < 2) continue; // must be full stack
+    if (esScore < 1) continue;
 
     // ── Pullback detection ──────────────────────────────────────────────────
-    // Price must have recently touched the VWAP, 9 EMA, or 21 EMA zone
-    const tolerance = 0.4 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 6);
-    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 6);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 6);
+    // Price must have recently touched the VWAP, EMA9, or EMA21 zone.
+    // Wider lookback (10 bars = 50 min) and tolerance (0.5 ATR) for live scanning.
+    const tolerance = 0.5 * atr;
+    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 10);
+    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 10);
+    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 10);
     if (!pulledToVwap && !pulledTo9 && !pulledTo21) continue;
 
     // ── Pullback held (EMA support not broken) ──────────────────────────────
     const recentSlice = bars.slice(-4, -1);
     if (isBull) {
-      if (recentSlice.some(b => b.close < ema21 - 0.2 * atr)) continue;
+      if (recentSlice.some(b => b.close < ema21 - 0.35 * atr)) continue;
     } else {
-      if (recentSlice.some(b => b.close > ema21 + 0.2 * atr)) continue;
+      if (recentSlice.some(b => b.close > ema21 + 0.35 * atr)) continue;
     }
 
     // ── Confirmation candle ─────────────────────────────────────────────────
-    const confirmed = isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35);
+    const confirmed = isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25);
     if (!confirmed) continue;
 
     // ── RSI filter ──────────────────────────────────────────────────────────
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
     if (rsi != null) {
-      if (isBull  && rsi >= 72) continue; // overbought
-      if (!isBull && rsi <= 28) continue; // oversold
+      if (isBull  && rsi >= 75) continue; // overbought
+      if (!isBull && rsi <= 25) continue; // oversold
     }
 
     // ── MACD momentum alignment ──────────────────────────────────────────────
+    // Histogram must be on the correct side — requiring it to accelerate was
+    // blocking strong steady trends where histogram is flat but clearly positive.
     const { histogram } = calcMacd(closes);
-    const hist = histogram[n], histPrev = histogram[n - 1];
-    const macdAligned = isBull
-      ? hist != null && hist > (histPrev ?? -Infinity)
-      : hist != null && hist < (histPrev ?? Infinity);
+    const hist = histogram[n];
+    const macdAligned = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
     if (!macdAligned) continue;
 
     // ── Stop-loss ────────────────────────────────────────────────────────────
@@ -200,7 +204,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       setup:         'MNQ Intraday',
       htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
-      trigger_reason: `EMA9/21/50 ${dir} stack, pullback held, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle confirmed, HTF aligned`,
+      trigger_reason: `EMA9/21 ${dir} (stack=${esScore}), pullback held, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF aligned`,
       indicators: {
         atr:   +atr.toFixed(2),
         vwap:  +vwap.toFixed(2),

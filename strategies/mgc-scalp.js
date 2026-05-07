@@ -127,10 +127,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     }
 
     const { histogram } = calcMacd(closes);
-    const hist = histogram[n], histPrev = histogram[n - 1];
-    const macdOk = isBull
-      ? hist != null && hist > (histPrev ?? -Infinity)
-      : hist != null && hist < (histPrev ?? Infinity);
+    const hist = histogram[n];
+    const macdOk = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
     if (!macdOk) continue;
 
     // ── ATR confirms enough movement for scalp target ────────────────────────

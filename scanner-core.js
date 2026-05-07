@@ -525,6 +525,14 @@ class Scanner extends EventEmitter {
     const stratsFiredNames = signals.map(s => s.strategy_name);
     let anyFired          = false;
 
+    // Always log candidate signals so we can debug why signals aren't firing
+    if (signals.length > 0) {
+      const summary = signals.map(s => `${s.strategy_name}(${s.direction} conf=${s.confidence})`).join(', ');
+      this._log(`🔍 ${instrument} candidate signal(s): ${summary}`);
+    } else if (this._scanCount % 5 === 0) {
+      this._log(`📉 ${instrument} — no strategy candidates (bars=${bars5m.length})`);
+    }
+
     // Check if we need to guarantee minimum daily signals — lower the bar if running behind
     const todayCountNow = this._stmts.dailySignalCount.get(instrument)?.cnt ?? 0;
     const nowHhmm = (() => {
