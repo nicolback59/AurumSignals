@@ -3,8 +3,8 @@
 const Database              = require('better-sqlite3');
 const path                  = require('path');
 const fs                    = require('fs');
-const { computeSignal, diagnoseSignal }   = require('./signal-engine');
-const { runAllStrategies, diagnoseStrategies } = require('./strategies');
+const { evaluateAll, buildBarSetsFrom5m, resetAllStrategies, STRATEGY_META } = require('./strategy-engine');
+const { aggregate5mTo15m, aggregate5mTo1h, aggregate1hTo4h, aggregate1hToDaily } = require('./strategies/shared-indicators');
 const { getAdaptiveMinScore, getMarketRegime } = require('./learning');
 const { runBacktest }       = require('./backtest-engine');
 const {
@@ -48,11 +48,11 @@ db.exec(schema);
 
 const insertSignal = db.prepare(`
   INSERT INTO signals
-    (ticker, timeframe, direction, grade, setup, entry, sl, tp1, tp2, tp3,
+    (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
      score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
      trade_style, instrument, rr, raw_payload)
   VALUES
-    (@ticker, @timeframe, @direction, @grade, @setup, @entry, @sl, @tp1, @tp2, @tp3,
+    (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
      @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
      @trade_style, @instrument, @rr, @raw_payload)
 `);
@@ -262,34 +262,35 @@ function autoResolveOutcomes(bars1m, instrument) {
 }
 
 // ── Store a fired signal ──────────────────────────────────────────────────────
-function storeSignal(signal, minScore) {
+function storeSignal(signal, minConfidence) {
   const info = insertSignal.run({
-    ticker:       signal.ticker ?? `${signal.instrument}1!`,
-    timeframe:    signal.timeframe ?? '1',
-    direction:    signal.direction,
-    grade:        signal.grade,
-    setup:        signal.setup,
-    entry:        signal.entry,
-    sl:           signal.sl,
-    tp1:          signal.tp1,
-    tp2:          signal.tp2,
-    tp3:          signal.tp3,
-    score:        signal.score,
-    win_prob_tp1: signal.win_prob_tp1,
-    win_prob_tp2: signal.win_prob_tp2,
-    win_prob_tp3: signal.win_prob_tp3,
-    htf_bias:     signal.htf_bias    ?? signal.htfBias ?? null,
-    session:      signal.session,
-    trade_style:  signal.tradeStyle  ?? signal.trade_style ?? null,
-    instrument:   signal.instrument,
-    rr:           signal.rr,
-    raw_payload:  JSON.stringify(signal),
+    ticker:        signal.ticker ?? `${signal.instrument}1!`,
+    timeframe:     signal.timeframe ?? '5m',
+    direction:     signal.direction,
+    grade:         signal.grade,
+    setup:         signal.setup,
+    strategy_name: signal.strategy_name ?? null,
+    entry:         signal.entry,
+    sl:            signal.sl,
+    tp1:           signal.tp1,
+    tp2:           signal.tp2,
+    tp3:           signal.tp3,
+    score:         signal.score,
+    win_prob_tp1:  signal.win_prob_tp1,
+    win_prob_tp2:  signal.win_prob_tp2,
+    win_prob_tp3:  signal.win_prob_tp3,
+    htf_bias:      signal.htf_bias ?? null,
+    session:       signal.session,
+    trade_style:   signal.trade_style ?? signal.tradeStyle ?? null,
+    instrument:    signal.instrument,
+    rr:            signal.rr,
+    raw_payload:   JSON.stringify(signal),
   });
 
+  const stratLabel = signal.strategy_name ?? signal.setup ?? 'unknown';
   console.log(
     `[${ts()}] ✅ SIGNAL #${info.lastInsertRowid} | ${signal.instrument} ${signal.direction} ${signal.grade} | ` +
-    `${signal.setup} [${signal.tradeStyle ?? signal.source ?? 'unknown'}] | ` +
-    `score=${signal.score}/${minScore} | entry=${signal.entry} | rr=${signal.rr}`
+    `${stratLabel} | confidence=${signal.confidence ?? signal.score}/100 | entry=${signal.entry} | rr=${signal.rr}`
   );
   sendNtfy(signal);
   return info.lastInsertRowid;
@@ -339,12 +340,11 @@ function storeScanDiag(instrument, diag, stratsFired, fired, rejectReason) {
 }
 
 // ── Per-instrument signal scan ────────────────────────────────────────────────
-// Scans three timeframe combos per instrument: 15m+1h, 45m+1h, 1h+4h
-async function scanInstrument(symbol, instrument, bars15m, bars45m, bars1h, bars4h) {
+async function scanInstrument(symbol, instrument, bars5m, bars15m, bars1h, bars4h, barsDly) {
   const barMs = 60_000;
   if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) return;
 
-  // Daily cap — stop firing after DAILY_SIGNAL_CAP signals for this instrument today
+  // Daily cap
   const todayCount = dailySignalCount.get(instrument)?.cnt ?? 0;
   if (todayCount >= DAILY_SIGNAL_CAP) {
     if (LOG_LEVEL === 'full') {
@@ -353,166 +353,121 @@ async function scanInstrument(symbol, instrument, bars15m, bars45m, bars1h, bars
     return;
   }
 
-  const dbParams = getParams(db, instrument);
+  // Build barSets for new strategy engine
+  const barSets = instrument === 'MGC'
+    ? { bars5mMgc: bars5m, bars15mMgc: bars15m, bars1hMgc: bars1h }
+    : { bars5m, bars15m, bars1h, bars4h, barsDly };
 
-  // [primaryBars, htfBars, timeframe label (minutes)]
-  const tfCombos = [
-    [bars15m, bars1h, '15'],
-    [bars45m, bars1h, '45'],
-    [bars1h,  bars4h, '60'],
-  ];
+  const signals = evaluateAll(barSets, { instrument });
+  const stratsFiredNames = signals.map(s => s.strategy_name);
+  let totalFired = false;
 
-  for (const [primaryBars, htfBars, tfLabel] of tfCombos) {
-    if (primaryBars.length < 60 || htfBars.length < 30) continue;
-
-    const cfg = { ...dbParams, rthOnly: RTH_ONLY, instrument };
-
-    // ── 1. Primary 4-factor signal engine ──────────────────────────────────
-    const signal = computeSignal(primaryBars, htfBars, cfg);
-    const diag   = diagnoseSignal(primaryBars, htfBars, cfg);
-
-    // ── 2. 5-strategy engine ────────────────────────────────────────────────
-    const stratResults     = diagnoseStrategies(primaryBars, instrument);
-    const stratsFiredNames = stratResults.filter(r => r.fired && r.signal).map(r => r.strategy);
-
-    // ── 3. Evaluate primary signal ──────────────────────────────────────────
-    let primaryFired = false;
-    if (signal) {
-      const minScore = getAdaptiveMinScore(db, signal.setup, signal.tradeStyle, dbParams.minScore ?? BASE_SCORE);
-      if (signal.score >= minScore) {
-        if (Date.now() - (lastSignalTimes[instrument] ?? 0) >= COOLDOWN * barMs) {
-          lastSignalTimes[instrument] = Date.now();
-          storeSignal({ ...signal, timeframe: tfLabel, source: 'primary', ticker: `${instrument}1!` }, minScore);
-          primaryFired = true;
-        }
-      } else {
-        const reason = `adaptive score filter: ${signal.score} < ${minScore} (setup=${signal.setup})`;
-        if (LOG_LEVEL === 'full') {
-          console.log(`[${ts()}] ⚠️  Suppressed ${instrument} ${tfLabel}m ${signal.setup} — ${reason}`);
-        }
-        storeRejection(instrument, signal.direction, signal.setup, 'primary',
-          signal.score, minScore, reason, diag.indicators);
+  for (const sig of signals) {
+    if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) {
+      if (LOG_LEVEL === 'full') {
+        console.log(`[${ts()}] ⏳ Cooldown: ${sig.strategy_name} ${instrument} suppressed`);
       }
+      storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+        sig.confidence, null, 'cooldown', null);
+      continue;
     }
 
-    // ── 4. Evaluate strategy signals ────────────────────────────────────────
-    let stratFiredCount = 0;
-    for (const result of stratResults) {
-      if (result.fired && result.signal) {
-        const sig      = result.signal;
-        const minScore = getAdaptiveMinScore(db, sig.setup, null, BASE_SCORE);
-        if (sig.score >= minScore) {
-          if (Date.now() - (lastSignalTimes[instrument] ?? 0) < COOLDOWN * barMs) {
-            if (LOG_LEVEL === 'full') {
-              console.log(`[${ts()}] ⏳ Cooldown: strategy ${result.strategy} ${instrument} ${tfLabel}m suppressed`);
-            }
-            continue;
-          }
-          lastSignalTimes[instrument] = Date.now();
-          storeSignal({
-            ...sig, timeframe: tfLabel, source: 'strategy', instrument,
-            ticker: `${instrument}1!`,
-            htf_bias:   diag.indicators?.htfBias ?? null,
-            indicators: diag.indicators ?? null,
-          }, minScore);
-          stratFiredCount++;
-        } else {
-          const reason = `score ${sig.score} < min ${minScore}`;
-          if (LOG_LEVEL === 'full') {
-            console.log(`[${ts()}] ⚠️  Strategy ${result.strategy} ${instrument} ${tfLabel}m rejected — ${reason}`);
-          }
-          storeRejection(instrument, sig.direction, sig.setup, result.strategy,
-            sig.score, minScore, reason, null);
-        }
-      } else if (!result.fired && LOG_LEVEL === 'full') {
-        console.log(`[${ts()}] ⬜ ${instrument} ${tfLabel}m ${result.strategy}: ${result.reason ?? result.error ?? 'no signal'}`);
+    // Adaptive confidence threshold
+    const minConf = getAdaptiveMinScore(db, sig.setup, sig.trade_style, sig.confidence);
+    if (sig.confidence < minConf) {
+      const reason = `confidence ${sig.confidence} < adaptive min ${minConf}`;
+      if (LOG_LEVEL === 'full') {
+        console.log(`[${ts()}] ⚠️  ${sig.strategy_name} ${instrument} suppressed — ${reason}`);
       }
+      storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+        sig.confidence, minConf, reason, null);
+      continue;
     }
 
-    // ── 5. Diagnostic log ───────────────────────────────────────────────────
-    const totalFired = primaryFired || stratFiredCount > 0;
-
-    if (LOG_LEVEL === 'full') {
-      const ind    = diag.indicators ?? {};
-      const regime = getMarketRegime(db);
-      const parts  = [
-        `tf=${tfLabel}m`,
-        `htf=${ind.htfBias ?? '?'}`,
-        `chop=${ind.chop ? '⛔' : '✅'}`,
-        `atr=${ind.atr ?? '?'}`,
-        `close=${ind.close ?? '?'}`,
-        `blwV2=${ind.blwV2} blwV1=${ind.blwV1} abvV2=${ind.abvV2}`,
-        `inOTED=${ind.inOTED} inOTEP=${ind.inOTEP}`,
-        `dB=${ind.dB} dBr=${ind.dBr} rU=${ind.rU} rD=${ind.rD} mB=${ind.mB}`,
-        `rstL=${ind.rstL} rstS=${ind.rstS}`,
-        `scoreL=${diag.scores?.scoreL ?? 0} scoreS=${diag.scores?.scoreS ?? 0}`,
-        `regime=${regime}`,
-        `strats=${stratsFiredNames.length ? stratsFiredNames.join(',') : 'none'}`,
-      ];
-      console.log(`[${ts()}] 📊 ${instrument} | ${parts.join(' | ')}`);
-
-      if (!totalFired && diag.rejectReasons?.length) {
-        console.log(`[${ts()}] ❌ ${instrument} ${tfLabel}m no signal — reasons:`);
-        for (const r of diag.rejectReasons) console.log(`         ${r}`);
-      }
-    } else if (!totalFired && LOG_LEVEL === 'signal') {
-      if (scanCount % 10 === 0) {
-        const top = diag.rejectReasons?.[0] ?? 'no setup met';
-        console.log(`[${ts()}] ${instrument} ${tfLabel}m — no signal (${top})`);
-      }
-    }
-
-    const rejectReason = !totalFired ? (diag.rejectReasons?.[0] ?? 'no setup') : null;
-    storeScanDiag(instrument, diag, stratsFiredNames, totalFired, rejectReason);
+    lastSignalTimes[instrument] = Date.now();
+    storeSignal({ ...sig, ticker: `${instrument}1!` }, minConf);
+    totalFired = true;
   }
+
+  // ── Diagnostic log ──────────────────────────────────────────────────────────
+  const regime = getMarketRegime(db);
+  const lastBar = bars5m.length > 0 ? bars5m[bars5m.length - 1] : null;
+  const indicators = {
+    close:   lastBar?.close ?? null,
+    htfBias: null, // computed internally by strategy engine
+    atr:     null,
+    chop:    false,
+  };
+
+  if (LOG_LEVEL === 'full') {
+    const parts = [
+      `tf=5m`,
+      `close=${indicators.close ?? '?'}`,
+      `regime=${regime}`,
+      `strats=${stratsFiredNames.length ? stratsFiredNames.join(',') : 'none'}`,
+      `fired=${totalFired ? 'YES' : 'NO'}`,
+    ];
+    console.log(`[${ts()}] 📊 ${instrument} | ${parts.join(' | ')}`);
+  } else if (!totalFired && LOG_LEVEL === 'signal') {
+    if (scanCount % 10 === 0) {
+      console.log(`[${ts()}] ${instrument} 5m — no signal (confidence threshold not met)`);
+    }
+  }
+
+  const diagObj = { indicators };
+  storeScanDiag(instrument, diagObj, stratsFiredNames, totalFired,
+    totalFired ? null : 'confidence threshold not met');
 }
 
 // ── Live scan ─────────────────────────────────────────────────────────────────
 async function scan() {
   scanCount++;
   try {
-    // Fetch 15m (250 bars ≈ 62h) and 1h (200 bars ≈ 200h) for both instruments
-    const [mnq15mRaw, mnq1hRaw, mgc15mRaw, mgc1hRaw] = await Promise.all([
-      fetchYahooBars(SYMBOL,     '15m', '60d'),
-      fetchYahooBars(SYMBOL,     '1h',  '60d'),
-      fetchYahooBars(SYMBOL_MGC, '15m', '60d'),
-      fetchYahooBars(SYMBOL_MGC, '1h',  '60d'),
+    // Fetch 5m bars (primary for intraday + 50-pt + MGC scalp)
+    // Fetch 1h bars directly for swing HTF (more history)
+    const [mnq5mRaw, mnq1hRaw, mgc5mRaw, mgc1hRaw] = await Promise.all([
+      fetchYahooBars(SYMBOL,     '5m',  '60d'),
+      fetchYahooBars(SYMBOL,     '1h',  '730d'),
+      fetchYahooBars(SYMBOL_MGC, '5m',  '60d'),
+      fetchYahooBars(SYMBOL_MGC, '1h',  '730d'),
     ]);
 
-    const mnq15m = mnq15mRaw.slice(-250);
-    const mnq1h  = mnq1hRaw.slice(-200);
-    const mgc15m = mgc15mRaw.slice(-250);
-    const mgc1h  = mgc1hRaw.slice(-200);
+    // Keep recent bars: 5m = last 500 bars (~42h), 1h = last 500 bars (~20 days)
+    const mnq5m  = mnq5mRaw.slice(-500);
+    const mnq1h  = mnq1hRaw.slice(-500);
+    const mgc5m  = mgc5mRaw.slice(-500);
+    const mgc1h  = mgc1hRaw.slice(-500);
 
-    // Derive 45m (3×15m) and 4h (4×1h) via aggregation
-    const mnq45m = aggregate45m(mnq15m);
-    const mnq4h  = aggregate4h(mnq1h);
-    const mgc45m = aggregate45m(mgc15m);
-    const mgc4h  = aggregate4h(mgc1h);
+    // Aggregate multi-TF sets for MNQ
+    const mnq15m  = aggregate5mTo15m(mnq5m);
+    const mnq4h   = aggregate1hTo4h(mnq1h);
+    const mnqDly  = aggregate1hToDaily(mnq1h);
 
-    if (mnq15m.length >= 2) savePrice(SYMBOL,     mnq15m);
-    if (mgc15m.length >= 2) savePrice(SYMBOL_MGC, mgc15m);
+    // Aggregate multi-TF sets for MGC
+    const mgc15m  = aggregate5mTo15m(mgc5m);
 
-    const mnqReady = mnq15m.length >= 60 && mnq1h.length >= 30 && mnq45m.length >= 60 && mnq4h.length >= 30;
-    const mgcReady = mgc15m.length >= 60 && mgc1h.length >= 30 && mgc45m.length >= 60 && mgc4h.length >= 30;
+    if (mnq5m.length >= 2) savePrice(SYMBOL,     mnq5m);
+    if (mgc5m.length >= 2) savePrice(SYMBOL_MGC, mgc5m);
+
+    const mnqReady = mnq5m.length >= 60 && mnq15m.length >= 20 && mnq1h.length >= 30;
+    const mgcReady = mgc5m.length >= 60 && mgc15m.length >= 20;
 
     if (!mnqReady && !mgcReady) {
-      console.log(`[${ts()}] ⏳ Waiting for bars: MNQ 15m=${mnq15m.length}/45m=${mnq45m.length}/1h=${mnq1h.length}/4h=${mnq4h.length}, MGC 15m=${mgc15m.length}/45m=${mgc45m.length}/1h=${mgc1h.length}/4h=${mgc4h.length}`);
+      console.log(`[${ts()}] ⏳ Waiting for bars: MNQ 5m=${mnq5m.length}/15m=${mnq15m.length}/1h=${mnq1h.length}, MGC 5m=${mgc5m.length}/15m=${mgc15m.length}`);
       return;
     }
 
     await Promise.all([
-      mnqReady ? scanInstrument(SYMBOL,     'MNQ', mnq15m, mnq45m, mnq1h, mnq4h) : Promise.resolve(),
-      mgcReady ? scanInstrument(SYMBOL_MGC, 'MGC', mgc15m, mgc45m, mgc1h, mgc4h) : Promise.resolve(),
+      mnqReady ? scanInstrument(SYMBOL, 'MNQ', mnq5m, mnq15m, mnq1h, mnq4h, mnqDly) : Promise.resolve(),
+      mgcReady ? scanInstrument(SYMBOL_MGC, 'MGC', mgc5m, mgc15m, mgc1h, [], []) : Promise.resolve(),
     ]);
 
-    if (mnqReady) autoResolveOutcomes(mnq15m, 'MNQ');
-    if (mgcReady) autoResolveOutcomes(mgc15m, 'MGC');
+    if (mnqReady) autoResolveOutcomes(mnq5m, 'MNQ');
+    if (mgcReady) autoResolveOutcomes(mgc5m, 'MGC');
 
   } catch (err) {
     console.error(`[${ts()}] Scan error:`, err.message);
   } finally {
-    // Always update heartbeat so the UI can detect the scanner is alive
     try { upsertHeartbeat.run(); } catch { /* never crash on heartbeat failure */ }
   }
 }
@@ -586,21 +541,23 @@ async function runBacktestCycle(instrument, triggeredBy = 'scheduled') {
     if (allTrades.length > 0) {
       const insTrade = db.prepare(`
         INSERT INTO backtest_trades
-          (run_id, instrument, bar_idx, timestamp, direction, setup, trade_style, regime, entry, sl, tp1, outcome, score)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          (run_id, instrument, bar_idx, timestamp, direction, setup, strategy_name, trade_style, regime, entry, sl, tp1, outcome, score, confidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       db.transaction(() => {
         for (const t of allTrades) {
           insTrade.run(runId, instrument, t.bar ?? null, t.timestamp ?? null, t.direction,
-            t.setup ?? null, t.tradeStyle ?? null, t.regime ?? null,
-            t.entry ?? null, t.sl ?? null, t.tp1 ?? null, t.outcome, t.score ?? null);
+            t.setup ?? null, t.strategy_name ?? null, t.trade_style ?? t.tradeStyle ?? null,
+            t.regime ?? null, t.entry ?? null, t.sl ?? null, t.tp1 ?? null,
+            t.outcome, t.score ?? null, t.confidence ?? null);
         }
       })();
     }
 
+    // Store strategy breakdown in style_breakdown field for UI access
     saveBacktestDetails(db, runId, {
       byRegime:               metrics.byRegime,
-      byStyle:                metrics.byStyle,
+      byStyle:                JSON.stringify(metrics.byStrategy ?? metrics.byStyle ?? {}),
       bySetup:                metrics.bySetup,
       walkForwardConsistency: result.walkForward?.consistency ?? null,
       walkForwardAvgWR:       result.walkForward?.avgWinRate  ?? null,
@@ -688,11 +645,10 @@ function runStorageCleanup() {
 }
 
 // ── Startup ───────────────────────────────────────────────────────────────────
-console.log('NQ Signal Pro V3 — Multi-Strategy Scanner + Diagnostic Engine');
+console.log('NQ Signal Pro V3 — Rebuilt Strategy Engine');
 console.log(`Symbols: MNQ=${SYMBOL} MGC=${SYMBOL_MGC} | Scan: ${SCAN_INTERVAL/1000}s | Cooldown: ${COOLDOWN}min | LogLevel: ${LOG_LEVEL}`);
-console.log(`Timeframes: 15m+1h, 45m+1h, 1h+4h (MNQ & MGC only)`);
-console.log(`Backtests: ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Target: ${BT_TARGET_TRADES} trades | Slippage: ${BT_SLIPPAGE}pts`);
-console.log(`Optimizer: ${OPT_INTERVAL_H}h | Strategies: EMA Cross, VWAP PB, BB, MACD Mom, SR Break + 4-factor primary`);
+console.log(`Strategies: MNQ_INTRADAY (5m, conf≥70) | MNQ_SWING (1h, conf≥75) | MNQ_50PT (5m, conf≥80) | MGC_SCALP (5m, conf≥72)`);
+console.log(`Backtests: ${BT_INTERVAL_H}h | Bars: ${BT_BARS} | Slippage: ${BT_SLIPPAGE}pts | Optimizer: ${OPT_INTERVAL_H}h`);
 console.log(`Signal cap: ${DAILY_SIGNAL_CAP}/day per instrument | BASE_SCORE: ${BASE_SCORE}`);
 if (!NTFY_TOPIC) console.warn('WARNING: NTFY_TOPIC not set — push notifications disabled');
 

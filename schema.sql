@@ -1,29 +1,33 @@
 -- NQ Signal Pro V3 — SQLite schema
 
 CREATE TABLE IF NOT EXISTS signals (
-  id           INTEGER PRIMARY KEY AUTOINCREMENT,
-  ticker       TEXT    NOT NULL DEFAULT 'NQ1!',
-  timeframe    TEXT,
-  direction    TEXT    NOT NULL CHECK(direction IN ('LONG','SHORT')),
-  grade        TEXT             CHECK(grade IN ('A+','A','BE')),
-  setup        TEXT,
-  entry        REAL,
-  sl           REAL,
-  tp1          REAL,
-  tp2          REAL,
-  tp3          REAL,
-  score        INTEGER,
-  win_prob_tp1 INTEGER,
-  win_prob_tp2 INTEGER,
-  win_prob_tp3 INTEGER,
-  htf_bias     TEXT,
-  session      TEXT,
-  trade_style  TEXT,          -- 'scalp' | 'intraday' | 'swing'
-  instrument   TEXT,          -- 'MNQ' | 'MGC' | 'NQ'
-  rr           REAL,          -- risk:reward ratio
-  raw_payload  TEXT,
-  received_at  TEXT NOT NULL DEFAULT (datetime('now'))
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  ticker         TEXT    NOT NULL DEFAULT 'NQ1!',
+  timeframe      TEXT,
+  direction      TEXT    NOT NULL CHECK(direction IN ('LONG','SHORT')),
+  grade          TEXT             CHECK(grade IN ('A+','A','BE')),
+  setup          TEXT,
+  strategy_name  TEXT,          -- 'MNQ_INTRADAY' | 'MNQ_SWING' | 'MNQ_50PT' | 'MGC_SCALP'
+  entry          REAL,
+  sl             REAL,
+  tp1            REAL,
+  tp2            REAL,
+  tp3            REAL,
+  score          INTEGER,
+  win_prob_tp1   INTEGER,
+  win_prob_tp2   INTEGER,
+  win_prob_tp3   INTEGER,
+  htf_bias       TEXT,
+  session        TEXT,
+  trade_style    TEXT,          -- 'scalp' | 'intraday' | 'swing'
+  instrument     TEXT,          -- 'MNQ' | 'MGC' | 'NQ'
+  rr             REAL,          -- risk:reward ratio
+  raw_payload    TEXT,
+  received_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- Migration: add strategy_name to existing signals tables (safe no-op if already present)
+CREATE INDEX IF NOT EXISTS idx_signals_strategy ON signals(strategy_name);
 
 CREATE TABLE IF NOT EXISTS outcomes (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -123,24 +127,26 @@ CREATE TABLE IF NOT EXISTS optimization_runs (
 );
 CREATE INDEX IF NOT EXISTS idx_optim_runs ON optimization_runs(instrument, run_at DESC);
 
--- Individual trades from backtest runs (LOSS + BE only, for journal)
+-- Individual trades from backtest runs
 CREATE TABLE IF NOT EXISTS backtest_trades (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  run_id      INTEGER NOT NULL REFERENCES backtest_runs(id),
-  instrument  TEXT    NOT NULL,
-  bar_idx     INTEGER,
-  timestamp   TEXT,
-  direction   TEXT,
-  setup       TEXT,
-  trade_style TEXT,
-  regime      TEXT,
-  entry       REAL,
-  sl          REAL,
-  tp1         REAL,
-  outcome     TEXT,    -- LOSS | BE
-  score       INTEGER,
-  note        TEXT,
-  noted_at    TEXT
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_id         INTEGER NOT NULL REFERENCES backtest_runs(id),
+  instrument     TEXT    NOT NULL,
+  bar_idx        INTEGER,
+  timestamp      TEXT,
+  direction      TEXT,
+  setup          TEXT,
+  strategy_name  TEXT,   -- 'MNQ_INTRADAY' | 'MNQ_SWING' | 'MNQ_50PT' | 'MGC_SCALP'
+  trade_style    TEXT,
+  regime         TEXT,
+  entry          REAL,
+  sl             REAL,
+  tp1            REAL,
+  outcome        TEXT,    -- WIN | LOSS | BE
+  score          INTEGER,
+  confidence     INTEGER, -- 0–100 from new engine
+  note           TEXT,
+  noted_at       TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_bt_trades_run ON backtest_trades(run_id, outcome);
 
@@ -220,3 +226,11 @@ CREATE TABLE IF NOT EXISTS news_items (
   UNIQUE(title, category)
 );
 CREATE INDEX IF NOT EXISTS idx_news_items ON news_items(fetched_at DESC);
+
+-- ── Schema migrations (safe no-ops on fresh DBs) ─────────────────────────────
+-- Add strategy_name to signals if missing (existing databases)
+CREATE TABLE IF NOT EXISTS _schema_migrations (migration TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')));
+
+-- These are handled via the migration runner in server.js startup instead of
+-- raw SQL here, since SQLite does not support IF NOT EXISTS on ALTER TABLE.
+-- See server.js applyMigrations() for the actual column additions.

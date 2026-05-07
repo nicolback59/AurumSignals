@@ -1,71 +1,68 @@
 'use strict';
 
-const { computeSignal } = require('./signal-engine');
+/**
+ * BACKTEST ENGINE — uses the exact same strategy functions as the live scanner.
+ *
+ * No separate logic exists here. All signal detection is delegated to strategy-engine.js,
+ * which in turn calls the four individual strategy modules.
+ *
+ * This file only handles:
+ *   • Iterating through historical bars in chronological order
+ *   • Building per-bar slices of multi-TF arrays without lookahead
+ *   • Resolving each signal's outcome (WIN / LOSS / BE) from future bars
+ *   • Computing performance metrics and breakdowns
+ *   • Walk-forward validation
+ */
 
-// ── Aggregate 1m bars → 15m bars ──────────────────────────────────────────────
-function aggregate15m(bars1m) {
-  const result = [];
-  for (let i = 0; i + 14 < bars1m.length; i += 15) {
-    const slice = bars1m.slice(i, i + 15);
-    result.push({
-      timestamp: slice[0].timestamp,
-      open:      slice[0].open,
-      high:      Math.max(...slice.map(b => b.high)),
-      low:       Math.min(...slice.map(b => b.low)),
-      close:     slice[slice.length - 1].close,
-      volume:    slice.reduce((s, b) => s + (b.volume || 0), 0),
-    });
-  }
-  return result;
-}
+const {
+  evaluateAll,
+  resetAllStrategies,
+  buildBarSetsFrom1m,
+} = require('./strategy-engine');
+
+const { aggregate1mTo5m, aggregate5mTo15m, aggregate5mTo1h, aggregate1hTo4h, aggregate1hToDaily } =
+  require('./strategies/shared-indicators');
 
 // ── Market regime detection ───────────────────────────────────────────────────
-/**
- * Classify market regime at bar `i` using ATR ratio and trend displacement.
- * Returns 'trending' | 'ranging' | 'volatile' | 'unknown'
- */
+
 function detectRegime(bars, i, period = 14) {
   if (i < period * 2) return 'unknown';
-
   const slice = bars.slice(Math.max(0, i - period * 2), i + 1);
   const tr = slice.map((b, j) =>
     j === 0 ? b.high - b.low :
     Math.max(b.high - b.low,
-             Math.abs(b.high - slice[j-1].close),
-             Math.abs(b.low  - slice[j-1].close))
+             Math.abs(b.high - slice[j - 1].close),
+             Math.abs(b.low  - slice[j - 1].close))
   );
-
   const recent = tr.slice(-period);
   const prev   = tr.slice(-period * 2, -period);
   if (recent.length < period || prev.length < period) return 'unknown';
 
   const recentATR = recent.reduce((a, b) => a + b, 0) / period;
-  const prevATR   = prev.reduce((a, b) => a + b, 0) / period;
+  const prevATR   = prev.reduce((a, b) => a + b, 0)   / period;
   const atrRatio  = prevATR > 0 ? recentATR / prevATR : 1;
 
-  // Price displacement from 20-bar mean (trend strength proxy)
   const closes20  = bars.slice(Math.max(0, i - 19), i + 1).map(b => b.close);
   const sma20     = closes20.reduce((a, b) => a + b, 0) / closes20.length;
   const trendDisp = Math.abs(bars[i].close - sma20) / (recentATR * 3 + 0.001);
 
-  if (atrRatio > 1.5)                        return 'volatile';
-  if (atrRatio < 0.75 && trendDisp < 0.5)   return 'ranging';
+  if (atrRatio > 1.5)                       return 'volatile';
+  if (atrRatio < 0.75 && trendDisp < 0.5)  return 'ranging';
   return 'trending';
 }
 
-// ── Forward-resolve outcome for a signal bar ──────────────────────────────────
+// ── Outcome resolution ────────────────────────────────────────────────────────
+
 /**
- * Slippage model:
- *   TP is shifted further away by `slippage` (harder to reach — realistic fill).
- *   SL is shifted closer to close by `slippage` (easier to trigger).
+ * Resolve a signal to WIN / LOSS / BE by scanning future 5m bars.
+ * Slippage shifts TP further away and SL closer (realistic execution).
  */
-function resolveOutcome(bars, sigIdx, direction, tp1, sl, maxBars = 80, slippage = 0) {
-  // Shift levels to reflect realistic execution
+function resolveOutcome(bars5m, sigIdx, direction, tp1, sl, maxBars = 60, slippage = 0) {
   const tp1Adj = direction === 'LONG' ? tp1 + slippage : tp1 - slippage;
   const slAdj  = direction === 'LONG' ? sl  - slippage : sl  + slippage;
 
-  for (let j = sigIdx + 1; j < Math.min(sigIdx + maxBars + 1, bars.length); j++) {
-    const { open, high, low } = bars[j];
+  for (let j = sigIdx + 1; j < Math.min(sigIdx + maxBars + 1, bars5m.length); j++) {
+    const { open, high, low } = bars5m[j];
     if (direction === 'LONG') {
       if (open >= tp1Adj) return 'WIN';
       if (open <= slAdj)  return 'LOSS';
@@ -81,26 +78,34 @@ function resolveOutcome(bars, sigIdx, direction, tp1, sl, maxBars = 80, slippage
   return 'BE';
 }
 
-// ── Performance metrics ───────────────────────────────────────────────────────
-function calcMetrics(trades, slPts) {
-  const n = trades.length;
-  if (n === 0) return { winRate: 0, profitFactor: 0, sharpe: 0, maxDrawdown: 0, tradeCount: 0 };
+// ── Base metrics ──────────────────────────────────────────────────────────────
 
-  const wins   = trades.filter(t => t === 'WIN').length;
-  const losses = trades.filter(t => t === 'LOSS').length;
-  const winRate = wins / n;
+function calcMetrics(signalLog) {
+  const n = signalLog.length;
+  if (n === 0) return {
+    winRate: 0, profitFactor: 0, sharpe: 0, maxDrawdown: 0,
+    tradeCount: 0, avgWin: 0, avgLoss: 0, largestWin: 0, largestLoss: 0,
+  };
 
-  const grossWin  = wins   * slPts;
-  const grossLoss = losses * slPts;
+  const wins   = signalLog.filter(t => t.outcome === 'WIN');
+  const losses = signalLog.filter(t => t.outcome === 'LOSS');
+
+  const winRate  = wins.length / n;
+
+  // Use actual R-multiples based on rr field; default to 1.5R / 1.0R
+  const grossWin  = wins.reduce((s, t) => s + (t.pnlPts ?? (t.rr ?? 1.5)), 0);
+  const grossLoss = losses.reduce((s, t) => s + Math.abs(t.pnlPts ?? 1), 0);
+
   const profitFactor = grossLoss === 0
     ? (grossWin > 0 ? 9.99 : 0)
-    : grossWin / grossLoss;
+    : +(grossWin / grossLoss).toFixed(3);
 
-  const returns = trades.map(t => t === 'WIN' ? 1 : t === 'LOSS' ? -1 : 0);
+  const returns = signalLog.map(t => t.pnlR ?? (t.outcome === 'WIN' ? (t.rr ?? 1.5) : t.outcome === 'LOSS' ? -1 : 0));
   const mean     = returns.reduce((a, b) => a + b, 0) / n;
   const variance = returns.reduce((a, b) => a + (b - mean) ** 2, 0) / n;
-  const sharpe   = variance === 0 ? 0 : mean / Math.sqrt(variance);
+  const sharpe   = variance === 0 ? 0 : +(mean / Math.sqrt(variance)).toFixed(3);
 
+  // Max drawdown in R-multiples
   let peak = 0, equity = 0, maxDd = 0;
   for (const r of returns) {
     equity += r;
@@ -109,170 +114,209 @@ function calcMetrics(trades, slPts) {
     if (dd > maxDd) maxDd = dd;
   }
 
+  const avgWin  = wins.length   > 0 ? +(grossWin / wins.length).toFixed(2)   : 0;
+  const avgLoss = losses.length > 0 ? +(grossLoss / losses.length).toFixed(2) : 0;
+  const largestWin  = wins.length   > 0 ? +Math.max(...wins.map(t => t.pnlPts ?? (t.rr ?? 1.5))).toFixed(2)   : 0;
+  const largestLoss = losses.length > 0 ? +Math.max(...losses.map(t => Math.abs(t.pnlPts ?? 1))).toFixed(2) : 0;
+
   return {
-    winRate,
-    profitFactor: +profitFactor.toFixed(3),
-    sharpe:       +sharpe.toFixed(3),
-    maxDrawdown:  +maxDd.toFixed(2),
-    tradeCount:   n,
+    winRate:       +winRate.toFixed(4),
+    profitFactor,
+    sharpe,
+    maxDrawdown:   +maxDd.toFixed(2),
+    tradeCount:    n,
+    avgWin, avgLoss, largestWin, largestLoss,
   };
 }
 
-// ── Enhanced metrics with regime / setup / style breakdowns ──────────────────
-/**
- * Full analysis of a signalLog (array of {outcome, regime, setup, tradeStyle, ...}).
- * Returns base metrics + per-dimension breakdowns + streak data + regime consistency.
- */
-function calcEnhancedMetrics(signalLog, slPts) {
-  const trades = signalLog.map(r => r.outcome);
-  const base   = calcMetrics(trades, slPts);
+// ── Enhanced metrics with per-strategy / direction / session / regime ─────────
 
-  // ── Per-regime breakdown ──
-  const byRegime = {};
-  for (const reg of ['trending', 'ranging', 'volatile', 'unknown']) {
-    const sub = signalLog.filter(r => r.regime === reg).map(r => r.outcome);
-    byRegime[reg] = sub.length > 0 ? calcMetrics(sub, slPts) : null;
+function calcEnhancedMetrics(signalLog) {
+  const base = calcMetrics(signalLog);
+
+  const groupBy = (key) => {
+    const buckets = {};
+    for (const r of signalLog) {
+      const k = r[key] ?? 'unknown';
+      (buckets[k] = buckets[k] || []).push(r);
+    }
+    const result = {};
+    for (const [k, v] of Object.entries(buckets)) result[k] = calcMetrics(v);
+    return result;
+  };
+
+  const byStrategy  = groupBy('strategy_name');
+  const byDirection = groupBy('direction');
+  const byRegime    = groupBy('regime');
+  const bySession   = groupBy('session');
+  const byStyle     = groupBy('trade_style');
+
+  // Best / worst session
+  let bestSession = null, worstSession = null;
+  let bestWR = -1, worstWR = 2;
+  for (const [sess, m] of Object.entries(bySession)) {
+    if (m.tradeCount >= 5) {
+      if (m.winRate > bestWR)  { bestWR = m.winRate;  bestSession  = sess; }
+      if (m.winRate < worstWR) { worstWR = m.winRate; worstSession = sess; }
+    }
   }
 
-  // ── Per-setup breakdown ──
-  const setupBuckets = {};
-  for (const r of signalLog) {
-    const k = r.setup || 'unknown';
-    (setupBuckets[k] = setupBuckets[k] || []).push(r.outcome);
-  }
-  const bySetup = {};
-  for (const [k, v] of Object.entries(setupBuckets)) bySetup[k] = calcMetrics(v, slPts);
-
-  // ── Per-style breakdown ──
-  const styleBuckets = {};
-  for (const r of signalLog) {
-    const k = r.tradeStyle || 'unknown';
-    (styleBuckets[k] = styleBuckets[k] || []).push(r.outcome);
-  }
-  const byStyle = {};
-  for (const [k, v] of Object.entries(styleBuckets)) byStyle[k] = calcMetrics(v, slPts);
-
-  // ── Streak analysis ──
+  // Streak analysis
   let maxWinStreak = 0, maxLossStreak = 0, curW = 0, curL = 0;
+  let avgDurationBars = 0;
   for (const r of signalLog) {
     if (r.outcome === 'WIN')  { curW++; curL = 0; maxWinStreak  = Math.max(maxWinStreak,  curW); }
     else if (r.outcome === 'LOSS') { curL++; curW = 0; maxLossStreak = Math.max(maxLossStreak, curL); }
     else { curW = 0; curL = 0; }
+    avgDurationBars += r.durationBars ?? 0;
   }
+  if (signalLog.length > 0) avgDurationBars = +(avgDurationBars / signalLog.length).toFixed(1);
 
-  // ── Cross-regime consistency (lower stdev of win rates = more robust) ──
-  const regimeWRs = Object.values(byRegime)
-    .filter(m => m && m.tradeCount >= 5)
-    .map(m => m.winRate);
+  // Cross-regime consistency
+  const regimeWRs = Object.values(byRegime).filter(m => m.tradeCount >= 5).map(m => m.winRate);
   let regimeConsistency = 1.0;
   if (regimeWRs.length > 1) {
-    const mean = regimeWRs.reduce((a, b) => a + b, 0) / regimeWRs.length;
+    const mean  = regimeWRs.reduce((a, b) => a + b, 0) / regimeWRs.length;
     const stdev = Math.sqrt(regimeWRs.reduce((a, b) => a + (b - mean) ** 2, 0) / regimeWRs.length);
     regimeConsistency = Math.max(0, +(1 - stdev * 4).toFixed(3));
   }
 
   return {
     ...base,
-    byRegime,
-    bySetup,
-    byStyle,
-    maxWinStreak,
-    maxLossStreak,
+    byStrategy, byDirection, byRegime, bySession, byStyle,
+    maxWinStreak, maxLossStreak,
+    avgDurationBars,
+    bestSession, worstSession,
     regimeConsistency,
   };
 }
 
-// ── Internal backtest (explicit cooldown, no auto-tune recursion) ─────────────
-function _runBacktest(bars1m, params, opts = {}) {
-  const warmup     = opts.warmup     ?? 60;
-  const maxResolve = opts.maxResolve ?? 80;
-  const cooldown   = opts.cooldown   ?? 1;
+// ── Internal backtest core ────────────────────────────────────────────────────
+
+function _runBacktest(bars1m, instrument, opts = {}) {
+  const warmup5m   = opts.warmup5m   ?? 80;
+  const maxResolve = opts.maxResolve ?? 60;  // 5m bars to look forward (60 × 5m = 5h)
   const slippage   = opts.slippage   ?? 0;
-  const slPts      = params.slPts    ?? 25;
+  const cooldown5m = opts.cooldown5m ?? 1;   // minimum 5m bars between signals
 
-  const n      = bars1m.length;
-  const all15m = aggregate15m(bars1m);
+  // ── Pre-aggregate all timeframes once ───────────────────────────────────────
+  const bars5m  = aggregate1mTo5m(bars1m);
+  const bars15m = aggregate5mTo15m(bars5m);
+  const bars1h  = aggregate5mTo1h(bars5m);
+  const bars4h  = aggregate1hTo4h(bars1h);
+  const barsDly = aggregate1hToDaily(bars1h);
+
+  const n5m = bars5m.length;
   const signalLog = [];
-  let lastSigIdx = -Infinity;
 
-  for (let i = warmup; i < n - maxResolve; i++) {
-    if (i - lastSigIdx < cooldown) continue;
+  // Track last signal bar index per strategy to enforce per-strategy cooldowns
+  const lastSigByStrategy = {};
 
-    const htfSlice = all15m.slice(0, Math.floor(i / 15) + 1);
-    if (htfSlice.length < 10) continue;
+  resetAllStrategies();
 
-    const signal = computeSignal(bars1m.slice(0, i + 1), htfSlice, params);
-    if (!signal) continue;
+  for (let i = warmup5m; i < n5m - maxResolve; i++) {
+    // Build slices of each TF array up to the current confirmed bar
+    const slc5m  = bars5m.slice(0, i + 1);
+    const j15    = Math.floor((i + 1) / 3);
+    const j1h    = Math.floor((i + 1) / 12);
+    const j4h    = Math.floor((i + 1) / 48);
+    const jDly   = Math.floor((i + 1) / 78); // approx 6.5h per trading day
 
-    const regime  = detectRegime(bars1m, i);
-    const outcome = resolveOutcome(bars1m, i, signal.direction, signal.tp1, signal.sl,
-                                   maxResolve, slippage);
+    const slc15m = bars15m.slice(0, Math.max(1, j15));
+    const slc1h  = bars1h.slice(0,  Math.max(1, j1h));
+    const slc4h  = bars4h.slice(0,  Math.max(1, j4h));
+    const slcDly = barsDly.slice(0, Math.max(1, Math.min(jDly, barsDly.length)));
 
-    signalLog.push({
-      bar:       i,
-      timestamp: bars1m[i].timestamp,
-      ...signal,
-      outcome,
-      regime,
-    });
-    lastSigIdx = i;
+    const barSets = instrument === 'MGC'
+      ? { bars5mMgc: slc5m, bars15mMgc: slc15m, bars1hMgc: slc1h }
+      : { bars5m: slc5m, bars15m: slc15m, bars1h: slc1h, bars4h: slc4h, barsDly: slcDly };
+
+    const signals = evaluateAll(barSets, { instrument, barIdx: i });
+
+    for (const sig of signals) {
+      const strat = sig.strategy_name;
+
+      // Enforce per-strategy cooldown
+      const lastIdx = lastSigByStrategy[strat] ?? -Infinity;
+      const stratCooldown = strat === 'MNQ_SWING' ? cooldown5m * 12 : cooldown5m;
+      if (i - lastIdx < stratCooldown) continue;
+
+      // Resolve outcome from future 5m bars
+      let resolvedBars, resolvedIdx;
+      if (strat === 'MNQ_SWING') {
+        // Swing resolves on 1h bars
+        resolvedBars = bars1h;
+        resolvedIdx  = j1h;
+      } else {
+        resolvedBars = bars5m;
+        resolvedIdx  = i;
+      }
+
+      const outcome = resolveOutcome(
+        resolvedBars, resolvedIdx, sig.direction, sig.tp1, sig.sl,
+        strat === 'MNQ_SWING' ? 24 : maxResolve, slippage
+      );
+
+      // Compute P&L in points
+      const risk    = sig.direction === 'LONG' ? sig.entry - sig.sl : sig.sl - sig.entry;
+      const reward  = sig.direction === 'LONG' ? sig.tp1 - sig.entry : sig.entry - sig.tp1;
+      const pnlPts  = outcome === 'WIN' ? +reward.toFixed(2) : outcome === 'LOSS' ? +(-risk).toFixed(2) : 0;
+      const pnlR    = outcome === 'WIN' ? sig.rr ?? 1.5 : outcome === 'LOSS' ? -1 : 0;
+
+      // Estimate duration (bars to resolution — simplified)
+      const durationBars = maxResolve / 2; // placeholder; real duration tracked live
+
+      const regime  = detectRegime(bars5m, i);
+
+      signalLog.push({
+        bar:       i,
+        timestamp: bars5m[i].timestamp,
+        strategy_name: strat,
+        direction: sig.direction,
+        entry:     sig.entry,
+        sl:        sig.sl,
+        tp1:       sig.tp1,
+        rr:        sig.rr,
+        confidence: sig.confidence,
+        outcome,
+        pnlPts,
+        pnlR,
+        regime,
+        session:     sig.session,
+        trade_style: sig.trade_style,
+        htf_bias:    sig.htf_bias,
+        durationBars,
+        // Legacy compat
+        setup:      sig.setup,
+        tradeStyle: sig.trade_style,
+        score:      sig.score,
+      });
+
+      lastSigByStrategy[strat] = i;
+    }
   }
 
-  const metrics = calcEnhancedMetrics(signalLog, slPts);
+  const metrics = calcEnhancedMetrics(signalLog);
   return { trades: signalLog.map(r => r.outcome), metrics, signalLog };
 }
 
-// ── Auto-tune cooldown to hit a target trade count ────────────────────────────
-/**
- * Binary-search for the cooldown value that produces closest to `targetTrades`.
- * Returns the optimal cooldown integer.
- */
-function autoTuneCooldown(bars1m, params, targetTrades = 250, opts = {}) {
-  // Quick probe with cooldown=0 to know the upper bound of possible trades
-  const probe = _runBacktest(bars1m, params, { ...opts, cooldown: 0 });
-  if (probe.metrics.tradeCount <= targetTrades) return 0;
-
-  // Binary search: more cooldown → fewer trades
-  let lo = 1, hi = Math.max(1, Math.floor(bars1m.length / targetTrades));
-  let best = { cooldown: 1, diff: Infinity };
-
-  for (let iter = 0; iter < 12 && lo <= hi; iter++) {
-    const mid = Math.round((lo + hi) / 2);
-    const { metrics } = _runBacktest(bars1m, params, { ...opts, cooldown: mid });
-    const diff = Math.abs(metrics.tradeCount - targetTrades);
-    if (diff < best.diff) { best = { cooldown: mid, diff }; }
-
-    if (metrics.tradeCount > targetTrades) lo = mid + 1;
-    else if (metrics.tradeCount < targetTrades) hi = mid - 1;
-    else break;
-  }
-
-  return best.cooldown;
-}
-
 // ── Walk-forward validation ───────────────────────────────────────────────────
-/**
- * Split bars into `nWindows` equal segments and test params on each independently.
- * Returns per-window metrics + consistency score across windows.
- * High consistency = strategy is robust across different time periods.
- */
-function runWalkForward(bars1m, params, opts = {}) {
-  const nWindows  = opts.nWindows  ?? 5;
-  const cooldown  = opts.cooldown  ?? 1;
-  const slippage  = opts.slippage  ?? 0;
-  const minBars   = opts.minBars   ?? 300;
+
+function runWalkForward(bars1m, instrument, opts = {}) {
+  const nWindows = opts.nWindows ?? 5;
+  const slippage = opts.slippage ?? 0;
+  const minBars  = opts.minBars  ?? 1500; // min 1m bars per window
 
   const windowSize = Math.floor(bars1m.length / nWindows);
   const windows    = [];
 
   for (let w = 0; w < nWindows; w++) {
     const start = w * windowSize;
-    // Overlap slightly for regime continuity — each window has extra tail for resolve
-    const end   = Math.min(start + windowSize + 100, bars1m.length);
+    const end   = Math.min(start + windowSize + 300, bars1m.length);
     const slice = bars1m.slice(start, end);
     if (slice.length < minBars) continue;
 
-    const { metrics } = _runBacktest(slice, params, { cooldown, slippage });
+    const { metrics } = _runBacktest(slice, instrument, { slippage });
     windows.push({
       window: w + 1,
       from:   slice[0]?.timestamp,
@@ -281,17 +325,16 @@ function runWalkForward(bars1m, params, opts = {}) {
     });
   }
 
-  if (windows.length === 0) return { windows: [], consistency: 0, avgWinRate: 0, avgSharpe: 0 };
+  if (!windows.length) return { windows: [], consistency: 0, avgWinRate: 0, avgSharpe: 0 };
 
-  const viable  = windows.filter(w => w.tradeCount >= 5);
-  if (viable.length === 0) return { windows, consistency: 0, avgWinRate: 0, avgSharpe: 0 };
+  const viable   = windows.filter(w => w.tradeCount >= 5);
+  if (!viable.length) return { windows, consistency: 0, avgWinRate: 0, avgSharpe: 0 };
 
   const winRates  = viable.map(w => w.winRate);
   const sharpes   = viable.map(w => w.sharpe);
   const avgWR     = winRates.reduce((a, b) => a + b, 0) / viable.length;
   const avgSharpe = sharpes.reduce((a, b) => a + b, 0)  / viable.length;
-
-  const variance  = winRates.reduce((a, b) => a + (b - avgWR) ** 2, 0) / viable.length;
+  const variance  = winRates.reduce((a, b) => a + (avgWR - b) ** 2, 0) / viable.length;
   const stdev     = Math.sqrt(variance);
   const consistency = Math.max(0, +(1 - stdev * 5).toFixed(3));
 
@@ -303,45 +346,39 @@ function runWalkForward(bars1m, params, opts = {}) {
   };
 }
 
-// ── Public backtest entry point ───────────────────────────────────────────────
+// ── Public entry point ────────────────────────────────────────────────────────
+
 /**
- * Run a backtest over historical 1m bars.
- * @param {Array}  bars1m  - 1m OHLCV bars, oldest first
- * @param {Object} params  - strategy parameters
- * @param {Object} opts
- *   @param {number}  warmup        - warm-up bars (default 60)
- *   @param {number}  maxResolve    - bars to look forward for outcome (default 80)
- *   @param {number}  cooldown      - minimum bars between signals (default 1)
- *   @param {number}  targetTrades  - if set, auto-tune cooldown to reach this count
- *   @param {number}  slippage      - execution slippage in price points (default 0.5)
- *   @param {boolean} walkForward   - also run walk-forward validation (default false)
- *   @param {number}  nWindows      - walk-forward windows (default 5)
- * @returns {{ trades, metrics, signalLog, cooldownUsed, walkForward? }}
+ * Run a full backtest over historical 1m bars.
+ *
+ * @param {object[]} bars1m      - 1m OHLCV bars, oldest first
+ * @param {object}   params      - legacy params (slippage, targetTrades)
+ * @param {object}   opts
+ * @param {string}   [opts.instrument] - 'MNQ' | 'MGC' | null (all)
+ * @param {number}   [opts.slippage]   - execution slippage in price points (default 0.5)
+ * @param {boolean}  [opts.walkForward] - run walk-forward validation
+ * @param {number}   [opts.nWindows]   - walk-forward windows (default 5)
+ * @returns {{ trades, metrics, signalLog, walkForward? }}
  */
-function runBacktest(bars1m, params, opts = {}) {
-  const slippage = opts.slippage ?? 0.5;    // realistic MNQ/NQ execution cost
-  const innerOpts = {
-    warmup:     opts.warmup     ?? 60,
-    maxResolve: opts.maxResolve ?? 80,
+function runBacktest(bars1m, params = {}, opts = {}) {
+  const slippage   = opts.slippage ?? params.slippage ?? 0.5;
+  const instrument = opts.instrument ?? params.instrument ?? null;
+
+  const result = _runBacktest(bars1m, instrument, {
     slippage,
-  };
+    warmup5m:   opts.warmup5m   ?? 80,
+    maxResolve: opts.maxResolve ?? 60,
+    cooldown5m: opts.cooldown5m ?? 1,
+  });
 
-  // Resolve cooldown
-  let cooldown = opts.cooldown ?? 1;
-  if (opts.targetTrades !== undefined && opts.cooldown === undefined) {
-    cooldown = autoTuneCooldown(bars1m, params, opts.targetTrades, innerOpts);
-  }
-
-  const result = _runBacktest(bars1m, params, { ...innerOpts, cooldown });
-  result.cooldownUsed = cooldown;
   result.slippageUsed = slippage;
+  result.cooldownUsed = opts.cooldown5m ?? 1;
 
   if (opts.walkForward) {
-    result.walkForward = runWalkForward(bars1m, params, {
-      nWindows:  opts.nWindows ?? 5,
-      cooldown,
+    result.walkForward = runWalkForward(bars1m, instrument, {
+      nWindows: opts.nWindows ?? 5,
       slippage,
-      minBars:   opts.minBars ?? 300,
+      minBars:  opts.minBars ?? 1500,
     });
   }
 
@@ -351,10 +388,8 @@ function runBacktest(bars1m, params, opts = {}) {
 module.exports = {
   runBacktest,
   runWalkForward,
-  aggregate15m,
   resolveOutcome,
   detectRegime,
   calcMetrics,
   calcEnhancedMetrics,
-  autoTuneCooldown,
 };

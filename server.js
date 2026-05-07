@@ -24,13 +24,32 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.exec(schema);
 
+// ── Safe column migrations for existing databases ─────────────────────────────
+function applyMigrations() {
+  const cols = db.prepare("PRAGMA table_info(signals)").all().map(r => r.name);
+  if (!cols.includes('strategy_name')) {
+    db.exec("ALTER TABLE signals ADD COLUMN strategy_name TEXT");
+    console.log('[migration] Added strategy_name to signals');
+  }
+  const btCols = db.prepare("PRAGMA table_info(backtest_trades)").all().map(r => r.name);
+  if (!btCols.includes('strategy_name')) {
+    db.exec("ALTER TABLE backtest_trades ADD COLUMN strategy_name TEXT");
+    console.log('[migration] Added strategy_name to backtest_trades');
+  }
+  if (!btCols.includes('confidence')) {
+    db.exec("ALTER TABLE backtest_trades ADD COLUMN confidence INTEGER");
+    console.log('[migration] Added confidence to backtest_trades');
+  }
+}
+applyMigrations();
+
 const insertSignal = db.prepare(`
   INSERT INTO signals
-    (ticker, timeframe, direction, grade, setup, entry, sl, tp1, tp2, tp3,
+    (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
      score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
      trade_style, instrument, rr, raw_payload)
   VALUES
-    (@ticker, @timeframe, @direction, @grade, @setup, @entry, @sl, @tp1, @tp2, @tp3,
+    (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
      @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
      @trade_style, @instrument, @rr, @raw_payload)
 `);
@@ -104,28 +123,30 @@ app.post('/webhook', (req, res) => {
 
   try {
     const info = insertSignal.run({
-      ticker:       b.ticker       || 'NQ1!',
-      timeframe:    b.timeframe    || b.interval || null,
+      ticker:        b.ticker         || 'NQ1!',
+      timeframe:     b.timeframe      || b.interval || null,
       direction,
       grade,
-      setup:        b.setup        || null,
-      entry:        num(b.entry),
-      sl:           num(b.sl),
-      tp1:          num(b.tp1),
-      tp2:          num(b.tp2),
-      tp3:          num(b.tp3),
-      score:        num(b.score),
-      win_prob_tp1: num(b.win_prob_tp1),
-      win_prob_tp2: num(b.win_prob_tp2),
-      win_prob_tp3: num(b.win_prob_tp3),
-      htf_bias:     b.htf_bias     || null,
-      session:      b.session      || null,
-      trade_style:  b.trade_style  || b.tradeStyle || null,
-      instrument:   b.instrument   || null,
-      rr:           num(b.rr),
-      raw_payload:  raw,
+      setup:         b.setup          || null,
+      strategy_name: b.strategy_name  || null,
+      entry:         num(b.entry),
+      sl:            num(b.sl),
+      tp1:           num(b.tp1),
+      tp2:           num(b.tp2),
+      tp3:           num(b.tp3),
+      score:         num(b.score),
+      win_prob_tp1:  num(b.win_prob_tp1),
+      win_prob_tp2:  num(b.win_prob_tp2),
+      win_prob_tp3:  num(b.win_prob_tp3),
+      htf_bias:      b.htf_bias       || null,
+      session:       b.session        || null,
+      trade_style:   b.trade_style    || b.tradeStyle || null,
+      instrument:    b.instrument     || null,
+      rr:            num(b.rr),
+      raw_payload:   raw,
     });
-    console.log(`[${new Date().toISOString()}] ${direction} ${grade} | setup=${b.setup||'?'} | score=${b.score||'?'} | id=${info.lastInsertRowid}`);
+    const stratLabel = b.strategy_name || b.setup || 'TradingView';
+    console.log(`[${new Date().toISOString()}] ${direction} ${grade} | ${stratLabel} | score=${b.score||'?'} | id=${info.lastInsertRowid}`);
     res.json({ ok: true, id: info.lastInsertRowid });
     sendNtfy({
       ticker: b.ticker || 'NQ1!', direction, grade,
@@ -155,13 +176,14 @@ app.get('/api/signals', (req, res) => {
 });
 
 app.get('/api/stats', (req, res) => {
-  const total   = db.prepare('SELECT COUNT(*) n FROM signals').get().n;
-  const last24h = db.prepare(`SELECT COUNT(*) n FROM signals WHERE received_at >= datetime('now','-1 day')`).get().n;
-  const byGrade = db.prepare('SELECT grade, COUNT(*) n FROM signals GROUP BY grade').all();
-  const bySetup = db.prepare('SELECT setup, COUNT(*) n FROM signals GROUP BY setup ORDER BY n DESC').all();
-  const byDir   = db.prepare('SELECT direction, COUNT(*) n FROM signals GROUP BY direction').all();
-  const outcomes = db.prepare('SELECT result, COUNT(*) n FROM outcomes GROUP BY result').all();
-  res.json({ total, last24h, byGrade, bySetup, byDir, outcomes });
+  const total      = db.prepare('SELECT COUNT(*) n FROM signals').get().n;
+  const last24h    = db.prepare(`SELECT COUNT(*) n FROM signals WHERE received_at >= datetime('now','-1 day')`).get().n;
+  const byGrade    = db.prepare('SELECT grade, COUNT(*) n FROM signals GROUP BY grade').all();
+  const bySetup    = db.prepare('SELECT setup, COUNT(*) n FROM signals GROUP BY setup ORDER BY n DESC').all();
+  const byStrategy = db.prepare('SELECT strategy_name, COUNT(*) n FROM signals WHERE strategy_name IS NOT NULL GROUP BY strategy_name ORDER BY n DESC').all();
+  const byDir      = db.prepare('SELECT direction, COUNT(*) n FROM signals GROUP BY direction').all();
+  const outcomes   = db.prepare('SELECT result, COUNT(*) n FROM outcomes GROUP BY result').all();
+  res.json({ total, last24h, byGrade, bySetup, byStrategy, byDir, outcomes });
 });
 
 app.post('/api/outcome', (req, res) => {
@@ -221,6 +243,28 @@ app.get('/api/backtest/summary', (req, res) => {
     GROUP BY instrument
   `).all();
   res.json(summary);
+});
+
+// ── BACKTEST DETAILS (per-strategy breakdown) ─────────────────────────────────
+app.get('/api/backtest/details', (req, res) => {
+  const runId = req.query.run_id;
+  if (!runId) {
+    // Return details for the latest run
+    const latest = db.prepare('SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 1').get();
+    if (!latest) return res.json(null);
+    req.query.run_id = latest.id;
+    return res.redirect(`/api/backtest/details?run_id=${latest.id}`);
+  }
+
+  const detail = db.prepare('SELECT * FROM backtest_details WHERE run_id = ?').get(runId);
+  if (!detail) return res.json(null);
+
+  const result = { ...detail };
+  // Parse per-strategy breakdown stored in style_breakdown JSON
+  try { result.by_strategy = JSON.parse(detail.style_breakdown ?? '{}'); } catch { result.by_strategy = {}; }
+  try { result.by_regime   = JSON.parse(detail.regime_breakdown ?? '{}'); } catch { result.by_regime = {}; }
+  try { result.by_setup    = JSON.parse(detail.setup_breakdown  ?? '{}'); } catch { result.by_setup = {}; }
+  res.json(result);
 });
 
 // ── STRATEGY PARAMS ───────────────────────────────────────────────────────────────────────

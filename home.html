@@ -664,10 +664,13 @@ function renderHero(sig) {
   card.className = `hero-card ${isLong ? 'long' : 'short'}`;
 
   // Header badges
+  const stratLabel = sig.strategy_name
+    ? { MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing', MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp' }[sig.strategy_name] ?? sig.strategy_name
+    : (sig.setup ?? '');
   document.getElementById('heroMeta').innerHTML =
     directionBadge(sig.direction) +
     ' ' + gradeBadge(sig.grade) +
-    (sig.setup ? ' ' + setupBadge(sig.setup) : '') +
+    (stratLabel ? ` <span class="setup-badge">${escH(stratLabel)}</span>` : '') +
     `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${timeAgo(sig.received_at)}</span>`;
 
   // Status pill
@@ -683,8 +686,11 @@ function renderHero(sig) {
     statusEl.className   = 'status-pill active';
   }
 
-  // Strength bar
-  const pct   = Math.min(((sig.score || 0) / 35) * 100, 100).toFixed(1);
+  // Strength bar — use confidence (0-100) if available, fall back to score/35
+  const confVal = sig.confidence ?? sig.score ?? 0;
+  const pct   = sig.confidence != null
+    ? Math.min(confVal, 100).toFixed(1)
+    : Math.min((confVal / 35) * 100, 100).toFixed(1);
   const color = sig.grade === 'A+' ? 'var(--yellow)' : 'var(--teal)';
 
   // Levels
@@ -704,8 +710,8 @@ function renderHero(sig) {
   document.getElementById('heroBody').innerHTML = `
     <div class="strength-wrap">
       <div class="strength-hdr">
-        <span class="strength-lbl">Signal Strength</span>
-        <span class="strength-val" style="color:${color}">${sig.score || 0} / 35</span>
+        <span class="strength-lbl">Confidence</span>
+        <span class="strength-val" style="color:${color}">${sig.confidence != null ? sig.confidence : sig.score || 0}${sig.confidence != null ? ' / 100' : ' / 35'}</span>
       </div>
       <div class="strength-track">
         <div class="strength-fill" style="width:${pct}%;background:${color}"></div>
@@ -719,10 +725,11 @@ function renderHero(sig) {
         </div>`).join('')}
     </div>
     <div class="tag-list">
+      ${sig.strategy_name ? `<span class="tag strat">${escH(stratLabel)}</span>` : ''}
       ${sig.htf_bias  ? `<span class="tag ${htfCls}">HTF: ${escH(sig.htf_bias)}</span>` : ''}
       ${sig.session   ? `<span class="tag sess">${escH(sig.session)}</span>` : ''}
       ${sig.ticker    ? `<span class="tag">${escH(sig.ticker)}</span>` : ''}
-      ${sig.timeframe ? `<span class="tag">${sig.timeframe}m</span>` : ''}
+      ${sig.timeframe ? `<span class="tag">${escH(sig.timeframe)}</span>` : ''}
       ${sig.trade_style ? `<span class="tag">${escH(sig.trade_style)}</span>` : ''}
     </div>`;
 }
@@ -896,7 +903,7 @@ function renderRecentTrades(journalSigs) {
     return `<div class="recent-trade-row">
       <span class="rt-time">${hhmm(s.received_at)}</span>
       <span class="rt-dir ${s.direction === 'LONG' ? 'long' : 'short'}">${s.direction === 'LONG' ? '▲' : '▼'}</span>
-      <span class="rt-setup">${escH(s.setup || '—')}</span>
+      <span class="rt-setup">${escH(s.strategy_name ? ({ MNQ_INTRADAY: 'Intraday', MNQ_SWING: 'Swing', MNQ_50PT: '50-Point', MGC_SCALP: 'Scalp' }[s.strategy_name] ?? s.strategy_name) : (s.setup || '—'))}</span>
       <span class="rt-style">${escH(s.trade_style || '')}</span>
       ${outcomeBadge(s.result)}
       <span class="rt-pts ${ptsCls}">${ptsText}</span>
