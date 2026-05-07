@@ -206,8 +206,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
         vwap:   +vwap.toFixed(2),
         ema9:   +ema9.toFixed(2),
         ema21:  +ema21.toFixed(2),
-        dly50:  dly50  != null ? +dly50.toFixed(2)  : null,
-        dly200: dly200 != null ? +dly200.toFixed(2) : null,
+        dly50:  null,  // not available with 30-day history — using EMA21 as macro filter
+        dly200: null,
         adx:    adx    != null ? +adx.toFixed(1)    : null,
         rsi:    rsi    != null ? +rsi.toFixed(1)    : null,
         struct, htfBias, htf2Bias,

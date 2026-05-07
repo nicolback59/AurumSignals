@@ -28,9 +28,9 @@ const {
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
 // Minimum ATR in MGC (micro gold) dollars per contract for scalp to make sense
-// MGC tick = $0.10, point = $1. Lowered to 1.5 to capture more setups.
-const ATR_MIN_PTS = 1.5;
-const MIN_BAR_GAP = 5; // 5 × 5m = 25 min cooldown for gold scalp
+// MGC tick = $0.10, point = $1.
+const ATR_MIN_PTS = 0.8;  // was 1.5 — lowered to capture more setups
+const MIN_BAR_GAP = 2;    // was 5 (25 min) — now 10 min cooldown for more signals
 
 let lastSignalBar = -999;
 
@@ -53,11 +53,11 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const n    = bars.length - 1;
   const last = bars[n];
 
-  // ── Session filter: London open + NY sessions for gold scalping ───────────────
+  // ── Session filter: London open + NY sessions + Afternoon for gold scalping ───
   const sess = getSessionInfo(last.timestamp);
-  if (!sess.isLondon && !sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay) return null;
-  // Skip extremely low-quality sessions
-  if (sess.quality < 0.55) return null;
+  if (!sess.isLondon && !sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay && !sess.isAftNoon && !sess.isPreMarket) return null;
+  // Skip only dead overnight sessions
+  if (sess.quality < 0.35) return null;
 
   // ── Indicators ───────────────────────────────────────────────────────────────
   const closes = bars.map(b => b.close);
@@ -74,7 +74,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const ema21 = ema21Arr[n];
 
   // ── No-trade: choppy VWAP ────────────────────────────────────────────────────
-  if (isChoppingAroundVwap(bars, vwapArr, 8, 3)) return null;
+  if (isChoppingAroundVwap(bars, vwapArr, 5, 5)) return null;
 
   // ── HTF biases ───────────────────────────────────────────────────────────────
   const htfBias  = calcHtfBias(htfBars, 9, 21);
@@ -104,19 +104,19 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     if (esScore < 1) continue;
 
     // ── Pullback to VWAP, EMA9, or EMA21 ────────────────────────────────────
-    const tolerance = 0.35 * atr;
-    const pullVwap  = hadPullbackToLevel(bars, vwap,  tolerance, dir, 5);
-    const pull9     = hadPullbackToLevel(bars, ema9,  tolerance, dir, 5);
-    const pull21    = hadPullbackToLevel(bars, ema21, tolerance, dir, 5);
+    const tolerance = 0.7 * atr;  // was 0.35 — wider zone captures more valid pullbacks
+    const pullVwap  = hadPullbackToLevel(bars, vwap,  tolerance, dir, 10);  // was 5
+    const pull9     = hadPullbackToLevel(bars, ema9,  tolerance, dir, 10);
+    const pull21    = hadPullbackToLevel(bars, ema21, tolerance, dir, 10);
     if (!pullVwap && !pull9 && !pull21) continue;
 
     // ── Pullback held (didn't close through EMA21) ──────────────────────────
     const recentSlice = bars.slice(-3, -1);
-    if (isBull && recentSlice.some(b => b.close < ema21 - 0.25 * atr)) continue;
-    if (!isBull && recentSlice.some(b => b.close > ema21 + 0.25 * atr)) continue;
+    if (isBull && recentSlice.some(b => b.close < ema21 - 0.45 * atr)) continue;
+    if (!isBull && recentSlice.some(b => b.close > ema21 + 0.45 * atr)) continue;
 
     // ── Rejection candle (confirmation) ─────────────────────────────────────
-    if (!(isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35))) continue;
+    if (!(isBull ? isBullishCandle(last, 0.15) : isBearishCandle(last, 0.15))) continue;
 
     // ── Momentum ─────────────────────────────────────────────────────────────
     const rsiArr = calcRsi(closes, 14);
@@ -128,7 +128,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     const { histogram } = calcMacd(closes);
     const hist = histogram[n];
-    const macdOk = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
+    const macdOk = hist != null; // allow flat/zero histogram — direction alone gates entry
     if (!macdOk) continue;
 
     // ── ATR confirms enough movement for scalp target ────────────────────────
@@ -163,8 +163,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     // ── S/R distance check ───────────────────────────────────────────────────
     const srDist = srDistanceAtr(tp2, bars, atr, 40);
-    // Don't need large room for scalp, but can't enter if S/R is right at target
-    if (srDist < 0.5) continue;
+    // Don't need large room for scalp
+    if (srDist < 0.15) continue;
 
     // ── Confidence score ─────────────────────────────────────────────────────
     const confidence = scoreSignal({

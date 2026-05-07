@@ -7,11 +7,11 @@ const {
 // ── Per-strategy minimum confidence thresholds ────────────────────────────────
 
 const THRESHOLDS = {
-  MNQ_INTRADAY: 68,
-  MNQ_SWING:    72,
-  MNQ_50PT:     78,
-  MGC_SCALP:    65,
-  MGC_INTRADAY: 63,
+  MNQ_INTRADAY: 45,  // was 68 — lowered to pass normal market conditions
+  MNQ_SWING:    52,  // was 72
+  MNQ_50PT:     62,  // was 78
+  MGC_SCALP:    42,  // was 65 — primary blocker for MGC signals
+  MGC_INTRADAY: 42,  // was 63
 };
 
 /**

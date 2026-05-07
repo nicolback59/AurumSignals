@@ -23,6 +23,50 @@ const {
 const { aggregate1mTo5m, aggregate5mTo15m, aggregate5mTo1h, aggregate1hTo4h, aggregate1hToDaily } =
   require('./strategies/shared-indicators');
 
+// ── Trade notes builder ───────────────────────────────────────────────────────
+
+/**
+ * Build human-readable notes for each trade outcome — surfaces the WHY
+ * behind losses and BEs so they can be reviewed in the signal log.
+ *
+ * LOSS notes include: regime, session, HTF bias, setup type, and confidence.
+ * BE notes include: the fact that price moved favorably then reversed before TP1.
+ * WIN notes summarize the conditions that drove the win.
+ */
+function buildTradeNotes(outcome, sig, regime) {
+  const setup  = sig.setup || sig.strategy_name || 'unknown';
+  const dir    = sig.direction;
+  const sess   = sig.session || 'N/A';
+  const htf    = sig.htf_bias || 'N/A';
+  const conf   = sig.confidence != null ? `conf=${sig.confidence}` : '';
+  const score  = sig.score != null ? `score=${sig.score}` : '';
+
+  if (outcome === 'LOSS') {
+    return [
+      `LOSS | ${setup} ${dir} | ${sess} | ${regime} regime`,
+      `HTF bias at entry: ${htf} | ${conf} ${score}`,
+      `Review: Was HTF bias aligned? Was the entry in a chop zone?`,
+      `If HTF was opposed — counter-trend losses are expected. If regime=volatile — widen SL next time.`,
+    ].join('\n');
+  }
+
+  if (outcome === 'BE') {
+    return [
+      `BREAKEVEN | ${setup} ${dir} | ${sess} | ${regime} regime`,
+      `Price moved favorably then reversed before TP1 — exit near entry.`,
+      `${conf} ${score} | HTF: ${htf}`,
+      `BE = trade managed correctly. Price moved wrong direction after favorable start.`,
+      `Check: Did momentum weaken early? Was there a news event mid-trade?`,
+    ].join('\n');
+  }
+
+  if (outcome === 'WIN') {
+    return `WIN | ${setup} ${dir} | ${sess} | ${regime} regime | ${conf} ${score}`;
+  }
+
+  return `${outcome} | ${setup} ${dir} | ${sess}`;
+}
+
 // ── Market regime detection ───────────────────────────────────────────────────
 
 function detectRegime(bars, i, period = 14) {
@@ -208,6 +252,76 @@ function calcEnhancedMetrics(signalLog) {
     };
   }
 
+  // ── Loss breakdown per setup ─────────────────────────────────────────────────
+  const lossBySetup = {};
+  const beBySetup   = {};
+  const winBySetup  = {};
+  for (const r of signalLog) {
+    const s = r.setup || r.strategy_name || 'unknown';
+    if (r.outcome === 'LOSS') lossBySetup[s] = (lossBySetup[s] || 0) + 1;
+    if (r.outcome === 'BE')   beBySetup[s]   = (beBySetup[s]   || 0) + 1;
+    if (r.outcome === 'WIN')  winBySetup[s]  = (winBySetup[s]  || 0) + 1;
+  }
+
+  // ── BE and LOSS analysis ─────────────────────────────────────────────────────
+  const lossRecords = signalLog.filter(r => r.outcome === 'LOSS');
+  const beRecords   = signalLog.filter(r => r.outcome === 'BE');
+
+  const lossBySession = {};
+  for (const r of lossRecords) {
+    const s = r.session || 'unknown';
+    lossBySession[s] = (lossBySession[s] || 0) + 1;
+  }
+  const lossByRegime = {};
+  for (const r of lossRecords) {
+    const rg = r.regime || 'unknown';
+    lossByRegime[rg] = (lossByRegime[rg] || 0) + 1;
+  }
+  const lossByHTF = {};
+  for (const r of lossRecords) {
+    const hb = r.htf_bias || r.lossContext?.htfBias || 'unknown';
+    lossByHTF[hb] = (lossByHTF[hb] || 0) + 1;
+  }
+  const avgConfOnLoss = lossRecords.length > 0
+    ? +(lossRecords.reduce((s, r) => s + (r.confidence || 0), 0) / lossRecords.length).toFixed(1)
+    : null;
+  const avgConfOnWin = signalLog.filter(r => r.outcome === 'WIN').length > 0
+    ? +(signalLog.filter(r => r.outcome === 'WIN').reduce((s, r) => s + (r.confidence || 0), 0) /
+        signalLog.filter(r => r.outcome === 'WIN').length).toFixed(1)
+    : null;
+
+  const beNotes = {
+    totalBE:       beRecords.length,
+    beBySetup,
+    beBySession:   beRecords.reduce((acc, r) => {
+      const s = r.session || 'unknown';
+      acc[s] = (acc[s] || 0) + 1;
+      return acc;
+    }, {}),
+    note: 'BE trades had a favorable move but reversed before TP1. Check: early momentum fade, news events, insufficient room to TP1.',
+  };
+
+  const lossNotes = {
+    totalLoss:       lossRecords.length,
+    lossBySetup,
+    lossBySession,
+    lossByRegime,
+    lossByHTF,
+    avgConfOnLoss,
+    avgConfOnWin,
+    interpretation: [
+      lossByRegime['volatile'] > (lossRecords.length * 0.4)
+        ? 'HIGH volatile-regime losses — consider tightening SL or skipping signals when ATR spikes >2× avg.'
+        : null,
+      lossByHTF['BEAR'] > 0 && lossByHTF['BULL'] > 0
+        ? `Loss split: ${lossByHTF['BULL'] || 0} with BULL HTF, ${lossByHTF['BEAR'] || 0} with BEAR HTF — review counter-trend setups.`
+        : null,
+      avgConfOnLoss != null && avgConfOnWin != null && avgConfOnLoss < avgConfOnWin - 5
+        ? `Lower-confidence signals lose more often (avg loss conf=${avgConfOnLoss} vs win conf=${avgConfOnWin}). Consider raising threshold.`
+        : null,
+    ].filter(Boolean),
+  };
+
   return {
     ...base,
     byStrategy, byDirection, byRegime, bySession, byStyle,
@@ -218,6 +332,10 @@ function calcEnhancedMetrics(signalLog) {
     // Derived convenience fields
     longWinRate, shortWinRate, longCount, shortCount,
     sessionSummary,
+    // Deeper loss and BE analysis
+    lossNotes,
+    beNotes,
+    winBySetup,
   };
 }
 
@@ -298,6 +416,8 @@ function _runBacktest(bars1m, instrument, opts = {}) {
 
       const regime  = detectRegime(bars5m, i);
 
+      const tradeNotes = buildTradeNotes(outcome, sig, regime);
+
       signalLog.push({
         bar:       i,
         timestamp: bars5m[i].timestamp,
@@ -320,6 +440,25 @@ function _runBacktest(bars1m, instrument, opts = {}) {
         setup:      sig.setup,
         tradeStyle: sig.trade_style,
         score:      sig.score,
+        // Detailed outcome notes
+        notes: tradeNotes,
+        lossContext: outcome === 'LOSS' ? {
+          regime,
+          session:    sig.session,
+          htfBias:    sig.htf_bias,
+          setup:      sig.setup || strat,
+          confidence: sig.confidence,
+          score:      sig.score,
+          direction:  sig.direction,
+        } : null,
+        beContext: outcome === 'BE' ? {
+          regime,
+          session:    sig.session,
+          setup:      sig.setup || strat,
+          confidence: sig.confidence,
+          direction:  sig.direction,
+          note: 'Price moved favorably then reversed before TP1; exited near entry.',
+        } : null,
       });
 
       lastSigByStrategy[strat] = i;

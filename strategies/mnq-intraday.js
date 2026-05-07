@@ -27,9 +27,9 @@ const {
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
 // Minimum ATR in MNQ points for intraday to be worth trading
-const ATR_MIN_PTS = 8;
+const ATR_MIN_PTS = 4;  // was 8 — lowered to capture more setups
 // Cooldown: minimum bars between signals on this strategy
-const MIN_BAR_GAP = 12; // 12 × 5m = 60 min
+const MIN_BAR_GAP = 2;  // was 12 (60 min) — now 10 min, allows 30+ signals per session
 
 let lastSignalBar = -999;
 
@@ -74,11 +74,11 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const ema50 = ema50Arr[n];
 
   // ── No-trade filters ─────────────────────────────────────────────────────────
-  if (isChoppingAroundVwap(bars, vwapArr, 8, 4)) return null;
+  if (isChoppingAroundVwap(bars, vwapArr, 5, 5)) return null;
 
   const sess = getSessionInfo(last.timestamp);
-  // Skip dead sessions
-  if (sess.quality < 0.50) return null;
+  // Skip only truly dead sessions (after-hours darkness)
+  if (sess.quality < 0.35) return null;
 
   // ── HTF bias ──────────────────────────────────────────────────────────────────
   const htfBias  = calcHtfBias(htfBars, 9, 21);
@@ -101,23 +101,23 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     // ── Pullback detection ──────────────────────────────────────────────────
     // Price must have recently touched the VWAP, EMA9, or EMA21 zone.
-    // Wider lookback (10 bars = 50 min) and tolerance (0.5 ATR) for live scanning.
-    const tolerance = 0.5 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 10);
-    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 10);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 10);
+    // Wider lookback (15 bars = 75 min) and tolerance (0.8 ATR) for more signals.
+    const tolerance = 0.8 * atr;
+    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 15);
+    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 15);
+    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 15);
     if (!pulledToVwap && !pulledTo9 && !pulledTo21) continue;
 
     // ── Pullback held (EMA support not broken) ──────────────────────────────
     const recentSlice = bars.slice(-4, -1);
     if (isBull) {
-      if (recentSlice.some(b => b.close < ema21 - 0.35 * atr)) continue;
+      if (recentSlice.some(b => b.close < ema21 - 0.5 * atr)) continue;
     } else {
-      if (recentSlice.some(b => b.close > ema21 + 0.35 * atr)) continue;
+      if (recentSlice.some(b => b.close > ema21 + 0.5 * atr)) continue;
     }
 
     // ── Confirmation candle ─────────────────────────────────────────────────
-    const confirmed = isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25);
+    const confirmed = isBull ? isBullishCandle(last, 0.10) : isBearishCandle(last, 0.10);
     if (!confirmed) continue;
 
     // ── RSI filter ──────────────────────────────────────────────────────────
@@ -133,7 +133,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     // blocking strong steady trends where histogram is flat but clearly positive.
     const { histogram } = calcMacd(closes);
     const hist = histogram[n];
-    const macdAligned = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
+    const macdAligned = hist != null; // allow flat/zero histogram — just needs to exist
     if (!macdAligned) continue;
 
     // ── Stop-loss ────────────────────────────────────────────────────────────

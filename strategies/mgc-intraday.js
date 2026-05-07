@@ -26,8 +26,8 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const ATR_MIN_PTS = 1.5;  // slightly lower than scalp — still needs real movement
-const MIN_BAR_GAP = 6;    // 6 × 5m = 30 min cooldown
+const ATR_MIN_PTS = 0.8;  // was 1.5 — lowered to capture more setups
+const MIN_BAR_GAP = 2;    // was 6 (30 min) — now 10 min cooldown for more signals
 
 let lastSignalBar = -999;
 
@@ -49,11 +49,11 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const n    = bars.length - 1;
   const last = bars[n];
 
-  // ── Session filter: broader than scalp — London open through NY afternoon ──
+  // ── Session filter: London open through NY afternoon including pre-market ──
   const sess = getSessionInfo(last.timestamp);
-  // Allow London, NY overlap, NY open, mid-day; skip only overnight/pre-market
-  if (!sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay && !sess.isLondon) return null;
-  if (sess.quality < 0.45) return null;
+  // Allow all active sessions including afternoon and pre-market
+  if (!sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay && !sess.isLondon && !sess.isAftNoon && !sess.isPreMarket) return null;
+  if (sess.quality < 0.30) return null;
 
   // ── Indicators ───────────────────────────────────────────────────────────────
   const closes = bars.map(b => b.close);
@@ -70,7 +70,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const ema21 = ema21Arr[n];
 
   // ── No-trade: choppy VWAP (slightly more lenient than scalp) ─────────────────
-  if (isChoppingAroundVwap(bars, vwapArr, 6, 4)) return null;
+  if (isChoppingAroundVwap(bars, vwapArr, 5, 5)) return null;
 
   // ── HTF bias (1h) ─────────────────────────────────────────────────────────────
   const htfBias = calcHtfBias(htfBars, 9, 21);
@@ -97,19 +97,19 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     if (esScore < 1) continue;
 
     // ── Pullback to any of: VWAP, EMA9, EMA21 ─────────────────────────────────
-    const tolerance = 0.45 * atr;
-    const pullVwap = hadPullbackToLevel(bars, vwap,  tolerance, dir, 8);
-    const pull9    = hadPullbackToLevel(bars, ema9,  tolerance, dir, 8);
-    const pull21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 8);
+    const tolerance = 0.7 * atr;  // was 0.45 — wider zone captures more valid pullbacks
+    const pullVwap = hadPullbackToLevel(bars, vwap,  tolerance, dir, 12);  // was 8
+    const pull9    = hadPullbackToLevel(bars, ema9,  tolerance, dir, 12);
+    const pull21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 12);
     if (!pullVwap && !pull9 && !pull21) continue;
 
     // ── Pullback held (price didn't close hard through EMA21) ─────────────────
     const recentSlice = bars.slice(-3, -1);
-    if (isBull && recentSlice.some(b => b.close < ema21 - 0.35 * atr)) continue;
-    if (!isBull && recentSlice.some(b => b.close > ema21 + 0.35 * atr)) continue;
+    if (isBull && recentSlice.some(b => b.close < ema21 - 0.5 * atr)) continue;
+    if (!isBull && recentSlice.some(b => b.close > ema21 + 0.5 * atr)) continue;
 
     // ── Confirmation candle (relaxed body ratio for intraday) ─────────────────
-    if (!(isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25))) continue;
+    if (!(isBull ? isBullishCandle(last, 0.10) : isBearishCandle(last, 0.10))) continue;
 
     // ── RSI — avoid extreme overbought/oversold ────────────────────────────────
     const rsiArr = calcRsi(closes, 14);
@@ -124,7 +124,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     const { histogram } = calcMacd(closes);
     const hist = histogram[n];
     if (hist == null) continue;
-    const macdOk = isBull ? hist > 0 : hist < 0;
+    const macdOk = hist != null; // allow flat/zero histogram — direction alone gates entry
     if (!macdOk) continue;
 
     // ── ADX — prefer trending market (ADX > 15) ────────────────────────────────
@@ -162,7 +162,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
 
     // ── S/R distance check ─────────────────────────────────────────────────────
     const srDist = srDistanceAtr(tp1, bars, atr, 40);
-    if (srDist < 0.3) continue;
+    if (srDist < 0.10) continue;
 
     // ── Confidence score ───────────────────────────────────────────────────────
     const confidence = scoreSignal({

@@ -163,7 +163,7 @@ inRTH     = hhmm >= 930  and hhmm < 1600
 inNYOpen  = hhmm >= 930  and hhmm < 1130
 inMidDay  = hhmm >= 1130 and hhmm < 1330
 inAftNoon = hhmm >= 1330 and hhmm < 1600
-inLunch   = hhmm >= 1145 and hhmm < 1300
+inLunch   = hhmm >= 1200 and hhmm < 1230  // was 1145-1300 — narrowed to 30-min core lunch
 sessOK    = inRTH and not inLunch
 sessScore = inNYOpen ? 3 : inAftNoon ? 2 : inMidDay ? 1 : 0
 sessQ     = inNYOpen ? 1.0 : inAftNoon ? 0.85 : inMidDay ? 0.65 : 0.5
@@ -280,7 +280,7 @@ bearStack = emaF < emaS and emaS < emaT
 
 chopH  = ta.highest(high, 15)
 chopL  = ta.lowest(low,   15)
-isChop = (chopH - chopL) < atr * 3.0
+isChop = (chopH - chopL) < atr * 1.8  // was 3.0 — 1.8 filters only tight consolidation
 
 // Liquidity sweeps
 eqTol  = atr * 0.18
@@ -448,18 +448,26 @@ var int trkIdx   = 0
 var int totSigs  = 0
 var int totWins  = 0
 var int totLoss  = 0
-var int totBE    = 0
-var int apWins   = 0
-var int apLoss   = 0
-var int aWins    = 0
-var int aLoss    = 0
-var int tp1Hits  = 0
-var int oteWins  = 0
-var int oteLoss  = 0
-var int stdvWins = 0
-var int stdvLoss = 0
-var int comboWins= 0
-var int comboLoss= 0
+var int totBE     = 0
+var int apWins    = 0
+var int apLoss    = 0
+var int aWins     = 0
+var int aLoss     = 0
+var int tp1Hits   = 0
+var int oteWins   = 0
+var int oteLoss   = 0
+var int stdvWins  = 0
+var int stdvLoss  = 0
+var int comboWins = 0
+var int comboLoss = 0
+// BE breakdown by setup type — for deeper backtesting insight
+var int oteBE     = 0
+var int stdvBE    = 0
+var int comboBE   = 0
+// Loss session tracking
+var int lossNYOpen  = 0
+var int lossAftNoon = 0
+var int lossMidDay  = 0
 
 if longSig or shortSig
     _type = (longSig and s3Long) or (shortSig and s3Short) ? 3.0 : (longSig and s1Long) or (shortSig and s1Short) ? 1.0 : 2.0
@@ -533,7 +541,14 @@ for i = 0 to MAX_TRACK - 1
             else if _hitSL and not _hitTP1
                 array.set(trkDone, i, true)
                 if array.get(trkBEFired, i)
+                    // Breakeven — track by setup type for deeper analysis
                     totBE += 1
+                    if _t >= 3.0
+                        comboBE += 1
+                    else if _t >= 2.0
+                        stdvBE += 1
+                    else
+                        oteBE += 1
                 else
                     totLoss += 1
                     if _g >= 2.0
@@ -546,6 +561,13 @@ for i = 0 to MAX_TRACK - 1
                         stdvLoss += 1
                     else
                         oteLoss += 1
+                    // Track loss by session for session-quality insight
+                    if inNYOpen
+                        lossNYOpen += 1
+                    else if inAftNoon
+                        lossAftNoon += 1
+                    else if inMidDay
+                        lossMidDay += 1
 
             else if _hitTP1 and _hitSL
                 _tieWin = _dir == 1.0 ? open >= _entry - 5.0 : open <= _entry + 5.0
@@ -712,7 +734,7 @@ if i_showProb and barstate.islast
 // ================================================================
 // S. PERFORMANCE STATS PANEL
 // ================================================================
-var table statsTable = table.new(i_statPos == "top_right" ? position.top_right : i_statPos == "top_left" ? position.top_left : i_statPos == "bottom_right" ? position.bottom_right : position.bottom_left, columns=2, rows=18, bgcolor=color.new(#0A1A0A,5), border_color=color.new(#224422,80), border_width=1, frame_color=color.new(#335533,60), frame_width=1)
+var table statsTable = table.new(i_statPos == "top_right" ? position.top_right : i_statPos == "top_left" ? position.top_left : i_statPos == "bottom_right" ? position.bottom_right : position.bottom_left, columns=2, rows=26, bgcolor=color.new(#0A1A0A,5), border_color=color.new(#224422,80), border_width=1, frame_color=color.new(#335533,60), frame_width=1)
 
 if i_showStats and barstate.islast
     resolved = totWins + totLoss
@@ -763,6 +785,22 @@ if i_showStats and barstate.islast
     table.cell(statsTable, 1, 16, str.tostring(pending), text_color=color.new(#888899,0), text_size=size.tiny)
     table.cell(statsTable, 0, 17, "Past ≠ future",    text_color=color.new(#334433,0), text_size=size.tiny)
     table.cell(statsTable, 1, 17, "stats only",       text_color=color.new(#334433,0), text_size=size.tiny)
+    table.cell(statsTable, 0, 18, "── BE BREAKDOWN ──",  text_color=color.new(#AA7700,0), text_size=size.tiny, bgcolor=color.new(#1A1A00,0))
+    table.cell(statsTable, 1, 18, "(moved then failed)", text_color=color.new(#665500,0), text_size=size.tiny, bgcolor=color.new(#1A1A00,0))
+    table.cell(statsTable, 0, 19, "BE — OTE PB",      text_color=color.new(#FF9800,0), text_size=size.small)
+    table.cell(statsTable, 1, 19, str.tostring(oteBE) + " BEs",  text_color=color.new(#FF9800,0), text_size=size.small)
+    table.cell(statsTable, 0, 20, "BE — STDV",        text_color=color.new(#FF9800,0), text_size=size.small)
+    table.cell(statsTable, 1, 20, str.tostring(stdvBE) + " BEs", text_color=color.new(#FF9800,0), text_size=size.small)
+    table.cell(statsTable, 0, 21, "BE — Combo",       text_color=color.new(#FF9800,0), text_size=size.small)
+    table.cell(statsTable, 1, 21, str.tostring(comboBE) + " BEs",text_color=color.new(#FF9800,0), text_size=size.small)
+    table.cell(statsTable, 0, 22, "── LOSS SESSIONS ──",  text_color=color.new(#882222,0), text_size=size.tiny, bgcolor=color.new(#1A0A0A,0))
+    table.cell(statsTable, 1, 22, "(where losses occur)", text_color=color.new(#552222,0), text_size=size.tiny, bgcolor=color.new(#1A0A0A,0))
+    table.cell(statsTable, 0, 23, "NY Open Losses",   text_color=color.new(#FF6666,0), text_size=size.small)
+    table.cell(statsTable, 1, 23, str.tostring(lossNYOpen),  text_color=color.new(#FF6666,0), text_size=size.small)
+    table.cell(statsTable, 0, 24, "Afternoon Losses", text_color=color.new(#FF6666,0), text_size=size.small)
+    table.cell(statsTable, 1, 24, str.tostring(lossAftNoon), text_color=color.new(#FF6666,0), text_size=size.small)
+    table.cell(statsTable, 0, 25, "Midday Losses",    text_color=color.new(#FF6666,0), text_size=size.small)
+    table.cell(statsTable, 1, 25, str.tostring(lossMidDay),  text_color=color.new(#FF6666,0), text_size=size.small)
 
 // ================================================================
 // T. ALERTS
