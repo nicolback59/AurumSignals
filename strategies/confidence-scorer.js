@@ -7,10 +7,11 @@ const {
 // ── Per-strategy minimum confidence thresholds ────────────────────────────────
 
 const THRESHOLDS = {
-  MNQ_INTRADAY: 70,
-  MNQ_SWING:    75,
-  MNQ_50PT:     80,
-  MGC_SCALP:    72,
+  MNQ_INTRADAY: 68,
+  MNQ_SWING:    72,
+  MNQ_50PT:     78,
+  MGC_SCALP:    65,
+  MGC_INTRADAY: 63,
 };
 
 /**

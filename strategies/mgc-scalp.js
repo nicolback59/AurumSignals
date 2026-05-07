@@ -28,9 +28,9 @@ const {
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
 // Minimum ATR in MGC (micro gold) dollars per contract for scalp to make sense
-// MGC tick = $0.10, point = $1. Minimum ATR ~$2 (2 points)
-const ATR_MIN_PTS = 2.0;
-const MIN_BAR_GAP = 8; // 8 × 5m = 40 min cooldown for gold scalp
+// MGC tick = $0.10, point = $1. Lowered to 1.5 to capture more setups.
+const ATR_MIN_PTS = 1.5;
+const MIN_BAR_GAP = 5; // 5 × 5m = 25 min cooldown for gold scalp
 
 let lastSignalBar = -999;
 
@@ -53,11 +53,11 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const n    = bars.length - 1;
   const last = bars[n];
 
-  // ── Session filter: only London/NY overlap and NY open for gold scalping ──────
+  // ── Session filter: London open + NY sessions for gold scalping ───────────────
   const sess = getSessionInfo(last.timestamp);
-  if (!sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay) return null;
+  if (!sess.isLondon && !sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay) return null;
   // Skip extremely low-quality sessions
-  if (sess.quality < 0.65) return null;
+  if (sess.quality < 0.55) return null;
 
   // ── Indicators ───────────────────────────────────────────────────────────────
   const closes = bars.map(b => b.close);
@@ -161,7 +161,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     const tp3 = isBull ? entry + 1.5 * atr : entry - 1.5 * atr; // extended
 
     const rr = +(scalTgt / rawRisk).toFixed(2);
-    if (rr < 1.2) continue; // scalp must have meaningful RR
+    if (rr < 0.9) continue; // scalp must have at least near 1:1 RR
 
     // ── S/R distance check ───────────────────────────────────────────────────
     const srDist = srDistanceAtr(tp2, bars, atr, 40);

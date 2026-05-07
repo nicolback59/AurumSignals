@@ -52,9 +52,10 @@ class Scanner extends EventEmitter {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
       symbolMgc:       config.symbolMgc       || process.env.SCANNER_SYMBOL_MGC   || 'GC=F',
       scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '15') * 1000, 60_000),
-      cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '90'),
+      cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '30'),
       baseScore:       config.baseScore       || parseInt(process.env.SCANNER_MIN_SCORE   || '6'),
-      dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '15'),
+      dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '25'),
+      dailyMinSignals: config.dailyMinSignals || parseInt(process.env.DAILY_MIN_SIGNALS   || '10'),
       logLevel:        config.logLevel        || (process.env.SCANNER_LOG_LEVEL || 'full').toLowerCase(),
       ntfyUrl:         config.ntfyUrl         || (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, ''),
       ntfyTopic:       config.ntfyTopic       || process.env.NTFY_TOPIC || '',
@@ -184,6 +185,76 @@ class Scanner extends EventEmitter {
     this.emit('error', { msg, err: err?.message });
   }
 
+  // ── Auto-note generator for LOSS/BE backtest trades ───────────────────────────
+  // Generates a deterministic technical explanation stored in backtest_trades.note.
+  // These notes help the bot learn from patterns and give the user clear feedback.
+
+  _autoNote(trade) {
+    const parts = [];
+
+    if (trade.outcome === 'BE') {
+      parts.push('price stalled before target — breakeven exit');
+    } else {
+      parts.push('stop triggered');
+    }
+
+    // Regime
+    if (trade.regime === 'volatile') {
+      parts.push('[REGIME] high-volatility spike — avoid momentum entries in volatile regimes');
+    } else if (trade.regime === 'ranging') {
+      parts.push('[REGIME] ranging/choppy market — continuation setups fail in ranges, wait for breakout');
+    }
+
+    // HTF bias conflict
+    const dir = trade.direction;
+    const htf = trade.htf_bias;
+    if (htf === 'MIXED') {
+      parts.push('[HTF] higher-timeframe bias was neutral — needed clear directional alignment before entry');
+    } else if ((dir === 'LONG' && htf === 'BEAR') || (dir === 'SHORT' && htf === 'BULL')) {
+      parts.push(`[HTF] entered ${dir} against ${htf} HTF bias — counter-trend trades have lower win rate`);
+    }
+
+    // Confidence
+    if (trade.confidence != null && trade.confidence < 72) {
+      parts.push(`[SCORE] confidence ${trade.confidence}/100 was borderline — target 72+ for higher quality`);
+    }
+
+    // Session
+    const sess = (trade.session || '').toLowerCase();
+    if (sess.includes('pre') || sess.includes('overnight') || sess.includes('asia')) {
+      parts.push('[TIMING] thin pre-market/overnight liquidity increases stop-hunt risk');
+    } else if (sess.includes('lunch') || sess.includes('midday') || sess.includes('mid')) {
+      parts.push('[TIMING] midday chop zone — low-momentum reversals are common 11:30–13:30 ET');
+    } else if (sess.includes('afternoon') || sess.includes('aftnoon')) {
+      parts.push('[TIMING] late-day session often fades intraday momentum');
+    }
+
+    // Strategy-specific
+    if (trade.strategy_name === 'MGC_SCALP' && trade.outcome === 'LOSS') {
+      parts.push('MGC scalp: tight stops vulnerable to gold volatility near major news events');
+    }
+    if (trade.strategy_name === 'MNQ_50PT' && trade.outcome === 'LOSS') {
+      parts.push('50-pt breakout: failed breakouts common near key S/R — confirm with volume');
+    }
+    if (trade.strategy_name === 'MNQ_SWING' && trade.outcome === 'BE') {
+      parts.push('swing trade: price retraced fully — check weekly/daily S/R before next swing entry');
+    }
+
+    // Improvement directive
+    let improve = '';
+    if (trade.regime === 'ranging') {
+      improve = 'IMPROVE: skip all continuation setups in ranging regime — wait for regime to switch to trending';
+    } else if (htf === 'MIXED') {
+      improve = 'IMPROVE: wait for 15m + 1h to agree before entering';
+    } else if (trade.confidence != null && trade.confidence < 70) {
+      improve = 'IMPROVE: raise entry confidence threshold; this setup was below optimal quality';
+    } else {
+      improve = 'IMPROVE: tighten entry timing or wait for a second confirmation candle';
+    }
+
+    return parts.join(' | ') + ' | ' + improve;
+  }
+
   // ── Yahoo Finance fetch with exponential-backoff retry ───────────────────────
 
   async _fetchWithRetry(url, maxAttempts = 3) {
@@ -285,6 +356,25 @@ class Scanner extends EventEmitter {
     if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
     fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
       .catch(err => this._err('[ntfy] send failed', err));
+  }
+
+  // ── Outcome ntfy push ─────────────────────────────────────────────────────────
+
+  _sendNtfyOutcome(signalId, instrument, direction, result, pnlPts) {
+    if (!this.cfg.ntfyTopic) return;
+    const emoji    = result === 'WIN' ? '✅' : result === 'LOSS' ? '❌' : '⚠️';
+    const pnlStr   = pnlPts != null ? ` (${pnlPts >= 0 ? '+' : ''}${pnlPts} pts)` : '';
+    const priority = result === 'WIN' ? 'default' : result === 'LOSS' ? 'high' : 'default';
+    const headers  = {
+      'Content-Type': 'text/plain',
+      'Title':    `${emoji} ${result} — ${instrument} ${direction}${pnlStr}`,
+      'Priority': priority,
+      'Tags':     result === 'WIN' ? 'white_check_mark' : result === 'LOSS' ? 'x' : 'warning',
+    };
+    if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+    const body = `Signal #${signalId} auto-resolved: ${direction} ${instrument} → ${result}${pnlStr}`;
+    fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
+      .catch(err => this._err('[ntfy-outcome] send failed', err));
   }
 
   // ── Signal storage ────────────────────────────────────────────────────────────
@@ -395,8 +485,10 @@ class Scanner extends EventEmitter {
           exitBar?.timestamp ?? new Date().toISOString(),
           +pnlPts.toFixed(2)
         );
-        this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolved.result} (${+pnlPts.toFixed(2)} pts)`, 'signal');
-        this.emit('outcome', { signalId: sig.id, instrument, result: resolved.result, pnlPts: +pnlPts.toFixed(2) });
+        const pts = +pnlPts.toFixed(2);
+        this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolved.result} (${pts} pts)`, 'signal');
+        this.emit('outcome', { signalId: sig.id, instrument, result: resolved.result, pnlPts: pts });
+        this._sendNtfyOutcome(sig.id, instrument, sig.direction, resolved.result, pts);
       }
     }
   }
@@ -424,6 +516,17 @@ class Scanner extends EventEmitter {
     const stratsFiredNames = signals.map(s => s.strategy_name);
     let anyFired          = false;
 
+    // Check if we need to guarantee minimum daily signals — lower the bar if running behind
+    const todayCountNow = this._stmts.dailySignalCount.get(instrument)?.cnt ?? 0;
+    const nowHhmm = (() => {
+      const d = new Date();
+      return (d.getUTCHours() - 4) * 100 + d.getUTCMinutes(); // rough ET conversion
+    })();
+    // After 11 AM ET, if still below minimum, allow 8 pts lower confidence
+    const belowMin   = todayCountNow < (this.cfg.dailyMinSignals ?? 10);
+    const lateEnough = nowHhmm >= 1100 && nowHhmm < 1600;
+    const minConfBonus = (belowMin && lateEnough) ? -8 : 0;
+
     for (const sig of signals) {
       // Re-check cooldown per signal (another strategy may have just fired)
       if (Date.now() - (this._lastSignalTimes[instrument] ?? 0) < cooldownMs) {
@@ -433,10 +536,10 @@ class Scanner extends EventEmitter {
         continue;
       }
 
-      // Adaptive confidence gate
-      const minConf = getAdaptiveMinScore(this.db, sig.setup, sig.trade_style, sig.confidence);
+      // Adaptive confidence gate (relaxed if below daily minimum)
+      const minConf = getAdaptiveMinScore(this.db, sig.setup, sig.trade_style, sig.confidence) + minConfBonus;
       if (sig.confidence < minConf) {
-        const reason = `confidence ${sig.confidence} < adaptive min ${minConf}`;
+        const reason = `confidence ${sig.confidence} < adaptive min ${minConf}${minConfBonus < 0 ? ' (min-guarantee mode)' : ''}`;
         this._log(`⚠️  ${sig.strategy_name} ${instrument} — ${reason}`);
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
           sig.confidence, minConf, reason);
@@ -636,13 +739,25 @@ class Scanner extends EventEmitter {
              trade_style, regime, entry, sl, tp1, outcome, score, confidence)
           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
+        const updNote = this.db.prepare(
+          `UPDATE backtest_trades SET note = ?, noted_at = datetime('now') WHERE id = ?`
+        );
+
         this.db.transaction(() => {
           for (const t of allTrades) {
-            insTrade.run(runId, instrument, t.bar ?? null, t.timestamp ?? null,
+            const info = insTrade.run(runId, instrument, t.bar ?? null, t.timestamp ?? null,
               t.direction, t.setup ?? null, t.strategy_name ?? null,
               t.trade_style ?? null, t.regime ?? null,
               t.entry ?? null, t.sl ?? null, t.tp1 ?? null,
               t.outcome, t.score ?? null, t.confidence ?? null);
+
+            // Auto-generate explanatory note for every LOSS and BE trade
+            if (t.outcome === 'LOSS' || t.outcome === 'BE') {
+              try {
+                const note = this._autoNote(t);
+                if (note) updNote.run(note, info.lastInsertRowid);
+              } catch { /* never crash backtest storage */ }
+            }
           }
         })();
       }
@@ -779,8 +894,25 @@ class Scanner extends EventEmitter {
     this._log(
       `Scanner started — symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +
       `interval=${cfg.scanInterval / 1000}s cooldown=${cfg.cooldown}min ` +
-      `strategies=MNQ_INTRADAY,MNQ_SWING,MNQ_50PT,MGC_SCALP`
+      `cap=${cfg.dailySignalCap} minDaily=${cfg.dailyMinSignals} ` +
+      `strategies=MNQ_INTRADAY,MNQ_SWING,MNQ_50PT,MGC_SCALP,MGC_INTRADAY`
     );
+
+    // Startup ntfy confirmation so you know the bot is live and watching
+    if (cfg.ntfyTopic) {
+      setTimeout(() => {
+        const headers = {
+          'Content-Type': 'text/plain',
+          'Title':    '🟢 NQ Signal Pro V3 — Online',
+          'Priority': 'default',
+          'Tags':     'white_check_mark',
+        };
+        if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
+        const body = `Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nCooldown: ${cfg.cooldown} min`;
+        fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body })
+          .catch(() => {});
+      }, 3_000);
+    }
 
     return this;
   }

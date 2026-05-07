@@ -322,11 +322,13 @@ app.get('/api/journal/backtest', (req, res) => {
   const inst  = req.query.instrument?.toUpperCase() || null;
   const sql   = inst
     ? `SELECT r.*,
-              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id) AS loss_count,
+              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND (t.outcome='LOSS' OR t.outcome='BE')) AS loss_count,
+              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.outcome='WIN') AS win_count,
               (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.note IS NOT NULL AND t.note != '') AS noted_count
        FROM backtest_runs r WHERE r.instrument = ? ORDER BY r.run_at DESC LIMIT ?`
     : `SELECT r.*,
-              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id) AS loss_count,
+              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND (t.outcome='LOSS' OR t.outcome='BE')) AS loss_count,
+              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.outcome='WIN') AS win_count,
               (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.note IS NOT NULL AND t.note != '') AS noted_count
        FROM backtest_runs r ORDER BY r.run_at DESC LIMIT ?`;
   const rows = inst ? db.prepare(sql).all(inst, limit) : db.prepare(sql).all(limit);

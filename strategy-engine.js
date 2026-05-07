@@ -15,10 +15,11 @@
  * All strategy modules only look at confirmed (closed) bars.
  */
 
-const mnqIntraday = require('./strategies/mnq-intraday');
-const mnqSwing    = require('./strategies/mnq-swing');
-const mnq50Point  = require('./strategies/mnq-50-point');
-const mgcScalp    = require('./strategies/mgc-scalp');
+const mnqIntraday  = require('./strategies/mnq-intraday');
+const mnqSwing     = require('./strategies/mnq-swing');
+const mnq50Point   = require('./strategies/mnq-50-point');
+const mgcScalp     = require('./strategies/mgc-scalp');
+const mgcIntraday  = require('./strategies/mgc-intraday');
 
 const {
   aggregate1mTo5m,
@@ -100,6 +101,14 @@ function evaluateAll(barSets, cfg = {}) {
     }
   }
 
+  // ── MGC INTRADAY ─────────────────────────────────────────────────────────────
+  if (instrument === 'MGC' || instrument == null) {
+    if (bars5mMgc.length >= 50 && bars1hMgc.length >= 20) {
+      const sig = mgcIntraday.evaluate(bars5mMgc, bars1hMgc, cfg, barIdx);
+      if (sig) signals.push(sig);
+    }
+  }
+
   return signals;
 }
 
@@ -157,6 +166,7 @@ function resetAllStrategies() {
   mnqSwing.reset();
   mnq50Point.reset();
   mgcScalp.reset();
+  mgcIntraday.reset();
 }
 
 /**
@@ -194,6 +204,14 @@ const STRATEGY_META = {
     trade_style: 'scalp',
     threshold:   THRESHOLDS.MGC_SCALP,
     description: '5-minute VWAP/EMA rejection scalp during London/NY sessions',
+  },
+  MGC_INTRADAY: {
+    name:        'MGC Intraday',
+    instrument:  'MGC',
+    timeframe:   '5m',
+    trade_style: 'intraday',
+    threshold:   THRESHOLDS.MGC_INTRADAY,
+    description: '5-minute EMA9/21 trend-following with 1h HTF bias confirmation',
   },
 };
 
