@@ -101,7 +101,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     const isBull = dir === 'LONG';
 
     // ── Candle close strength ────────────────────────────────────────────────
-    if (!(isBull ? isBullishCandle(last, 0.40) : isBearishCandle(last, 0.40))) continue;
+    if (!(isBull ? isBullishCandle(last, 0.30) : isBearishCandle(last, 0.30))) continue;
 
     // ── Minimum momentum (RSI not extreme) ──────────────────────────────────
     const rsiArr = calcRsi(closes, 14);

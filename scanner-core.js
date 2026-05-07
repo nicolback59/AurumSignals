@@ -25,7 +25,7 @@ const {
   aggregate1hTo4h,
   aggregate1hToDaily,
 } = require('./strategies/shared-indicators');
-const { getAdaptiveMinScore, getMarketRegime } = require('./learning');
+const { getAdaptiveMinScore, getMarketRegime, getLearnedThreshold, updateLearnedThresholds, getBacktestWinRates } = require('./learning');
 const { runBacktest }          = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
@@ -51,7 +51,7 @@ class Scanner extends EventEmitter {
     this.cfg = {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
       symbolMgc:       config.symbolMgc       || process.env.SCANNER_SYMBOL_MGC   || 'GC=F',
-      scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '15') * 1000, 60_000),
+      scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '120') * 1000, 300_000),
       cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '30'),
       baseScore:       config.baseScore       || parseInt(process.env.SCANNER_MIN_SCORE   || '6'),
       dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '25'),
@@ -77,6 +77,7 @@ class Scanner extends EventEmitter {
     this._lastRejectionSave = { MNQ: 0, MGC: 0 };
     this._scanCount         = 0;
     this._consecutiveErrors = 0;
+    this._fetchBackoffUntil = 0;   // circuit breaker: epoch ms when backoff expires
     this._intervals         = [];
     this._running           = false;
 
@@ -257,13 +258,13 @@ class Scanner extends EventEmitter {
 
   // ── Yahoo Finance fetch with exponential-backoff retry ───────────────────────
 
-  async _fetchWithRetry(url, maxAttempts = 3) {
+  async _fetchWithRetry(url, maxAttempts = 2) {
     let lastErr;
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       try {
         if (attempt > 0) {
-          // 2s, 4s, 8s backoff
-          const delay = Math.min(2000 * (2 ** (attempt - 1)), 30_000);
+          // Only retry on transient errors (not rate limits)
+          const delay = 3000 * attempt;
           await new Promise(r => setTimeout(r, delay));
           this._log(`Retry ${attempt}/${maxAttempts - 1}: ${url.slice(50, 110)}…`);
         }
@@ -271,9 +272,16 @@ class Scanner extends EventEmitter {
         const timer = setTimeout(() => ctrl.abort(), 20_000);
         try {
           const res = await fetch(url, {
-            headers: { 'User-Agent': 'NQ-Signal-Pro/3.0' },
+            headers: {
+              'User-Agent': 'Mozilla/5.0 (compatible; NQ-Signal-Pro/3.0)',
+              'Accept': 'application/json',
+            },
             signal: ctrl.signal,
           });
+          if (res.status === 429) {
+            // Never retry rate limit errors — they need minutes-long backoff, not seconds
+            throw new Error(`HTTP 429 rate-limited — ${url.slice(0, 80)}`);
+          }
           if (!res.ok) throw new Error(`HTTP ${res.status} from ${url.slice(0, 80)}`);
           return await res.json();
         } finally {
@@ -281,6 +289,7 @@ class Scanner extends EventEmitter {
         }
       } catch (err) {
         lastErr = err;
+        if (err.message.includes('429')) throw err; // no retry on rate limit
         if (attempt < maxAttempts - 1) {
           this._log(`Fetch warning (attempt ${attempt + 1}): ${err.message}`);
         }
@@ -516,6 +525,14 @@ class Scanner extends EventEmitter {
     const stratsFiredNames = signals.map(s => s.strategy_name);
     let anyFired          = false;
 
+    // Always log candidate signals so we can debug why signals aren't firing
+    if (signals.length > 0) {
+      const summary = signals.map(s => `${s.strategy_name}(${s.direction} conf=${s.confidence})`).join(', ');
+      this._log(`🔍 ${instrument} candidate signal(s): ${summary}`);
+    } else if (this._scanCount % 5 === 0) {
+      this._log(`📉 ${instrument} — no strategy candidates (bars=${bars5m.length})`);
+    }
+
     // Check if we need to guarantee minimum daily signals — lower the bar if running behind
     const todayCountNow = this._stmts.dailySignalCount.get(instrument)?.cnt ?? 0;
     const nowHhmm = (() => {
@@ -536,13 +553,17 @@ class Scanner extends EventEmitter {
         continue;
       }
 
-      // Adaptive confidence gate (relaxed if below daily minimum)
-      const minConf = getAdaptiveMinScore(this.db, sig.setup, sig.trade_style, sig.confidence) + minConfBonus;
-      if (sig.confidence < minConf) {
-        const reason = `confidence ${sig.confidence} < adaptive min ${minConf}${minConfBonus < 0 ? ' (min-guarantee mode)' : ''}`;
+      // Learned confidence gate — threshold evolves based on backtest win rates.
+      // Strategies already pre-filter by their hardcoded floor; this gate can raise
+      // the bar further (poor backtest WR) or lower it slightly (strong WR).
+      const learnedMin = getLearnedThreshold(this.db, sig.strategy_name, sig.confidence * 0.9);
+      const effectiveMin = Math.round(learnedMin + minConfBonus);
+      if (sig.confidence < effectiveMin) {
+        const reason = `confidence ${sig.confidence} < learned threshold ${effectiveMin}` +
+          (minConfBonus < 0 ? ' (min-guarantee relaxed)' : '');
         this._log(`⚠️  ${sig.strategy_name} ${instrument} — ${reason}`);
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
-          sig.confidence, minConf, reason);
+          sig.confidence, effectiveMin, reason);
         continue;
       }
 
@@ -576,6 +597,24 @@ class Scanner extends EventEmitter {
     });
   }
 
+  // ── Sequential Yahoo fetch with inter-request gap ─────────────────────────────
+  // Fetches 4 bars serially with a 400ms pause between each to avoid burst rate limits.
+
+  async _fetchScanBars() {
+    const pause = ms => new Promise(r => setTimeout(r, ms));
+
+    // 5d of 5m = ~5 trading days × 6.5h × 12 = ~390 bars — plenty for all strategies
+    // 60d of 1h = ~42 trading days × 6.5h = ~273 bars — enough for swing + daily aggregation
+    const mnq5m = await this._fetchYahooBars(this.cfg.symbol,    '5m', '5d');
+    await pause(400);
+    const mnq1h = await this._fetchYahooBars(this.cfg.symbol,    '1h', '60d');
+    await pause(400);
+    const mgc5m = await this._fetchYahooBars(this.cfg.symbolMgc, '5m', '5d');
+    await pause(400);
+    const mgc1h = await this._fetchYahooBars(this.cfg.symbolMgc, '1h', '60d');
+    return { mnq5m, mnq1h, mgc5m, mgc1h };
+  }
+
   // ── Main scan cycle ───────────────────────────────────────────────────────────
 
   async scan() {
@@ -584,42 +623,67 @@ class Scanner extends EventEmitter {
       // Fetch primary bars — use last known good on failure
       let mnq5mRaw = [], mnq1hRaw = [], mgc5mRaw = [], mgc1hRaw = [];
 
-      try {
-        [mnq5mRaw, mnq1hRaw, mgc5mRaw, mgc1hRaw] = await Promise.all([
-          this._fetchYahooBars(this.cfg.symbol,    '5m', '60d'),
-          this._fetchYahooBars(this.cfg.symbol,    '1h', '730d'),
-          this._fetchYahooBars(this.cfg.symbolMgc, '5m', '60d'),
-          this._fetchYahooBars(this.cfg.symbolMgc, '1h', '730d'),
-        ]);
-        // Update last-known-good cache
-        if (mnq5mRaw.length) this._lastGoodBars.mnq5m = mnq5mRaw;
-        if (mnq1hRaw.length) this._lastGoodBars.mnq1h = mnq1hRaw;
-        if (mgc5mRaw.length) this._lastGoodBars.mgc5m = mgc5mRaw;
-        if (mgc1hRaw.length) this._lastGoodBars.mgc1h = mgc1hRaw;
-        this._consecutiveErrors = 0;
-      } catch (fetchErr) {
-        this._consecutiveErrors++;
-        this._err(`Data fetch failed (error #${this._consecutiveErrors})`, fetchErr);
+      const now = Date.now();
+      const inBackoff = this._fetchBackoffUntil > now;
 
-        // Fall back to cached data if available
-        if (this._lastGoodBars.mnq5m.length) {
-          this._log('⚠️  Using cached bars from last successful fetch');
-          mnq5mRaw = this._lastGoodBars.mnq5m;
-          mnq1hRaw = this._lastGoodBars.mnq1h;
-          mgc5mRaw = this._lastGoodBars.mgc5m;
-          mgc1hRaw = this._lastGoodBars.mgc1h;
-          // After 5+ consecutive failures send an alert
-          if (this._consecutiveErrors === 5 && this.cfg.ntfyTopic) {
-            this._sendNtfy({
-              direction: 'SHORT', grade: '!', instrument: 'SYS',
-              setup: 'Data feed warning', session: 'system',
-              ticker: 'NQ Signal Pro',
-              trade_style: `${this._consecutiveErrors} consecutive fetch failures`,
-            });
+      if (!inBackoff) {
+        try {
+          const bars = await this._fetchScanBars();
+          mnq5mRaw = bars.mnq5m;
+          mnq1hRaw = bars.mnq1h;
+          mgc5mRaw = bars.mgc5m;
+          mgc1hRaw = bars.mgc1h;
+
+          // Update last-known-good cache
+          if (mnq5mRaw.length) this._lastGoodBars.mnq5m = mnq5mRaw;
+          if (mnq1hRaw.length) this._lastGoodBars.mnq1h = mnq1hRaw;
+          if (mgc5mRaw.length) this._lastGoodBars.mgc5m = mgc5mRaw;
+          if (mgc1hRaw.length) this._lastGoodBars.mgc1h = mgc1hRaw;
+
+          this._consecutiveErrors = 0;
+          this._fetchBackoffUntil = 0;
+        } catch (fetchErr) {
+          this._consecutiveErrors++;
+          this._err(`Data fetch failed (error #${this._consecutiveErrors})`, fetchErr);
+
+          // Circuit breaker — exponential backoff to stop hammering the rate limit
+          // errors 1-4: no backoff (use cache, keep scanning)
+          // errors 5+:  2^(n-4) minutes backoff, capped at 60 min
+          if (this._consecutiveErrors >= 5) {
+            const backoffMin = Math.min(60, Math.pow(2, this._consecutiveErrors - 4));
+            this._fetchBackoffUntil = Date.now() + backoffMin * 60_000;
+            this._log(`🔴 Rate-limit circuit breaker: ${backoffMin}min backoff (${this._consecutiveErrors} consecutive errors)`);
+            if (this._consecutiveErrors >= 10 && this.cfg.ntfyTopic) {
+              this._sendNtfy({
+                direction: 'SHORT', grade: '!', instrument: 'SYS',
+                setup: `Rate-limit backoff ${backoffMin}min`, session: 'system',
+                ticker: 'NQ Signal Pro',
+                trade_style: `${this._consecutiveErrors} consecutive 429s — check Yahoo Finance access`,
+              });
+            }
           }
-        } else {
-          return; // No cache yet, nothing to scan
+
+          if (this._lastGoodBars.mnq5m.length) {
+            this._log('⚠️  Using cached bars from last successful fetch');
+            mnq5mRaw = this._lastGoodBars.mnq5m;
+            mnq1hRaw = this._lastGoodBars.mnq1h;
+            mgc5mRaw = this._lastGoodBars.mgc5m;
+            mgc1hRaw = this._lastGoodBars.mgc1h;
+          } else {
+            return; // No cache yet, nothing to scan
+          }
         }
+      } else {
+        // Still in backoff — use cached bars without making any HTTP requests
+        const remaining = Math.ceil((this._fetchBackoffUntil - now) / 60_000);
+        if (this._scanCount % 5 === 0) {
+          this._log(`⏸️  Rate-limit backoff — ${remaining} min remaining — signal eval on cached bars`);
+        }
+        if (!this._lastGoodBars.mnq5m.length) return;
+        mnq5mRaw = this._lastGoodBars.mnq5m;
+        mnq1hRaw = this._lastGoodBars.mnq1h;
+        mgc5mRaw = this._lastGoodBars.mgc5m;
+        mgc1hRaw = this._lastGoodBars.mgc1h;
       }
 
       // Slice to useful window
@@ -781,6 +845,18 @@ class Scanner extends EventEmitter {
         `pf=${metrics.profitFactor} | totalReturn=${metrics.totalReturn ?? '?'} | run#${runId}`
       );
 
+      // ── Learning feedback: update thresholds from last 3 backtest runs ─────────
+      try {
+        const btWinRates  = getBacktestWinRates(this.db, instrument, 3);
+        const learnResult = updateLearnedThresholds(this.db, btWinRates);
+        for (const [strat, { from, to, wr, trades, delta }] of Object.entries(learnResult.changes)) {
+          const dir = delta > 0 ? '↑' : '↓';
+          this._log(`📚 LEARNED [${strat}]: threshold ${from} ${dir} ${to} (WR=${wr}%, ${trades} trades)`);
+        }
+      } catch (e) {
+        this._log(`LEARN ERR: ${e.message}`);
+      }
+
       this.emit('backtest', { instrument, runId, metrics });
 
       const best = proposeRevision(this.db, instrument, bars1m, runId,
@@ -865,13 +941,13 @@ class Scanner extends EventEmitter {
     this.scan();
     this._intervals.push(setInterval(() => this.scan(), cfg.scanInterval));
 
-    // Startup backtests (staggered)
-    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'),  5_000);
-    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 35_000);
+    // Startup backtests — delayed well past first scan to avoid rate-limit collision
+    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'),  5 * 60_000);   // 5 min
+    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 12 * 60_000);   // 12 min
 
-    // Startup optimizers (further staggered)
-    setTimeout(() => this.runOptimizerCycle('MNQ'), 120_000);
-    setTimeout(() => this.runOptimizerCycle('MGC'), 180_000);
+    // Startup optimizers (after backtests settle)
+    setTimeout(() => this.runOptimizerCycle('MNQ'), 25 * 60_000);
+    setTimeout(() => this.runOptimizerCycle('MGC'), 35 * 60_000);
 
     // News at startup + every 30 min
     setTimeout(() => this.fetchAndStoreNews(), 8_000);

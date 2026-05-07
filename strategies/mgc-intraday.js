@@ -119,13 +119,12 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       if (!isBull && rsi <= 25) continue;
     }
 
-    // ── MACD momentum — at least historgram turning in our direction ───────────
+    // ── MACD momentum — histogram must be on the right side ──────────────────
+    // Requiring acceleration (hist > histPrev) blocks strong steady trends.
     const { histogram } = calcMacd(closes);
-    const hist = histogram[n], histPrev = histogram[n - 1];
+    const hist = histogram[n];
     if (hist == null) continue;
-    const macdOk = isBull
-      ? hist > (histPrev ?? -Infinity) // momentum strengthening
-      : hist < (histPrev ?? Infinity);
+    const macdOk = isBull ? hist > 0 : hist < 0;
     if (!macdOk) continue;
 
     // ── ADX — prefer trending market (ADX > 15) ────────────────────────────────
@@ -176,7 +175,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       emaStackVal:   esScore,
       atr,
       atrMin:        ATR_MIN_PTS,
-      rr:            1.0,
+      rr:            1.5,
       srDistanceAtr: srDist,
       timestamp:     last.timestamp,
     });
