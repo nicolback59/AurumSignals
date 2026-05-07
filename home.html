@@ -758,32 +758,87 @@ function renderRecordBar(stats, journalSigs) {
   ticksEl.style.color = totalTicks > 0 ? 'var(--green)' : totalTicks < 0 ? 'var(--red)' : 'var(--teal)';
 }
 
-/* ── Bot status (heartbeat check) ────────────────────── */
+/* ── Bot status ──────────────────────────────────────── */
+let _lastHeartbeatMs = 0;
+let _scanCount       = 0;
+
+function _applyBotStatus(online, subText) {
+  const cls = online ? 'active' : 'inactive';
+  for (const id of ['mnqDot', 'mgcDot']) {
+    document.getElementById(id).className = `bot-status-dot ${cls}`;
+  }
+  for (const id of ['mnqStatus', 'mgcStatus']) {
+    const el = document.getElementById(id);
+    el.textContent = online ? 'ACTIVE' : 'OFFLINE';
+    el.className   = `bot-status-lbl ${cls}`;
+  }
+  for (const id of ['mnqScanSub', 'mgcScanSub']) {
+    document.getElementById(id).textContent = subText;
+  }
+}
+
 async function renderBotStatus() {
-  const instruments = [
-    { dot: 'mnqDot', lbl: 'mnqStatus', sub: 'mnqScanSub' },
-    { dot: 'mgcDot', lbl: 'mgcStatus', sub: 'mgcScanSub' },
-  ];
   try {
     const r  = await fetch('/api/scanner/heartbeat');
     const d  = await r.json();
+    _lastHeartbeatMs = Date.now();
     const isActive = d.online === true;
-    const cls      = isActive ? 'active' : 'inactive';
     const subText  = isActive
       ? `last scan ${d.ageMs != null ? Math.round(d.ageMs / 1000) + 's ago' : 'recently'}`
       : 'scanner not responding';
-    for (const inst of instruments) {
-      document.getElementById(inst.dot).className  = `bot-status-dot ${cls}`;
-      const lblEl = document.getElementById(inst.lbl);
-      lblEl.textContent = isActive ? 'ACTIVE' : 'OFFLINE';
-      lblEl.className   = `bot-status-lbl ${cls}`;
-      document.getElementById(inst.sub).textContent = subText;
-    }
+    _applyBotStatus(isActive, subText);
   } catch {
-    for (const inst of instruments) {
-      document.getElementById(inst.sub).textContent = 'unavailable';
-    }
+    _applyBotStatus(false, 'unavailable');
   }
+}
+
+/* ── SSE — real-time scanner events ─────────────────── */
+function connectSSE() {
+  if (!window.EventSource) return; // Safari < 9 fallback: polling only
+  const es = new EventSource('/api/scanner/stream');
+
+  es.addEventListener('heartbeat', e => {
+    try {
+      const d = JSON.parse(e.data);
+      _lastHeartbeatMs = Date.now();
+      _scanCount = d.scanCount ?? _scanCount;
+      _applyBotStatus(true, `scan #${_scanCount} — just now`);
+    } catch { /* ignore */ }
+  });
+
+  es.addEventListener('signal', e => {
+    try {
+      const sig = JSON.parse(e.data);
+      // Flash the hero card with the new live signal
+      renderHero({ ...sig, received_at: sig.received_at || new Date().toISOString() });
+      // Refresh stats bar without full reload
+      fetch('/api/stats').then(r => r.json()).then(stats => {
+        fetch('/api/journal/signals?limit=100').then(r => r.json()).then(journal => {
+          renderRecordBar(stats, journal);
+          renderStats(stats, [], journal);
+          renderPerfChart(journal);
+          renderRecentTrades(journal);
+          renderCalendar(journal);
+        });
+      });
+    } catch { /* ignore */ }
+  });
+
+  es.addEventListener('scan', e => {
+    try {
+      const d = JSON.parse(e.data);
+      _scanCount = d.scanCount ?? _scanCount;
+      _applyBotStatus(true, `scan #${_scanCount} — ${d.instrument ?? ''} ${d.fired ? '🟢 signal fired' : 'watching…'}`);
+    } catch { /* ignore */ }
+  });
+
+  es.onerror = () => {
+    // SSE reconnects automatically; mark OFFLINE only if heartbeat is stale
+    const staleMs = Date.now() - _lastHeartbeatMs;
+    if (staleMs > 120_000) _applyBotStatus(false, 'reconnecting…');
+  };
+
+  return es;
 }
 
 /* ── Quick stats ─────────────────────────────────────── */
@@ -1081,7 +1136,11 @@ function startCountdown(secs) {
   }, 1000);
 }
 
-load().then(() => startCountdown(30));
+load().then(() => {
+  startCountdown(30);
+  // Connect SSE for real-time scanner updates (supplements 30s polling)
+  connectSSE();
+});
 
 // Fallback: if tv.js loaded before its onload callback fired, init charts now
 if (typeof TradingView !== 'undefined') initTVCharts();
