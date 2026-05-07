@@ -949,8 +949,11 @@ body {
   flex-shrink: 0;
   align-self: flex-start;
 }
+.bt-t-outcome.WIN  { background: var(--green-glow);  color: var(--green);  border: 1px solid var(--green-border); }
 .bt-t-outcome.LOSS { background: var(--red-glow);    color: var(--red);    border: 1px solid var(--red-border); }
 .bt-t-outcome.BE   { background: var(--orange-glow); color: var(--orange); border: 1px solid var(--orange-border); }
+.bt-trade-win { background: rgba(0, 200, 100, 0.03); }
+.bt-t-levels { font-family: var(--font-mono); font-size: 9px; color: var(--text-primary); min-width: 140px; flex-shrink: 0; padding-top: 2px; }
 .bt-t-note { flex: 1; min-width: 0; }
 .bt-t-note-input {
   width: 100%;

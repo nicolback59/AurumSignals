@@ -319,18 +319,23 @@ function renderBt() {
   const el       = document.getElementById('btFeed');
   const filtered = btFilter === 'ALL' ? btRuns : btRuns.filter(r => r.instrument === btFilter);
 
+  const totalWins = filtered.reduce((s, r) => s + (r.win_count  || 0), 0);
   const totalLoss = filtered.reduce((s, r) => s + (r.loss_count || 0), 0);
   const noted     = filtered.reduce((s, r) => s + (r.noted_count || 0), 0);
+  const totalTrades = totalWins + totalLoss;
+  const btWr = totalTrades > 0 ? (totalWins / totalTrades * 100).toFixed(1) + '%' : '—';
   document.getElementById('btStats').innerHTML =
     `<span class="mini-stat"><span class="v info">${filtered.length}</span> runs</span>` +
+    `<span class="mini-stat"><span class="v win">${totalWins}</span> wins</span>` +
     `<span class="mini-stat"><span class="v loss">${totalLoss}</span> losses/BEs</span>` +
+    `<span class="mini-stat"><span class="v win">${btWr}</span> WR</span>` +
     `<span class="mini-stat"><span class="v info">${noted}</span> noted</span>`;
 
   if (!filtered.length) {
     el.innerHTML = buildEmptyState(
       '◉',
       'No backtest runs yet',
-      'The scanner runs backtests automatically on startup and every 4 hours. Losing trades from each run will appear here for review.'
+      'The scanner runs backtests automatically on startup and every 4 hours. Trades from each run appear here for review.'
     );
     return;
   }
@@ -342,9 +347,12 @@ function renderBt() {
     const isOpen = expandedRuns.has(r.id);
     const dt     = r.run_at.slice(0, 16).replace('T', ' ');
     const inst   = r.instrument?.toLowerCase() || 'mnq';
+    const wins   = r.win_count  || 0;
+    const losses = r.loss_count || 0;
+    const total  = wins + losses;
     const notedStr = r.noted_count > 0
-      ? `<b>${r.noted_count}</b>/${r.loss_count} noted`
-      : r.loss_count > 0 ? `${r.loss_count} not noted` : 'no losses';
+      ? `<b>${r.noted_count}</b>/${losses} noted`
+      : losses > 0 ? `${losses} not noted` : 'no losses';
 
     html += `<div class="bt-run-card ${isOpen ? 'open' : ''}" id="run-${r.id}">
       <div class="bt-run-header" onclick="toggleRun(${r.id})">
@@ -352,7 +360,7 @@ function renderBt() {
         <span class="bt-run-inst ${inst}">${r.instrument}</span>
         <span class="bt-run-date">${dt}</span>
         <span class="bt-run-wr ${wrCls}">${wr}%</span>
-        <span class="bt-run-meta">${r.trades_found || 0} trades · <em>${r.loss_count || 0} losses/BEs</em></span>
+        <span class="bt-run-meta">${total} trades · <span style="color:var(--green)">${wins}W</span> / <em>${losses} L/BE</em></span>
         <span class="bt-run-noted">${notedStr}</span>
       </div>
       <div class="bt-trades-container" id="rt-${r.id}">
@@ -366,22 +374,40 @@ function renderBt() {
 function renderRunTrades(runId) {
   const trades = runTradeCache[runId];
   if (!trades) return '<div class="bt-trades-empty">Loading…</div>';
-  if (!trades.length) return '<div class="bt-trades-empty">No losing or breakeven trades recorded for this run.</div>';
+  if (!trades.length) return '<div class="bt-trades-empty">No trades recorded for this run.</div>';
 
-  return trades.map(t => {
+  const wins   = trades.filter(t => t.outcome === 'WIN').length;
+  const losses = trades.filter(t => t.outcome === 'LOSS').length;
+  const be     = trades.filter(t => t.outcome === 'BE').length;
+  const header = `<div style="font-size:10px;color:var(--text-muted);padding:6px 12px 4px;display:flex;gap:14px;">
+    <span style="color:var(--green)">▲ ${wins} WIN</span>
+    <span style="color:var(--red)">▼ ${losses} LOSS</span>
+    <span style="color:var(--yellow)">${be} BE</span>
+    <span style="margin-left:auto;font-family:var(--font-mono)">Entry / SL / TP1</span>
+  </div>`;
+
+  return header + trades.map(t => {
     const timeStr = t.timestamp ? hhmm(t.timestamp) : (t.bar_idx != null ? '#' + t.bar_idx : '—');
-    return `<div class="bt-trade-row" id="bt-${t.id}">
+    const entryStr = t.entry != null ? t.entry.toFixed(2) : '—';
+    const slStr    = t.sl    != null ? t.sl.toFixed(2)    : '—';
+    const tp1Str   = t.tp1   != null ? t.tp1.toFixed(2)   : '—';
+    const isWin    = t.outcome === 'WIN';
+    const notePlaceholder = isWin
+      ? 'note about this win (optional)…'
+      : 'what went wrong? improvement needed?';
+    return `<div class="bt-trade-row ${isWin ? 'bt-trade-win' : ''}" id="bt-${t.id}">
       <span class="bt-t-time">${timeStr}</span>
       <span class="bt-t-dir ${t.direction === 'LONG' ? 'long' : 'short'}">${t.direction === 'LONG' ? '▲' : '▼'}</span>
       <span class="bt-t-setup">${escH(t.setup || '—')}</span>
       <span class="bt-t-regime">${t.regime || ''}</span>
       <span class="bt-t-score">${t.score != null ? t.score : '—'}</span>
       <span class="bt-t-outcome ${t.outcome}">${t.outcome}</span>
+      <span class="bt-t-levels" title="Entry / SL / TP1">${entryStr} <span style="color:var(--text-muted)">SL</span> ${slStr} <span style="color:var(--text-muted)">TP</span> ${tp1Str}</span>
       <div class="bt-t-note">
         <input type="text" class="bt-t-note-input"
                id="bnt-${t.id}"
                value="${escH(t.note || '')}"
-               placeholder="what went wrong? improvement needed?"
+               placeholder="${notePlaceholder}"
                onfocus="showTags(${t.id})"
                onblur="scheduleSaveBt(${t.id})" />
         <div class="bt-t-tags" id="tags-${t.id}">
@@ -460,14 +486,19 @@ async function saveBtNote(tradeId) {
 function refreshNotedCounts() {
   for (const [runId, trades] of Object.entries(runTradeCache)) {
     const run = btRuns.find(r => r.id === Number(runId));
-    if (run) run.noted_count = trades.filter(t => t.note && t.note.trim()).length;
+    if (run) {
+      run.noted_count = trades.filter(t => t.note && t.note.trim()).length;
+      run.win_count   = trades.filter(t => t.outcome === 'WIN').length;
+      run.loss_count  = trades.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').length;
+    }
   }
   for (const r of btRuns) {
     const notedEl = document.querySelector(`#run-${r.id} .bt-run-noted`);
     if (!notedEl) continue;
+    const losses = r.loss_count || 0;
     notedEl.innerHTML = r.noted_count > 0
-      ? `<b>${r.noted_count}</b>/${r.loss_count} noted`
-      : r.loss_count > 0 ? `${r.loss_count} not noted` : 'no losses';
+      ? `<b>${r.noted_count}</b>/${losses} noted`
+      : losses > 0 ? `${losses} not noted` : 'no losses';
   }
 }
 
