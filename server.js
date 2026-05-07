@@ -5,6 +5,7 @@ const path     = require('path');
 const fs       = require('fs');
 const { getLearningStats } = require('./learning');
 const { getParams }        = require('./strategy-params');
+const { Scanner }          = require('./scanner-core');
 
 const PORT           = process.env.PORT           || 3000;
 const DB_PATH        = process.env.DB_PATH        || path.join(__dirname, 'signals.db');
@@ -540,12 +541,45 @@ app.get('/api/scanner/heartbeat', (req, res) => {
   try {
     const row = db.prepare('SELECT * FROM scanner_heartbeat WHERE id = 1').get();
     if (!row) return res.json({ online: false, lastScan: null, scanCount: 0, ageMs: null });
-    // SQLite stores datetime('now') in UTC without trailing Z — parse accordingly
     const lastMs = new Date(row.last_scan.replace(' ', 'T') + 'Z').getTime();
     const ageMs  = Date.now() - lastMs;
     res.json({ online: ageMs < 120_000, lastScan: row.last_scan, scanCount: row.scan_count, ageMs });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
+
+// ── SERVER-SENT EVENTS — real-time scanner feed ───────────────────────────────────────────
+// Clients subscribe to /api/scanner/stream and receive scanner events without polling.
+const _sseClients = new Set();
+
+app.get('/api/scanner/stream', (req, res) => {
+  res.setHeader('Content-Type',  'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection',    'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // disable nginx buffering
+  res.flushHeaders();
+
+  // Send initial heartbeat so client knows it's connected
+  res.write('event: connected\ndata: {"connected":true}\n\n');
+
+  // Keep-alive ping every 25 s (prevents proxy/load-balancer timeouts)
+  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch { cleanup(); } }, 25_000);
+
+  function cleanup() {
+    clearInterval(ping);
+    _sseClients.delete(res);
+  }
+
+  _sseClients.add(res);
+  req.on('close', cleanup);
+});
+
+function _broadcastSSE(event, data) {
+  if (!_sseClients.size) return;
+  const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
+  for (const client of _sseClients) {
+    try { client.write(payload); } catch { _sseClients.delete(client); }
+  }
+}
 
 // ── STATIC ────────────────────────────────────────────────────────────────────────────────
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'home.html')));
@@ -558,7 +592,30 @@ app.get('/journal',  (req, res) => res.sendFile(path.join(__dirname, 'journal.ht
 app.get('/news',     (req, res) => res.sendFile(path.join(__dirname, 'news.html')));
 app.get('/setup',    (req, res) => res.sendFile(path.join(__dirname, 'setup.html')));
 
+// ── START SERVER + SCANNER ────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`NQ Signal Pro V3  →  http://localhost:${PORT}`);
   console.log(`SQLite            →  ${DB_PATH}`);
+
+  // Start scanner in-process so the scanner is ALWAYS running when the server is running.
+  // This eliminates the separate worker service and the "scanner not responding" issue.
+  const scanner = new Scanner(db);
+
+  scanner.on('signal',    data => _broadcastSSE('signal',    data));
+  scanner.on('scan',      data => _broadcastSSE('scan',      data));
+  scanner.on('heartbeat', data => _broadcastSSE('heartbeat', data));
+  scanner.on('backtest',  data => _broadcastSSE('backtest',  data));
+  scanner.on('outcome',   data => _broadcastSSE('outcome',   data));
+  scanner.on('error',     data => _broadcastSSE('scannerError', data));
+
+  scanner.start();
+
+  // Graceful shutdown — flush DB and stop scanner
+  for (const sig of ['SIGTERM', 'SIGINT']) {
+    process.once(sig, () => {
+      console.log(`[${new Date().toISOString()}] Shutting down gracefully…`);
+      scanner.stop();
+      process.exit(0);
+    });
+  }
 });

@@ -119,11 +119,21 @@ function calcMetrics(signalLog) {
   const largestWin  = wins.length   > 0 ? +Math.max(...wins.map(t => t.pnlPts ?? (t.rr ?? 1.5))).toFixed(2)   : 0;
   const largestLoss = losses.length > 0 ? +Math.max(...losses.map(t => Math.abs(t.pnlPts ?? 1))).toFixed(2) : 0;
 
+  // Total return in price points
+  const totalReturn = +(signalLog.reduce((sum, t) => sum + (t.pnlPts ?? 0), 0)).toFixed(2);
+
+  // Average R:R across winning trades
+  const avgRR = wins.length > 0
+    ? +(wins.reduce((s, t) => s + (t.rr ?? 1.5), 0) / wins.length).toFixed(2)
+    : 0;
+
   return {
     winRate:       +winRate.toFixed(4),
     profitFactor,
     sharpe,
     maxDrawdown:   +maxDd.toFixed(2),
+    totalReturn,
+    avgRR,
     tradeCount:    n,
     avgWin, avgLoss, largestWin, largestLoss,
   };
@@ -181,6 +191,23 @@ function calcEnhancedMetrics(signalLog) {
     regimeConsistency = Math.max(0, +(1 - stdev * 4).toFixed(3));
   }
 
+  // Long vs short win rates (convenience getters)
+  const longWinRate  = byDirection['LONG']?.winRate  ?? null;
+  const shortWinRate = byDirection['SHORT']?.winRate ?? null;
+  const longCount    = byDirection['LONG']?.tradeCount  ?? 0;
+  const shortCount   = byDirection['SHORT']?.tradeCount ?? 0;
+
+  // Per-session compact summary (name → {winRate, tradeCount, totalReturn})
+  const sessionSummary = {};
+  for (const [sess, m] of Object.entries(bySession)) {
+    sessionSummary[sess] = {
+      winRate:     m.winRate,
+      tradeCount:  m.tradeCount,
+      totalReturn: m.totalReturn ?? 0,
+      profitFactor: m.profitFactor,
+    };
+  }
+
   return {
     ...base,
     byStrategy, byDirection, byRegime, bySession, byStyle,
@@ -188,6 +215,9 @@ function calcEnhancedMetrics(signalLog) {
     avgDurationBars,
     bestSession, worstSession,
     regimeConsistency,
+    // Derived convenience fields
+    longWinRate, shortWinRate, longCount, shortCount,
+    sessionSummary,
   };
 }
 

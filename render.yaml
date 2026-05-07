@@ -1,5 +1,8 @@
 services:
-  # ── 1. API Server + Website ($7/mo Starter web service) ──────────────────────
+  # ── Single Web Service — API + Scanner + Backtester ───────────────────────────
+  # The scanner runs inside the same process as the web server (scanner-core.js).
+  # This eliminates the separate worker and the "scanner not responding" bug that
+  # occurred when Render could only mount one disk to one service.
   - type: web
     name: nq-signal-pro-api
     runtime: node
@@ -16,60 +19,46 @@ services:
         value: 3000
       - key: DB_PATH
         value: /data/signals.db
-      - key: WEBHOOK_SECRET
-        sync: false      # set this manually in Render dashboard
-      - key: NTFY_TOPIC
-        sync: false      # set this manually in Render dashboard
-      - key: NTFY_TOKEN
-        sync: false      # optional — leave blank if using public ntfy.sh
-    disk:
-      name: signals-db
-      mountPath: /data
-      sizeGB: 1
 
-  # ── 2. Background Scanner + Backtester ($7/mo Starter worker) ────────────────
-  - type: worker
-    name: nq-signal-pro-scanner
-    runtime: node
-    buildCommand: npm install
-    startCommand: node scanner.js
-    plan: starter
-    envVars:
-      - key: NODE_VERSION
-        value: 20.18.0
-      - key: NODE_ENV
-        value: production
-      - key: DB_PATH
-        value: /data/signals.db
+      # ── Notifications (set manually in Render dashboard) ──
+      - key: NTFY_TOPIC
+        sync: false      # your ntfy.sh topic name
+      - key: NTFY_TOKEN
+        sync: false      # optional — leave blank for public ntfy.sh
+      - key: WEBHOOK_SECRET
+        sync: false      # optional — protects the /webhook endpoint
+
+      # ── Scanner settings ──────────────────────────────────
       - key: SCANNER_SYMBOL
         value: NQ=F
       - key: SCANNER_SYMBOL_MGC
         value: GC=F
       - key: SCAN_INTERVAL
-        value: 60
+        value: 15        # seconds between scans (15 = default, max 60)
       - key: SCANNER_COOLDOWN
-        value: 1
+        value: 90        # minutes between signals per instrument
       - key: SCANNER_MIN_SCORE
-        value: 12
-      - key: SCANNER_LOG_LEVEL
-        value: full          # change to 'signal' after first week
+        value: 6         # base confidence floor (adaptive learning raises/lowers)
+      - key: DAILY_SIGNAL_CAP
+        value: 15        # max signals per instrument per day
       - key: SCANNER_RTH_ONLY
-        value: false
+        value: false     # false = scan 24/5 (futures), true = NY RTH only
+      - key: SCANNER_LOG_LEVEL
+        value: signal    # full | signal | quiet  (use 'signal' after first week)
+
+      # ── Backtesting & optimizer ───────────────────────────
       - key: BACKTEST_INTERVAL_H
-        value: 4
+        value: 4         # hours between scheduled backtests
       - key: BACKTEST_BARS
-        value: 10000
+        value: 10000     # 1m bars to fetch (7 days max from Yahoo)
       - key: BT_TARGET_TRADES
-        value: 250
+        value: 250       # stop backtest early once this many trades are found
       - key: BT_SLIPPAGE
-        value: 0.5
+        value: 0.5       # execution slippage in price points
       - key: OPTIMIZER_INTERVAL_H
-        value: 12
-      - key: NTFY_TOPIC
-        sync: false
-      - key: NTFY_TOKEN
-        sync: false
+        value: 12        # hours between parameter optimization cycles
+
     disk:
-      name: signals-db      # SAME disk name — both services share one SQLite file
+      name: signals-db
       mountPath: /data
       sizeGB: 1
