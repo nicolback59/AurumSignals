@@ -4,9 +4,9 @@
   "description": "NQ Signal Pro V3 — TradingView webhook receiver and live signal dashboard for NQ/MNQ futures",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js",
+    "start": "node --max-old-space-size=400 server.js",
     "dev": "node --watch server.js",
-    "scan": "node scanner.js",
+    "scan": "node --max-old-space-size=400 scanner.js",
     "scan:dev": "node --watch scanner.js"
   },
   "dependencies": {
