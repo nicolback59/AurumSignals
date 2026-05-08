@@ -101,13 +101,7 @@ function evaluateAll(barSets, cfg = {}) {
     }
   }
 
-  // ── MGC INTRADAY ─────────────────────────────────────────────────────────────
-  if (instrument === 'MGC' || instrument == null) {
-    if (bars5mMgc.length >= 50 && bars1hMgc.length >= 20) {
-      const sig = mgcIntraday.evaluate(bars5mMgc, bars1hMgc, cfg, barIdx);
-      if (sig) signals.push(sig);
-    }
-  }
+  // MGC_INTRADAY disabled — MGC is scalp-only (MGC_SCALP above handles all gold signals)
 
   return signals;
 }

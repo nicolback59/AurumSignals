@@ -25,7 +25,11 @@ const {
   aggregate1hTo4h,
   aggregate1hToDaily,
 } = require('./strategies/shared-indicators');
-const { getAdaptiveMinScore, getMarketRegime, getLearnedThreshold, updateLearnedThresholds, getBacktestWinRates } = require('./learning');
+const {
+  getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
+  updateLearnedThresholds, updateLearningFromLiveSignals,
+  getPredictedWinRate, getBacktestWinRates,
+} = require('./learning');
 const { runBacktest }          = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
@@ -186,74 +190,149 @@ class Scanner extends EventEmitter {
     this.emit('error', { msg, err: err?.message });
   }
 
-  // ── Auto-note generator for LOSS/BE backtest trades ───────────────────────────
-  // Generates a deterministic technical explanation stored in backtest_trades.note.
-  // These notes help the bot learn from patterns and give the user clear feedback.
+  // ── Auto-note generator for backtest trades ───────────────────────────────────
+  // Generates detailed technical notes for EVERY trade (WIN, LOSS, BE).
+  // These notes teach the bot WHY trades succeed or fail, feeding the learning loop.
+  // Depth matters: the richer the notes, the more accurately the bot can predict
+  // future win rates before a signal is even released.
 
   _autoNote(trade) {
     const parts = [];
+    const dir  = trade.direction  ?? '?';
+    const htf  = trade.htf_bias   ?? 'UNKNOWN';
+    const sess = (trade.session   ?? '').toLowerCase();
+    const strat = trade.strategy_name ?? '';
+    const conf  = trade.confidence ?? null;
+    const rr    = trade.rr ?? null;
+    const regime = trade.regime ?? 'unknown';
+    const pnlPts = trade.pnlPts ?? null;
 
-    if (trade.outcome === 'BE') {
-      parts.push('price stalled before target — breakeven exit');
+    // ── Outcome headline ────────────────────────────────────────────────────
+    if (trade.outcome === 'WIN') {
+      parts.push(`WIN — ${dir} reached target${pnlPts != null ? ` (+${pnlPts} pts)` : ''}`);
+    } else if (trade.outcome === 'BE') {
+      parts.push(`BE — ${dir} stalled before target, returned to entry${pnlPts != null ? ` (${pnlPts} pts)` : ''}`);
     } else {
-      parts.push('stop triggered');
+      parts.push(`LOSS — ${dir} stop triggered${pnlPts != null ? ` (${pnlPts} pts)` : ''}`);
     }
 
-    // Regime
-    if (trade.regime === 'volatile') {
-      parts.push('[REGIME] high-volatility spike — avoid momentum entries in volatile regimes');
-    } else if (trade.regime === 'ranging') {
-      parts.push('[REGIME] ranging/choppy market — continuation setups fail in ranges, wait for breakout');
+    // ── Confidence quality analysis ─────────────────────────────────────────
+    if (conf != null) {
+      if (conf >= 80) {
+        parts.push(`[SCORE] high-confidence setup (${conf}/100) — strong signal quality`);
+      } else if (conf >= 68) {
+        parts.push(`[SCORE] good confidence (${conf}/100) — meets quality standard`);
+      } else if (conf >= 60) {
+        parts.push(`[SCORE] borderline confidence (${conf}/100) — stricter filter would require 68+`);
+      } else {
+        parts.push(`[SCORE] low confidence (${conf}/100) — below optimal; learning system will raise threshold`);
+      }
     }
 
-    // HTF bias conflict
-    const dir = trade.direction;
-    const htf = trade.htf_bias;
+    // ── Regime analysis ─────────────────────────────────────────────────────
+    if (regime === 'volatile') {
+      parts.push('[REGIME] high-volatility spike — ATR expanded; stops more likely to be hit on noise; widen SL or skip');
+    } else if (regime === 'ranging') {
+      parts.push('[REGIME] ranging/choppy market — continuation setups have <45% WR in ranges; wait for breakout confirmation');
+    } else if (regime === 'trending') {
+      parts.push('[REGIME] trending market — ideal for EMA-stack and VWAP-pullback setups');
+    } else {
+      parts.push('[REGIME] regime unknown — insufficient historical context for this bar');
+    }
+
+    // ── HTF bias analysis ───────────────────────────────────────────────────
     if (htf === 'MIXED') {
-      parts.push('[HTF] higher-timeframe bias was neutral — needed clear directional alignment before entry');
+      parts.push('[HTF] higher-timeframe bias was mixed/neutral — both 15m and 1h must agree before entry; this setup lacked alignment');
     } else if ((dir === 'LONG' && htf === 'BEAR') || (dir === 'SHORT' && htf === 'BULL')) {
-      parts.push(`[HTF] entered ${dir} against ${htf} HTF bias — counter-trend trades have lower win rate`);
-    }
-
-    // Confidence
-    if (trade.confidence != null && trade.confidence < 72) {
-      parts.push(`[SCORE] confidence ${trade.confidence}/100 was borderline — target 72+ for higher quality`);
-    }
-
-    // Session
-    const sess = (trade.session || '').toLowerCase();
-    if (sess.includes('pre') || sess.includes('overnight') || sess.includes('asia')) {
-      parts.push('[TIMING] thin pre-market/overnight liquidity increases stop-hunt risk');
-    } else if (sess.includes('lunch') || sess.includes('midday') || sess.includes('mid')) {
-      parts.push('[TIMING] midday chop zone — low-momentum reversals are common 11:30–13:30 ET');
-    } else if (sess.includes('afternoon') || sess.includes('aftnoon')) {
-      parts.push('[TIMING] late-day session often fades intraday momentum');
-    }
-
-    // Strategy-specific
-    if (trade.strategy_name === 'MGC_SCALP' && trade.outcome === 'LOSS') {
-      parts.push('MGC scalp: tight stops vulnerable to gold volatility near major news events');
-    }
-    if (trade.strategy_name === 'MNQ_50PT' && trade.outcome === 'LOSS') {
-      parts.push('50-pt breakout: failed breakouts common near key S/R — confirm with volume');
-    }
-    if (trade.strategy_name === 'MNQ_SWING' && trade.outcome === 'BE') {
-      parts.push('swing trade: price retraced fully — check weekly/daily S/R before next swing entry');
-    }
-
-    // Improvement directive
-    let improve = '';
-    if (trade.regime === 'ranging') {
-      improve = 'IMPROVE: skip all continuation setups in ranging regime — wait for regime to switch to trending';
-    } else if (htf === 'MIXED') {
-      improve = 'IMPROVE: wait for 15m + 1h to agree before entering';
-    } else if (trade.confidence != null && trade.confidence < 70) {
-      improve = 'IMPROVE: raise entry confidence threshold; this setup was below optimal quality';
+      parts.push(`[HTF] COUNTER-TREND — entered ${dir} while HTF was ${htf}; counter-trend trades have ~35% win rate vs 60%+ with-trend`);
     } else {
-      improve = 'IMPROVE: tighten entry timing or wait for a second confirmation candle';
+      parts.push(`[HTF] bias aligned (HTF=${htf}, dir=${dir}) — structural edge present`);
     }
 
-    return parts.join(' | ') + ' | ' + improve;
+    // ── Session / timing analysis ───────────────────────────────────────────
+    if (sess.includes('pre') || sess.includes('overnight') || sess.includes('asia')) {
+      parts.push('[TIMING] pre-market / overnight — thin liquidity, wide spreads, stop-hunt risk elevated; avoid unless very high confidence');
+    } else if (sess.includes('london') && sess.includes('ny')) {
+      parts.push('[TIMING] London/NY overlap — highest-liquidity window; best session for intraday and scalp setups');
+    } else if (sess.includes('london')) {
+      parts.push('[TIMING] London open — good session for European momentum setups');
+    } else if (sess.includes('ny') || sess.includes('open')) {
+      parts.push('[TIMING] NY open session — strong momentum expected 9:30–11:30 ET');
+    } else if (sess.includes('lunch') || sess.includes('midday') || sess.includes('mid')) {
+      parts.push('[TIMING] midday chop zone (11:30–13:30 ET) — low momentum, mean-reversion common; tight target or skip');
+    } else if (sess.includes('afternoon') || sess.includes('aftnoon')) {
+      parts.push('[TIMING] afternoon session (13:30–16:00 ET) — late-day reversals and fades; watch for position unwind near close');
+    }
+
+    // ── R:R ratio analysis ──────────────────────────────────────────────────
+    if (rr != null) {
+      if (rr >= 2.5) {
+        parts.push(`[RR] strong risk/reward (${rr}R) — even 40% win rate is profitable at this RR`);
+      } else if (rr >= 1.5) {
+        parts.push(`[RR] adequate risk/reward (${rr}R) — need 40%+ win rate to be profitable`);
+      } else {
+        parts.push(`[RR] low risk/reward (${rr}R) — need >50% win rate to profit; consider wider targets`);
+      }
+    }
+
+    // ── Strategy-specific deep notes ────────────────────────────────────────
+    if (strat === 'MGC_SCALP') {
+      if (trade.outcome === 'LOSS') {
+        parts.push('[STRATEGY:MGC_SCALP] tight SL vulnerable to gold volatility; common near FOMC/CPI; check economic calendar before entry; consider 0.5 ATR SL buffer during news days');
+      } else if (trade.outcome === 'BE') {
+        parts.push('[STRATEGY:MGC_SCALP] price returned to entry — gold scalps often reversed by sudden macro news; confirm no high-impact events within 2h of entry');
+      } else {
+        parts.push('[STRATEGY:MGC_SCALP] WIN pattern — VWAP/EMA rejection on 5m during active session; replicate setup conditions');
+      }
+    } else if (strat === 'MNQ_INTRADAY') {
+      if (trade.outcome === 'LOSS') {
+        parts.push('[STRATEGY:MNQ_INTRADAY] failed intraday pullback — common causes: EMA21 breakdown, HTF reversal mid-trade, or vol spike; require confirmed pullback hold before entry');
+      } else if (trade.outcome === 'BE') {
+        parts.push('[STRATEGY:MNQ_INTRADAY] price stalled — check VWAP zone; if price oscillates around VWAP for 3+ bars, skip entry; VWAP acts as magnet in choppy conditions');
+      } else {
+        parts.push('[STRATEGY:MNQ_INTRADAY] WIN — EMA9/21 stack held pullback; MACD and VWAP alignment confirmed momentum; replicate structure');
+      }
+    } else if (strat === 'MNQ_50PT') {
+      if (trade.outcome === 'LOSS') {
+        parts.push('[STRATEGY:MNQ_50PT] breakout failed — false breakouts account for ~40% of 50-pt setups; require volume spike ≥1.5× avg and close above prior high; avoid breakouts into major S/R');
+      } else if (trade.outcome === 'BE') {
+        parts.push('[STRATEGY:MNQ_50PT] consolidation resolved but reversed; next time verify breakout candle body > 60% of its range and no wick rejection back into range');
+      } else {
+        parts.push('[STRATEGY:MNQ_50PT] WIN — clean volume breakout from tight consolidation; range was ≤1 ATR and price expanded decisively; ideal pattern');
+      }
+    } else if (strat === 'MNQ_SWING') {
+      if (trade.outcome === 'LOSS') {
+        parts.push('[STRATEGY:MNQ_SWING] swing failed — 1h structure breakdown or daily S/R rejected move; always verify daily EMA21 direction and 4h structure before swing entries');
+      } else if (trade.outcome === 'BE') {
+        parts.push('[STRATEGY:MNQ_SWING] swing price retraced — check weekly pivot and daily S/R before next swing; price often revisits 1h EMA21 before resuming; move SL to breakeven after 1R profit');
+      } else {
+        parts.push('[STRATEGY:MNQ_SWING] WIN swing — daily bias + 4h momentum confirmed; 1h pullback to value held; strong structure-based edge');
+      }
+    }
+
+    // ── What to do next / learning directive ───────────────────────────────
+    let learn = '';
+    if (trade.outcome === 'WIN') {
+      if (regime === 'trending' && (htf === 'BULL' || htf === 'BEAR')) {
+        learn = 'LEARN: trending regime + aligned HTF is the highest-quality combination; prioritize these setups';
+      } else {
+        learn = 'LEARN: document entry conditions (EMA stack, VWAP position, session) to build a replay library of winning patterns';
+      }
+    } else if (regime === 'ranging') {
+      learn = 'LEARN: SKIP continuation setups in ranging regime — adaptive threshold should rise until WR recovers; wait for regime → trending';
+    } else if (htf === 'MIXED') {
+      learn = 'LEARN: require 15m + 1h EMA9 both above/below EMA21 before entry — neutral HTF means no edge';
+    } else if (conf != null && conf < 65) {
+      learn = `LEARN: confidence was ${conf}/100 (target 68+); the learning system should raise the threshold for ${strat} until win rate stabilises above 55%`;
+    } else if (sess.includes('lunch') || sess.includes('midday') || sess.includes('mid')) {
+      learn = 'LEARN: midday setups underperform — reduce position size 50% or skip entirely between 11:30–13:30 ET';
+    } else if (regime === 'volatile') {
+      learn = 'LEARN: volatile regime increases SL-hit probability by ~30%; widen SL by 0.5 ATR or wait for volatility to normalise (ATR declines for 3+ consecutive bars)';
+    } else {
+      learn = 'LEARN: review entry bar in detail — entry timing and confirmation candle quality are the primary variables; tighten to require body >50% of candle range';
+    }
+
+    return parts.join(' | ') + ' | ' + learn;
   }
 
   // ── Yahoo Finance fetch with exponential-backoff retry ───────────────────────
@@ -344,6 +423,9 @@ class Scanner extends EventEmitter {
     const priority = s.grade === 'A+' ? 'urgent' : 'high';
     const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
     const stratTag = s.strategy_name ? `[${s.strategy_name}] ` : '';
+    const predWR = s.predicted_wr_pct != null
+      ? `WinRate: ${s.predicted_wr_pct}%±${s.predicted_wr_band ?? 9}% (${s.predicted_wr_source ?? '?'})`
+      : null;
     const body = [
       s.setup        ? `Setup:   ${stratTag}${s.setup}`   : null,
       s.trade_style  ? `Style:   ${s.trade_style}`         : null,
@@ -354,6 +436,7 @@ class Scanner extends EventEmitter {
       s.tp3   != null? `TP3:     ${s.tp3}`                 : null,
       s.rr    != null? `RR:      ${s.rr}`                  : null,
       s.confidence != null ? `Conf:    ${s.confidence}/100` : null,
+      predWR,
       s.session      ? `Session: ${s.session}`             : null,
     ].filter(Boolean).join('\n');
     const headers = {
@@ -389,6 +472,17 @@ class Scanner extends EventEmitter {
   // ── Signal storage ────────────────────────────────────────────────────────────
 
   _storeSignal(signal) {
+    // Attach predicted win rate before storage — this is the pre-completion success estimate
+    try {
+      const pred = getPredictedWinRate(this.db, signal);
+      signal.predicted_wr         = pred.predicted_wr;
+      signal.predicted_wr_pct     = pred.predicted_wr_pct;
+      signal.predicted_wr_band    = pred.band;
+      signal.predicted_wr_source  = pred.source;
+      signal.predicted_wr_factors = pred.factors;
+      signal.predicted_wr_regime  = pred.regime;
+    } catch { /* never crash signal storage */ }
+
     const info = this._stmts.insertSignal.run({
       ticker:        signal.ticker ?? `${signal.instrument}1!`,
       timeframe:     signal.timeframe ?? '5m',
@@ -468,6 +562,7 @@ class Scanner extends EventEmitter {
   _autoResolveOutcomes(bars1m, instrument) {
     const pending = this._stmts.getPendingSignals.all(instrument);
     if (!pending.length) return;
+    let resolvedCount = 0;
 
     for (const sig of pending) {
       const sigTime    = new Date(sig.received_at).getTime();
@@ -498,7 +593,19 @@ class Scanner extends EventEmitter {
         this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolved.result} (${pts} pts)`, 'signal');
         this.emit('outcome', { signalId: sig.id, instrument, result: resolved.result, pnlPts: pts });
         this._sendNtfyOutcome(sig.id, instrument, sig.direction, resolved.result, pts);
+        resolvedCount++;
       }
+    }
+
+    // After resolving outcomes, feed live results back into the learning system
+    if (resolvedCount > 0) {
+      try {
+        const learnResult = updateLearningFromLiveSignals(this.db, instrument);
+        for (const [strat, { from, to, wr, trades, delta }] of Object.entries(learnResult.changes)) {
+          const dir = delta > 0 ? '↑' : '↓';
+          this._log(`📚 LIVE LEARN [${strat}]: threshold ${from} ${dir} ${to} (WR=${wr}%, ${trades} live trades)`);
+        }
+      } catch { /* never crash on learning */ }
     }
   }
 
@@ -815,13 +922,11 @@ class Scanner extends EventEmitter {
               t.entry ?? null, t.sl ?? null, t.tp1 ?? null,
               t.outcome, t.score ?? null, t.confidence ?? null);
 
-            // Auto-generate explanatory note for every LOSS and BE trade
-            if (t.outcome === 'LOSS' || t.outcome === 'BE') {
-              try {
-                const note = this._autoNote(t);
-                if (note) updNote.run(note, info.lastInsertRowid);
-              } catch { /* never crash backtest storage */ }
-            }
+            // Auto-generate deep learning notes for ALL trades (WIN/LOSS/BE)
+            try {
+              const note = this._autoNote(t);
+              if (note) updNote.run(note, info.lastInsertRowid);
+            } catch { /* never crash backtest storage */ }
           }
         })();
       }

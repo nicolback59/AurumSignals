@@ -27,9 +27,9 @@ const {
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
 // Minimum ATR in MNQ points for intraday to be worth trading
-const ATR_MIN_PTS = 8;
+const ATR_MIN_PTS = 5;  // lowered from 8 — capture moves in moderate-volatility sessions
 // Cooldown: minimum bars between signals on this strategy
-const MIN_BAR_GAP = 12; // 12 × 5m = 60 min
+const MIN_BAR_GAP = 8;  // 8 × 5m = 40 min (was 12)
 
 let lastSignalBar = -999;
 
@@ -74,11 +74,11 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const ema50 = ema50Arr[n];
 
   // ── No-trade filters ─────────────────────────────────────────────────────────
-  if (isChoppingAroundVwap(bars, vwapArr, 8, 4)) return null;
+  if (isChoppingAroundVwap(bars, vwapArr, 5, 3)) return null;  // relaxed from (8,4)
 
   const sess = getSessionInfo(last.timestamp);
-  // Skip dead sessions
-  if (sess.quality < 0.50) return null;
+  // Skip only truly dead sessions (pre-market, overnight)
+  if (sess.quality < 0.30) return null;  // relaxed from 0.50
 
   // ── HTF bias ──────────────────────────────────────────────────────────────────
   const htfBias  = calcHtfBias(htfBars, 9, 21);
@@ -101,11 +101,11 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     // ── Pullback detection ──────────────────────────────────────────────────
     // Price must have recently touched the VWAP, EMA9, or EMA21 zone.
-    // Wider lookback (10 bars = 50 min) and tolerance (0.5 ATR) for live scanning.
-    const tolerance = 0.5 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 10);
-    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 10);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 10);
+    // Wider lookback (15 bars = 75 min) and tolerance (0.7 ATR) for more signals.
+    const tolerance = 0.7 * atr;
+    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 15);
+    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 15);
+    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 15);
     if (!pulledToVwap && !pulledTo9 && !pulledTo21) continue;
 
     // ── Pullback held (EMA support not broken) ──────────────────────────────
@@ -128,13 +128,19 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       if (!isBull && rsi <= 25) continue; // oversold
     }
 
-    // ── MACD momentum alignment ──────────────────────────────────────────────
-    // Histogram must be on the correct side — requiring it to accelerate was
-    // blocking strong steady trends where histogram is flat but clearly positive.
+    // ── MACD momentum alignment (soft filter) ───────────────────────────────
+    // MACD alignment is scored as a bonus in confidence-scorer.
+    // Hard blocking caused too many missed setups; now only skip if strongly
+    // counter-trend (histogram on wrong side AND accelerating against us).
     const { histogram } = calcMacd(closes);
-    const hist = histogram[n];
-    const macdAligned = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
-    if (!macdAligned) continue;
+    const hist     = histogram[n];
+    const histPrev = histogram[n - 1];
+    if (hist != null && histPrev != null) {
+      const stronglyAgainst = isBull
+        ? (hist < 0 && hist < histPrev)   // falling deeper negative
+        : (hist > 0 && hist > histPrev);  // rising deeper positive
+      if (stronglyAgainst) continue;
+    }
 
     // ── Stop-loss ────────────────────────────────────────────────────────────
     const swLow  = recentSwingLow(bars, 10);
@@ -150,8 +156,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       rawRisk = sl - entry;
     }
 
-    // Risk must be at least ATR_MIN_PTS and not enormous
-    if (rawRisk < ATR_MIN_PTS || rawRisk > 4 * atr) continue;
+    // Risk must be at least half of ATR_MIN_PTS and not enormous
+    if (rawRisk < ATR_MIN_PTS * 0.5 || rawRisk > 5 * atr) continue;
 
     // ── Take-profit levels ───────────────────────────────────────────────────
     const tp1 = isBull ? entry + 1.5 * rawRisk : entry - 1.5 * rawRisk;

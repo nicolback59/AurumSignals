@@ -8,11 +8,11 @@ const MIN_SAMPLE = 5;    // minimum trades before adjusting
 // Low win rate → raise (be more selective). High win rate → lower (cast wider net).
 
 const THRESHOLD_BOUNDS = {
-  MNQ_INTRADAY: { min: 58, max: 80, default: 68 },
-  MNQ_SWING:    { min: 62, max: 82, default: 72 },
-  MNQ_50PT:     { min: 65, max: 84, default: 78 },
-  MGC_SCALP:    { min: 54, max: 78, default: 65 },
-  MGC_INTRADAY: { min: 52, max: 75, default: 63 },
+  MNQ_INTRADAY: { min: 52, max: 76, default: 60 },  // lowered to generate more MNQ signals
+  MNQ_SWING:    { min: 55, max: 78, default: 63 },
+  MNQ_50PT:     { min: 58, max: 80, default: 68 },
+  MGC_SCALP:    { min: 50, max: 74, default: 62 },
+  MGC_INTRADAY: { min: 50, max: 72, default: 60 },  // kept for data purposes (strategy disabled)
 };
 
 // ── Learned threshold persistence ─────────────────────────────────────────────
@@ -356,11 +356,182 @@ function getLearningStats(db) {
   };
 }
 
+// ── Predicted win rate for a candidate signal (pre-fire) ─────────────────────
+/**
+ * Compute a predicted win rate for a signal before it is released.
+ * Combines backtest history + live signal outcomes, weighted by sample size.
+ * The system learns over time: more live data → higher live weight.
+ *
+ * @param {object} db
+ * @param {object} signal - { strategy_name, direction, session, confidence }
+ * @returns {{ predicted_wr_pct, predicted_wr, band, sample_size, source, regime, factors }}
+ */
+function getPredictedWinRate(db, signal) {
+  const stratName = signal.strategy_name;
+  const direction = signal.direction;
+  const confidence = signal.confidence ?? 70;
+  const regime    = getMarketRegime(db);
+
+  // ── Backtest win rate (last 5 runs for this strategy) ─────────────────────
+  let btWR = null, btCount = 0;
+  try {
+    const btRow = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN t.outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
+      FROM   backtest_trades t
+      WHERE  t.strategy_name = ?
+        AND  t.run_id IN (SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5)
+    `).get(stratName);
+    if (btRow && btRow.total >= 5) {
+      btWR   = btRow.wins / btRow.total;
+      btCount = btRow.total;
+    }
+  } catch {}
+
+  // ── Backtest win rate filtered by direction ───────────────────────────────
+  let btDirWR = null;
+  try {
+    const btDirRow = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN t.outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
+      FROM   backtest_trades t
+      WHERE  t.strategy_name = ? AND t.direction = ?
+        AND  t.run_id IN (SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5)
+    `).get(stratName, direction);
+    if (btDirRow && btDirRow.total >= 5) {
+      btDirWR = btDirRow.wins / btDirRow.total;
+    }
+  } catch {}
+
+  // ── Live signal win rate (last 30 days for this strategy) ─────────────────
+  let liveWR = null, liveCount = 0;
+  try {
+    const liveRow = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
+      FROM   signals s
+      JOIN   outcomes o ON o.signal_id = s.id
+      WHERE  s.strategy_name = ?
+        AND  s.received_at >= datetime('now', '-30 days')
+    `).get(stratName);
+    if (liveRow && liveRow.total >= 3) {
+      liveWR    = liveRow.wins / liveRow.total;
+      liveCount = liveRow.total;
+    }
+  } catch {}
+
+  // ── Live win rate filtered by direction ──────────────────────────────────
+  let liveDirWR = null;
+  try {
+    const liveDirRow = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
+      FROM   signals s
+      JOIN   outcomes o ON o.signal_id = s.id
+      WHERE  s.strategy_name = ? AND s.direction = ?
+        AND  s.received_at >= datetime('now', '-30 days')
+    `).get(stratName, direction);
+    if (liveDirRow && liveDirRow.total >= 3) {
+      liveDirWR = liveDirRow.wins / liveDirRow.total;
+    }
+  } catch {}
+
+  // ── Blended win rate ──────────────────────────────────────────────────────
+  // Use direction-filtered rates when available; fall back to overall.
+  const effectiveBT   = btDirWR  ?? btWR;
+  const effectiveLive = liveDirWR ?? liveWR;
+  const totalSamples  = btCount + liveCount;
+
+  let predictedWR, source;
+
+  if (effectiveLive !== null && effectiveBT !== null) {
+    // Weight live data proportionally — grows from 20% → 60% as live trades accumulate
+    const liveWeight = Math.min(0.60, 0.20 + (liveCount / Math.max(1, totalSamples)) * 0.40);
+    predictedWR = effectiveLive * liveWeight + effectiveBT * (1 - liveWeight);
+    source      = 'live+backtest';
+  } else if (effectiveLive !== null) {
+    predictedWR = effectiveLive;
+    source      = 'live';
+  } else if (effectiveBT !== null) {
+    predictedWR = effectiveBT;
+    source      = 'backtest';
+  } else {
+    // No historical data — derive from confidence score as initial estimate
+    predictedWR = Math.min(0.85, Math.max(0.35, (confidence / 100) * 0.88));
+    source      = 'confidence-estimate';
+  }
+
+  // ── Regime adjustment ─────────────────────────────────────────────────────
+  if (regime === 'trending') predictedWR = Math.min(0.95, predictedWR * 1.06);
+  else if (regime === 'choppy') predictedWR = Math.max(0.20, predictedWR * 0.88);
+
+  // ── Confidence band (uncertainty shrinks as sample size grows) ────────────
+  const band = totalSamples >= 50 ? 3 : totalSamples >= 20 ? 6 : totalSamples >= 8 ? 9 : 12;
+
+  const predicted_wr_pct = Math.round(predictedWR * 100);
+
+  return {
+    predicted_wr:     +predictedWR.toFixed(3),
+    predicted_wr_pct,
+    band,                       // ± percentage points
+    sample_size:      totalSamples,
+    source,
+    regime,
+    factors: {
+      bt_wr:       effectiveBT   !== null ? +(effectiveBT   * 100).toFixed(1) : null,
+      live_wr:     effectiveLive !== null ? +(effectiveLive * 100).toFixed(1) : null,
+      bt_count:    btCount,
+      live_count:  liveCount,
+    },
+  };
+}
+
+// ── Live outcome learning: update thresholds after new outcomes resolve ───────
+/**
+ * Called periodically after auto-resolving live signal outcomes.
+ * Feeds live win rates back into the threshold learning system.
+ *
+ * @param {object} db
+ * @param {string} instrument - 'MNQ' | 'MGC'
+ * @returns {{ thresholds, changes }}
+ */
+function updateLearningFromLiveSignals(db, instrument) {
+  try {
+    const rows = db.prepare(`
+      SELECT s.strategy_name,
+             COUNT(*)                                              AS total,
+             SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END)   AS wins
+      FROM   signals s
+      JOIN   outcomes o ON o.signal_id = s.id
+      WHERE  s.instrument = ?
+        AND  s.received_at >= datetime('now', '-14 days')
+      GROUP  BY s.strategy_name
+      HAVING total >= ?
+    `).all(instrument, MIN_SAMPLE);
+
+    if (!rows.length) return { thresholds: getLearnedThresholds(db), changes: {} };
+
+    const metricsMap = {};
+    for (const r of rows) {
+      metricsMap[r.strategy_name] = {
+        winRate:    r.total > 0 ? r.wins / r.total : 0,
+        tradeCount: r.total,
+      };
+    }
+
+    return updateLearnedThresholds(db, metricsMap);
+  } catch {
+    return { thresholds: getLearnedThresholds(db), changes: {} };
+  }
+}
+
 module.exports = {
   getAdaptiveMinScore,
   getLearnedThreshold,
   getLearnedThresholds,
   updateLearnedThresholds,
+  updateLearningFromLiveSignals,
+  getPredictedWinRate,
   getBacktestWinRates,
   getLearningStats,
   getMarketRegime,
