@@ -438,6 +438,7 @@ class Scanner extends EventEmitter {
       s.tp1   != null? `TP1:     ${s.tp1}`                 : null,
       s.tp2   != null? `TP2:     ${s.tp2}`                 : null,
       s.tp3   != null? `TP3:     ${s.tp3}`                 : null,
+      s.tp4   != null? `TP4:     ${s.tp4}`                 : null,
       s.rr    != null? `RR:      ${s.rr}`                  : null,
       s.confidence != null ? `Conf:    ${s.confidence}/100` : null,
       predWR,

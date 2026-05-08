@@ -147,11 +147,6 @@ function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = 
     const macdOk = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
     if (!macdOk) continue;
 
-    // ── ATR confirms enough movement for scalp target ────────────────────────
-    // We need at least 1.0 ATR of room
-    const scalTgt = 1.0 * atr;
-    if (scalTgt < ATR_MIN_PTS) continue;
-
     // ── Stop-loss (tight, structure-based + 0.3 ATR) ─────────────────────────
     const swLow  = recentSwingLow(bars, 8);
     const swHigh = recentSwingHigh(bars, 8);
@@ -169,17 +164,19 @@ function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = 
     // Scalp stop must be tight
     if (rawRisk < ATR_MIN_PTS * 0.5 || rawRisk > 3 * atr) continue;
 
-    // ── Take-profit ──────────────────────────────────────────────────────────
-    const tp1 = isBull ? entry + 0.5 * atr : entry - 0.5 * atr; // partial
-    const tp2 = isBull ? entry + 1.0 * atr : entry - 1.0 * atr; // primary
-    const tp3 = isBull ? entry + 1.5 * atr : entry - 1.5 * atr; // extended
+    // ── Fixed MGC take-profit levels (pts from entry) ────────────────────────
+    // TP1=10, TP2=14, TP3=20, TP4=25
+    const tp1 = isBull ? entry + 10 : entry - 10;
+    const tp2 = isBull ? entry + 14 : entry - 14;
+    const tp3 = isBull ? entry + 20 : entry - 20;
+    const tp4 = isBull ? entry + 25 : entry - 25;
 
-    const rr = +(scalTgt / rawRisk).toFixed(2);
-    if (rr < 0.9) continue; // scalp must have at least near 1:1 RR
+    // RR based on TP2 (primary target)
+    const rr = +(rawRisk > 0 ? 14 / rawRisk : 0).toFixed(2);
+    if (rr < 0.9) continue;
 
     // ── S/R distance check ───────────────────────────────────────────────────
     const srDist = srDistanceAtr(tp2, bars, atr, 40);
-    // Don't need large room for scalp, but can't enter if S/R is right at target
     if (srDist < 0.5) continue;
 
     // ── 30m / 45m multi-timeframe confluence ─────────────────────────────────
@@ -229,7 +226,7 @@ function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = 
 
     lastSignalBar = curIdx;
 
-    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4 } = deriveGradeAndProbs(confidence);
 
     return {
       instrument:    'MGC',
@@ -242,10 +239,11 @@ function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = 
       tp1:           +tp1.toFixed(2),
       tp2:           +tp2.toFixed(2),
       tp3:           +tp3.toFixed(2),
+      tp4:           +tp4.toFixed(2),
       rr,
       confidence,
       grade,
-      win_prob_tp1, win_prob_tp2, win_prob_tp3,
+      win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4,
       score:         Math.round(confidence / 4),
       setup:         'MGC Scalp',
       htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
@@ -263,7 +261,6 @@ function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = 
         mtfAgreed:     agreedLayers.length,
         mtfPresent:    presentLayers.length,
         confluenceBonus,
-        scalTgt: +scalTgt.toFixed(2),
       },
       timestamp:    last.timestamp,
       trade_status: 'PENDING',

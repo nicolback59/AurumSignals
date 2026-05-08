@@ -161,16 +161,19 @@ function evaluate(bars, htfBars, bars30m, bars45m, cfg = {}, barIdx = null) {
 
     if (rawRisk < ATR_MIN_PTS * 0.5 || rawRisk > 3.5 * atr) continue;
 
-    // ── Take-profit ────────────────────────────────────────────────────────────
-    const tp1 = isBull ? entry + 1.0 * rawRisk : entry - 1.0 * rawRisk;
-    const tp2 = isBull ? entry + 1.5 * rawRisk : entry - 1.5 * rawRisk;
-    const tp3 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
-    const rr  = +(rawRisk > 0 ? 1.0 : 0).toFixed(2);
+    // ── Fixed MGC take-profit levels (pts from entry) ─────────────────────────
+    // TP1=10, TP2=14, TP3=20, TP4=25
+    const tp1 = isBull ? entry + 10 : entry - 10;
+    const tp2 = isBull ? entry + 14 : entry - 14;
+    const tp3 = isBull ? entry + 20 : entry - 20;
+    const tp4 = isBull ? entry + 25 : entry - 25;
 
+    // RR based on TP2 (primary target)
+    const rr = +(rawRisk > 0 ? 14 / rawRisk : 0).toFixed(2);
     if (rr < 0.8) continue;
 
     // ── S/R distance check ─────────────────────────────────────────────────────
-    const srDist = srDistanceAtr(tp1, bars, atr, 40);
+    const srDist = srDistanceAtr(tp2, bars, atr, 40);
     if (srDist < 0.3) continue;
 
     // ── 30m / 45m multi-timeframe confluence ─────────────────────────────────
@@ -214,7 +217,7 @@ function evaluate(bars, htfBars, bars30m, bars45m, cfg = {}, barIdx = null) {
 
     lastSignalBar = curIdx;
 
-    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4 } = deriveGradeAndProbs(confidence);
 
     return {
       instrument:    'MGC',
@@ -227,10 +230,11 @@ function evaluate(bars, htfBars, bars30m, bars45m, cfg = {}, barIdx = null) {
       tp1:           +tp1.toFixed(2),
       tp2:           +tp2.toFixed(2),
       tp3:           +tp3.toFixed(2),
+      tp4:           +tp4.toFixed(2),
       rr,
       confidence,
       grade,
-      win_prob_tp1, win_prob_tp2, win_prob_tp3,
+      win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4,
       score:         Math.round(confidence / 4),
       setup:         'MGC Scalp',
       htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
