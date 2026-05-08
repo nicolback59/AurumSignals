@@ -255,6 +255,8 @@ function aggregateBars(bars, factor) {
 
 function aggregate1mTo5m(bars)  { return aggregateBars(bars, 5);  }
 function aggregate5mTo15m(bars) { return aggregateBars(bars, 3);  }
+function aggregate5mTo30m(bars) { return aggregateBars(bars, 6);  } // 6 × 5m = 30 min
+function aggregate5mTo45m(bars) { return aggregateBars(bars, 9);  } // 9 × 5m = 45 min
 function aggregate5mTo1h(bars)  { return aggregateBars(bars, 12); }
 function aggregate15mTo1h(bars) { return aggregateBars(bars, 4);  }
 function aggregate1hTo4h(bars)  { return aggregateBars(bars, 4);  }
@@ -397,8 +399,8 @@ module.exports = {
   calcAtr, calcVwap, calcRsi, calcMacd, calcAdx,
   detectSwings, detectMarketStructure, detectConsolidation,
   getSessionInfo,
-  aggregateBars, aggregate1mTo5m, aggregate5mTo15m, aggregate5mTo1h,
-  aggregate15mTo1h, aggregate1hTo4h, aggregate1hToDaily,
+  aggregateBars, aggregate1mTo5m, aggregate5mTo15m, aggregate5mTo30m, aggregate5mTo45m,
+  aggregate5mTo1h, aggregate15mTo1h, aggregate1hTo4h, aggregate1hToDaily,
   hasVolumeSpike, calcEmaStack, emaStackScore, calcHtfBias,
   hadPullbackToLevel, isBullishCandle, isBearishCandle,
   isChoppingAroundVwap, recentSwingLow, recentSwingHigh, srDistanceAtr,

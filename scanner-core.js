@@ -22,6 +22,8 @@ const EventEmitter = require('events');
 const { evaluateAll, STRATEGY_META } = require('./strategy-engine');
 const {
   aggregate5mTo15m,
+  aggregate5mTo30m,
+  aggregate5mTo45m,
   aggregate1hTo4h,
   aggregate1hToDaily,
 } = require('./strategies/shared-indicators');
@@ -29,6 +31,8 @@ const {
   getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
   updateLearnedThresholds, updateLearningFromLiveSignals,
   getPredictedWinRate, getBacktestWinRates,
+  getPatternAdjustment, updatePatternMemory, computeAdaptiveOverrides,
+  loadAdaptiveOverrides,
 } = require('./learning');
 const { runBacktest }          = require('./backtest-engine');
 const {
@@ -600,7 +604,7 @@ class Scanner extends EventEmitter {
       }
     }
 
-    // After resolving outcomes, feed live results back into the learning system
+    // After resolving outcomes, feed live results back into all learning systems
     if (resolvedCount > 0) {
       try {
         const learnResult = updateLearningFromLiveSignals(this.db, instrument);
@@ -609,12 +613,27 @@ class Scanner extends EventEmitter {
           this._log(`📚 LIVE LEARN [${strat}]: threshold ${from} ${dir} ${to} (WR=${wr}%, ${trades} live trades)`);
         }
       } catch { /* never crash on learning */ }
+
+      // Update pattern memory with newly resolved live trades
+      try {
+        const recentLiveTrades = this.db.prepare(`
+          SELECT s.strategy_name, s.direction, s.htf_bias, s.session, o.result AS outcome
+          FROM   signals s
+          JOIN   outcomes o ON o.signal_id = s.id
+          WHERE  s.instrument = ?
+            AND  o.exit_at >= datetime('now', '-1 hour')
+        `).all(instrument);
+        if (recentLiveTrades.length > 0) updatePatternMemory(this.db, recentLiveTrades);
+      } catch { /* never crash on pattern memory */ }
+
+      // Recompute adaptive overrides after new outcomes arrive
+      try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
     }
   }
 
   // ── Per-instrument scan ───────────────────────────────────────────────────────
 
-  async _scanInstrument(instrument, bars5m, bars15m, bars1h, bars4h, barsDly) {
+  async _scanInstrument(instrument, bars5m, bars15m, bars1h, bars4h, barsDly, bars30m = [], bars45m = []) {
     const cooldownMs = this.cfg.cooldown * 60_000;
     if (Date.now() - (this._lastSignalTimes[instrument] ?? 0) < cooldownMs) return;
 
@@ -628,7 +647,7 @@ class Scanner extends EventEmitter {
     }
 
     const barSets = instrument === 'MGC'
-      ? { bars5mMgc: bars5m, bars15mMgc: bars15m, bars1hMgc: bars1h }
+      ? { bars5mMgc: bars5m, bars15mMgc: bars15m, bars30mMgc: bars30m, bars45mMgc: bars45m, bars1hMgc: bars1h }
       : { bars5m, bars15m, bars1h, bars4h, barsDly };
 
     const signals         = evaluateAll(barSets, { instrument });
@@ -654,6 +673,10 @@ class Scanner extends EventEmitter {
     const lateEnough = nowHhmm >= 1100 && nowHhmm < 1600;
     const minConfBonus = (belowMin && lateEnough) ? -8 : 0;
 
+    // Load adaptive overrides once per scan (auto-computed from live WR data)
+    let adaptiveOverrides = {};
+    try { adaptiveOverrides = loadAdaptiveOverrides(this.db); } catch { /* never crash */ }
+
     for (const sig of signals) {
       // Re-check cooldown per signal (another strategy may have just fired)
       if (Date.now() - (this._lastSignalTimes[instrument] ?? 0) < cooldownMs) {
@@ -663,13 +686,61 @@ class Scanner extends EventEmitter {
         continue;
       }
 
+      // ── Adaptive overrides (genuine learning — auto-block bad patterns) ────
+      const ov = adaptiveOverrides[sig.strategy_name];
+      if (ov) {
+        if (ov.paused) {
+          const reason = `strategy paused by adaptive learning (${(ov.reasons ?? []).slice(-1)[0] ?? 'poor WR'})`;
+          this._log(`🔇 ${sig.strategy_name} ${instrument} — ${reason}`);
+          this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+            sig.confidence, null, reason);
+          continue;
+        }
+        if (sig.direction === 'LONG'  && ov.blockLong) {
+          const reason = `LONG direction blocked by adaptive learning (low LONG WR)`;
+          this._log(`🔇 ${sig.strategy_name} LONG blocked — ${reason}`);
+          this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+            sig.confidence, null, reason);
+          continue;
+        }
+        if (sig.direction === 'SHORT' && ov.blockShort) {
+          const reason = `SHORT direction blocked by adaptive learning (low SHORT WR)`;
+          this._log(`🔇 ${sig.strategy_name} SHORT blocked — ${reason}`);
+          this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+            sig.confidence, null, reason);
+          continue;
+        }
+        if ((ov.blockedSessions ?? []).includes(sig.session)) {
+          const reason = `session '${sig.session}' blocked by adaptive learning (low session WR)`;
+          this._log(`🔇 ${sig.strategy_name} session blocked — ${reason}`);
+          this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+            sig.confidence, null, reason);
+          continue;
+        }
+      }
+
+      // ── Pattern memory adjustment (genuine learning — context-aware gate) ──
+      // Raises or lowers the effective confidence gate based on how this exact
+      // pattern (strategy + direction + htf_bias + session) has historically performed.
+      let patternAdj = 0;
+      try {
+        const patResult = getPatternAdjustment(this.db, sig);
+        patternAdj = patResult.adjustment;
+        if (patResult.patternWR != null && Math.abs(patternAdj) >= 4) {
+          this._log(
+            `🧠 Pattern memory [${sig.strategy_name} ${sig.direction}/${sig.htf_bias}/${sig.session}]: ` +
+            `WR=${(patResult.patternWR * 100).toFixed(0)}% (${patResult.patternTrades} trades) → gate adj ${patternAdj > 0 ? '+' : ''}${patternAdj}`
+          );
+        }
+      } catch { /* never crash */ }
+
       // Learned confidence gate — threshold evolves based on backtest win rates.
-      // Strategies already pre-filter by their hardcoded floor; this gate can raise
-      // the bar further (poor backtest WR) or lower it slightly (strong WR).
+      // Pattern memory further adjusts the gate based on this specific context.
       const learnedMin = getLearnedThreshold(this.db, sig.strategy_name, sig.confidence * 0.9);
-      const effectiveMin = Math.round(learnedMin + minConfBonus);
+      const effectiveMin = Math.round(learnedMin + patternAdj + minConfBonus);
       if (sig.confidence < effectiveMin) {
         const reason = `confidence ${sig.confidence} < learned threshold ${effectiveMin}` +
+          (patternAdj !== 0 ? ` (pattern adj ${patternAdj > 0 ? '+' : ''}${patternAdj})` : '') +
           (minConfBonus < 0 ? ' (min-guarantee relaxed)' : '');
         this._log(`⚠️  ${sig.strategy_name} ${instrument} — ${reason}`);
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
@@ -807,6 +878,8 @@ class Scanner extends EventEmitter {
       const mnq4h  = aggregate1hTo4h(mnq1h);
       const mnqDly = aggregate1hToDaily(mnq1h);
       const mgc15m = aggregate5mTo15m(mgc5m);
+      const mgc30m = aggregate5mTo30m(mgc5m);  // 30m confluence layer for MGC scalp
+      const mgc45m = aggregate5mTo45m(mgc5m);  // 45m confluence layer for MGC scalp
 
       if (mnq5m.length >= 2) this._savePrice(this.cfg.symbol,    mnq5m);
       if (mgc5m.length >= 2) this._savePrice(this.cfg.symbolMgc, mgc5m);
@@ -821,7 +894,7 @@ class Scanner extends EventEmitter {
 
       await Promise.all([
         mnqReady ? this._scanInstrument('MNQ', mnq5m, mnq15m, mnq1h, mnq4h, mnqDly) : null,
-        mgcReady ? this._scanInstrument('MGC', mgc5m, mgc15m, mgc1h, [],    [])    : null,
+        mgcReady ? this._scanInstrument('MGC', mgc5m, mgc15m, mgc1h, [], [], mgc30m, mgc45m) : null,
       ].filter(Boolean));
 
       if (mnqReady) this._autoResolveOutcomes(mnq5m, 'MNQ');
@@ -963,6 +1036,45 @@ class Scanner extends EventEmitter {
         }
       } catch (e) {
         this._log(`LEARN ERR: ${e.message}`);
+      }
+
+      // ── Pattern memory: learn from backtest trades ────────────────────────────
+      // Feeds every backtest outcome into the pattern memory so context-specific
+      // WR data builds up immediately — not waiting for live trades to accumulate.
+      try {
+        if (allTrades.length > 0) {
+          updatePatternMemory(this.db, allTrades.map(t => ({
+            strategy_name: t.strategy_name,
+            direction:     t.direction,
+            htf_bias:      t.htf_bias ?? null,
+            session:       t.session  ?? null,
+            outcome:       t.outcome,
+          })));
+          this._log(`🧠 Pattern memory updated from ${allTrades.length} backtest trades`);
+        }
+      } catch (e) {
+        this._log(`PATTERN MEMORY ERR: ${e.message}`);
+      }
+
+      // ── Adaptive overrides: recompute after each backtest ─────────────────────
+      // This is where real behavioral decisions get made: auto-pause strategies
+      // with sustained poor WR, block LONG/SHORT directions, block bad sessions.
+      try {
+        const newOverrides = computeAdaptiveOverrides(this.db);
+        const paused = Object.entries(newOverrides).filter(([, v]) => v.paused).map(([k]) => k);
+        const blocked = Object.entries(newOverrides)
+          .filter(([, v]) => v.blockLong || v.blockShort || (v.blockedSessions ?? []).length > 0)
+          .map(([k, v]) => {
+            const parts = [];
+            if (v.blockLong)  parts.push('LONG');
+            if (v.blockShort) parts.push('SHORT');
+            if ((v.blockedSessions ?? []).length) parts.push(`sessions:${v.blockedSessions.join(',')}`);
+            return `${k}[${parts.join('|')}]`;
+          });
+        if (paused.length > 0)  this._log(`🔇 Adaptive overrides — PAUSED: ${paused.join(', ')}`);
+        if (blocked.length > 0) this._log(`🔇 Adaptive overrides — BLOCKED: ${blocked.join(', ')}`);
+      } catch (e) {
+        this._log(`OVERRIDE ERR: ${e.message}`);
       }
 
       this.emit('backtest', { instrument, runId, metrics });

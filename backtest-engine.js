@@ -20,8 +20,10 @@ const {
   buildBarSetsFrom1m,
 } = require('./strategy-engine');
 
-const { aggregate1mTo5m, aggregate5mTo15m, aggregate5mTo1h, aggregate1hTo4h, aggregate1hToDaily } =
-  require('./strategies/shared-indicators');
+const {
+  aggregate1mTo5m, aggregate5mTo15m, aggregate5mTo30m, aggregate5mTo45m,
+  aggregate5mTo1h, aggregate1hTo4h, aggregate1hToDaily,
+} = require('./strategies/shared-indicators');
 
 // ── Market regime detection ───────────────────────────────────────────────────
 
@@ -232,6 +234,8 @@ function _runBacktest(bars1m, instrument, opts = {}) {
   // ── Pre-aggregate all timeframes once ───────────────────────────────────────
   const bars5m  = aggregate1mTo5m(bars1m);
   const bars15m = aggregate5mTo15m(bars5m);
+  const bars30m = aggregate5mTo30m(bars5m);  // MGC confluence layer
+  const bars45m = aggregate5mTo45m(bars5m);  // MGC confluence layer
   const bars1h  = aggregate5mTo1h(bars5m);
   const bars4h  = aggregate1hTo4h(bars1h);
   const barsDly = aggregate1hToDaily(bars1h);
@@ -246,19 +250,23 @@ function _runBacktest(bars1m, instrument, opts = {}) {
 
   for (let i = warmup5m; i < n5m - maxResolve; i++) {
     // Build slices of each TF array up to the current confirmed bar
-    const slc5m  = bars5m.slice(0, i + 1);
-    const j15    = Math.floor((i + 1) / 3);
-    const j1h    = Math.floor((i + 1) / 12);
-    const j4h    = Math.floor((i + 1) / 48);
-    const jDly   = Math.floor((i + 1) / 78); // approx 6.5h per trading day
+    const slc5m = bars5m.slice(0, i + 1);
+    const j15   = Math.floor((i + 1) / 3);
+    const j30   = Math.floor((i + 1) / 6);
+    const j45   = Math.floor((i + 1) / 9);
+    const j1h   = Math.floor((i + 1) / 12);
+    const j4h   = Math.floor((i + 1) / 48);
+    const jDly  = Math.floor((i + 1) / 78);
 
     const slc15m = bars15m.slice(0, Math.max(1, j15));
+    const slc30m = bars30m.slice(0, Math.max(1, j30));
+    const slc45m = bars45m.slice(0, Math.max(1, j45));
     const slc1h  = bars1h.slice(0,  Math.max(1, j1h));
     const slc4h  = bars4h.slice(0,  Math.max(1, j4h));
     const slcDly = barsDly.slice(0, Math.max(1, Math.min(jDly, barsDly.length)));
 
     const barSets = instrument === 'MGC'
-      ? { bars5mMgc: slc5m, bars15mMgc: slc15m, bars1hMgc: slc1h }
+      ? { bars5mMgc: slc5m, bars15mMgc: slc15m, bars30mMgc: slc30m, bars45mMgc: slc45m, bars1hMgc: slc1h }
       : { bars5m: slc5m, bars15m: slc15m, bars1h: slc1h, bars4h: slc4h, barsDly: slcDly };
 
     const signals = evaluateAll(barSets, { instrument, barIdx: i });
