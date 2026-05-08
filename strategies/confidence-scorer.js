@@ -7,11 +7,11 @@ const {
 // ── Per-strategy minimum confidence thresholds ────────────────────────────────
 
 const THRESHOLDS = {
-  MNQ_INTRADAY: 68,
-  MNQ_SWING:    72,
-  MNQ_50PT:     78,
-  MGC_SCALP:    65,
-  MGC_INTRADAY: 63,
+  MNQ_INTRADAY: 60,  // lowered from 68 — more MNQ intraday signals
+  MNQ_SWING:    63,  // lowered from 72
+  MNQ_50PT:     68,  // lowered from 78
+  MGC_SCALP:    62,  // lowered from 65
+  MGC_INTRADAY: 60,  // kept as reference (strategy disabled)
 };
 
 /**

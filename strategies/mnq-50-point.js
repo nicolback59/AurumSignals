@@ -64,7 +64,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const vwap    = vwapArr[n];
 
   const sess = getSessionInfo(last.timestamp);
-  if (sess.quality < 0.60) return null; // only trade active sessions
+  if (sess.quality < 0.40) return null; // skip only low-quality sessions
 
   // ── HTF bias (15m) ────────────────────────────────────────────────────────────
   const htfBias = calcHtfBias(htfBars, 9, 21);
