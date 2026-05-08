@@ -11,7 +11,7 @@ const THRESHOLDS = {
   MNQ_SWING:    63,  // lowered from 72
   MNQ_50PT:     68,  // lowered from 78
   MGC_SCALP:    62,  // lowered from 65
-  MGC_INTRADAY: 60,  // kept as reference (strategy disabled)
+  MGC_INTRADAY: 60,  // displayed as "MGC Scalp" (intraday trend variant)
 };
 
 /**
@@ -142,7 +142,8 @@ function deriveGradeAndProbs(confidence) {
   const win_prob_tp1 = Math.round(Math.min(92, Math.max(35, base * 90 + 5)));
   const win_prob_tp2 = Math.round(win_prob_tp1 * 0.82);
   const win_prob_tp3 = Math.round(win_prob_tp1 * 0.65);
-  return { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 };
+  const win_prob_tp4 = Math.round(win_prob_tp1 * 0.50);
+  return { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4 };
 }
 
 module.exports = { scoreSignal, deriveGradeAndProbs, THRESHOLDS };

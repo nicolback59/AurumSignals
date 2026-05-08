@@ -32,14 +32,23 @@ const MIN_BAR_GAP = 6;    // 6 × 5m = 30 min cooldown
 let lastSignalBar = -999;
 
 /**
- * Evaluate MGC gold intraday trend-following setup.
+ * Evaluate MGC gold scalp (intraday trend variant) setup.
+ *
+ * Multi-timeframe pyramid: 5m entry + 30m/45m intermediate + 1h macro.
+ * Minimum 2 of the present HTF layers must agree before entry.
  *
  * @param {object[]} bars     - 5m primary bars
- * @param {object[]} htfBars  - 1h bars (HTF trend context)
+ * @param {object[]} htfBars  - 1h bars (macro trend)
+ * @param {object[]} bars30m  - 30m bars (intermediate)
+ * @param {object[]} bars45m  - 45m bars (intermediate)
  * @param {object}   cfg
  * @param {number}   barIdx
  */
-function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
+function evaluate(bars, htfBars, bars30m, bars45m, cfg = {}, barIdx = null) {
+  // Handle legacy callers
+  if (bars30m && !Array.isArray(bars30m) && typeof bars30m === 'object') {
+    cfg = bars30m; barIdx = bars45m ?? null; bars30m = []; bars45m = [];
+  }
   const MIN_BARS = 50;
   if (bars.length < MIN_BARS || !htfBars || htfBars.length < 20) return null;
 
@@ -152,25 +161,48 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
 
     if (rawRisk < ATR_MIN_PTS * 0.5 || rawRisk > 3.5 * atr) continue;
 
-    // ── Take-profit ────────────────────────────────────────────────────────────
-    const tp1 = isBull ? entry + 1.0 * rawRisk : entry - 1.0 * rawRisk;
-    const tp2 = isBull ? entry + 1.5 * rawRisk : entry - 1.5 * rawRisk;
-    const tp3 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
-    const rr  = +(rawRisk > 0 ? 1.0 : 0).toFixed(2);
+    // ── Fixed MGC take-profit levels (pts from entry) ─────────────────────────
+    // TP1=10, TP2=14, TP3=20, TP4=25
+    const tp1 = isBull ? entry + 10 : entry - 10;
+    const tp2 = isBull ? entry + 14 : entry - 14;
+    const tp3 = isBull ? entry + 20 : entry - 20;
+    const tp4 = isBull ? entry + 25 : entry - 25;
 
+    // RR based on TP2 (primary target)
+    const rr = +(rawRisk > 0 ? 14 / rawRisk : 0).toFixed(2);
     if (rr < 0.8) continue;
 
     // ── S/R distance check ─────────────────────────────────────────────────────
-    const srDist = srDistanceAtr(tp1, bars, atr, 40);
+    const srDist = srDistanceAtr(tp2, bars, atr, 40);
     if (srDist < 0.3) continue;
 
+    // ── 30m / 45m multi-timeframe confluence ─────────────────────────────────
+    const b30mBias = (bars30m && bars30m.length >= 6)  ? calcHtfBias(bars30m, 9, 21) : null;
+    const b45mBias = (bars45m && bars45m.length >= 5)  ? calcHtfBias(bars45m, 9, 21) : null;
+    const expectedBias = isBull ? 1 : -1;
+
+    const htfLayers = [
+      { name: '30m', bias: b30mBias, present: b30mBias !== null },
+      { name: '45m', bias: b45mBias, present: b45mBias !== null },
+      { name: '1h',  bias: htfBias,  present: true },
+    ];
+    const presentLayers  = htfLayers.filter(l => l.present);
+    const agreedLayers   = presentLayers.filter(l => l.bias === expectedBias);
+    const conflictLayers = presentLayers.filter(l => l.bias !== 0 && l.bias !== expectedBias);
+
+    const minAgree = presentLayers.length >= 2 ? 2 : 1;
+    if (agreedLayers.length < minAgree) continue;
+    if (conflictLayers.length > agreedLayers.length) continue;
+
+    const confluenceBonus = (agreedLayers.length - minAgree) * 4;
+
     // ── Confidence score ───────────────────────────────────────────────────────
-    const confidence = scoreSignal({
+    const baseConfidence = scoreSignal({
       direction:     dir,
       bars,
       htfBias,
-      htf2Bias:      0,
-      hasHtf2:       false,
+      htf2Bias:      b30mBias ?? 0,
+      hasHtf2:       b30mBias !== null,
       vwapVal:       vwap,
       emaStackVal:   esScore,
       atr,
@@ -179,12 +211,13 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       srDistanceAtr: srDist,
       timestamp:     last.timestamp,
     });
+    const confidence = Math.min(100, baseConfidence + confluenceBonus);
 
     if (confidence < THRESHOLDS.MGC_INTRADAY) continue;
 
     lastSignalBar = curIdx;
 
-    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4 } = deriveGradeAndProbs(confidence);
 
     return {
       instrument:    'MGC',
@@ -197,15 +230,16 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       tp1:           +tp1.toFixed(2),
       tp2:           +tp2.toFixed(2),
       tp3:           +tp3.toFixed(2),
+      tp4:           +tp4.toFixed(2),
       rr,
       confidence,
       grade,
-      win_prob_tp1, win_prob_tp2, win_prob_tp3,
+      win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4,
       score:         Math.round(confidence / 4),
-      setup:         'MGC Intraday',
+      setup:         'MGC Scalp',
       htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
-      trigger_reason: `EMA9/21 ${dir} trend, pullback held, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF ${htfBias >= 0 ? 'neutral/bull' : 'bear'}, ADX=${adxVal != null ? adxVal.toFixed(1) : '?'}`,
+      trigger_reason: `EMA9/21 scalp ${dir}, ${agreedLayers.map(l=>l.name).join('+')} confirmed (${agreedLayers.length}/${presentLayers.length} TFs), ADX=${adxVal != null ? adxVal.toFixed(1) : '?'}`,
       indicators: {
         atr:   +atr.toFixed(2),
         vwap:  +vwap.toFixed(2),
@@ -214,6 +248,11 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
         rsi:   rsi != null ? +rsi.toFixed(1) : null,
         adx:   adxVal != null ? +adxVal.toFixed(1) : null,
         htfBias,
+        bias30m:       b30mBias,
+        bias45m:       b45mBias,
+        mtfAgreed:     agreedLayers.length,
+        mtfPresent:    presentLayers.length,
+        confluenceBonus,
       },
       timestamp:    last.timestamp,
       trade_status: 'PENDING',

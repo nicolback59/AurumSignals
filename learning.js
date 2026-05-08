@@ -8,11 +8,11 @@ const MIN_SAMPLE = 5;    // minimum trades before adjusting
 // Low win rate → raise (be more selective). High win rate → lower (cast wider net).
 
 const THRESHOLD_BOUNDS = {
-  MNQ_INTRADAY: { min: 52, max: 76, default: 60 },  // lowered to generate more MNQ signals
+  MNQ_INTRADAY: { min: 52, max: 76, default: 60 },
   MNQ_SWING:    { min: 55, max: 78, default: 63 },
   MNQ_50PT:     { min: 58, max: 80, default: 68 },
   MGC_SCALP:    { min: 50, max: 74, default: 62 },
-  MGC_INTRADAY: { min: 50, max: 72, default: 60 },  // kept for data purposes (strategy disabled)
+  MGC_INTRADAY: { min: 50, max: 72, default: 60 },
 };
 
 // ── Learned threshold persistence ─────────────────────────────────────────────
@@ -358,130 +358,176 @@ function getLearningStats(db) {
 
 // ── Predicted win rate for a candidate signal (pre-fire) ─────────────────────
 /**
- * Compute a predicted win rate for a signal before it is released.
- * Combines backtest history + live signal outcomes, weighted by sample size.
- * The system learns over time: more live data → higher live weight.
+ * Compute a DYNAMIC predicted win rate for a signal before it is released.
+ *
+ * This is NOT a static number. It reacts in real time to:
+ *   • Backtest win rate history (last 5 runs for this strategy)
+ *   • Live signal outcomes (last 30 days for this strategy + direction)
+ *   • Market regime (trending / ranging / choppy / volatile)
+ *   • Current ATR vs recent average (detects volatility spikes from news)
+ *   • Recent news count (high news volume → wider uncertainty band)
+ *
+ * The estimate changes every time a signal fires because all inputs are
+ * re-queried fresh from the database — not cached.
  *
  * @param {object} db
- * @param {object} signal - { strategy_name, direction, session, confidence }
- * @returns {{ predicted_wr_pct, predicted_wr, band, sample_size, source, regime, factors }}
+ * @param {object} signal - { strategy_name, direction, session, confidence, indicators? }
+ * @returns {{ predicted_wr_pct, predicted_wr, band, sample_size, source, regime, factors, dynamic_note }}
  */
 function getPredictedWinRate(db, signal) {
-  const stratName = signal.strategy_name;
-  const direction = signal.direction;
+  const stratName  = signal.strategy_name;
+  const direction  = signal.direction;
   const confidence = signal.confidence ?? 70;
-  const regime    = getMarketRegime(db);
+  const regime     = getMarketRegime(db);
 
-  // ── Backtest win rate (last 5 runs for this strategy) ─────────────────────
+  // ── Backtest win rate (last 5 runs) ───────────────────────────────────────
   let btWR = null, btCount = 0;
   try {
-    const btRow = db.prepare(`
+    const r = db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN t.outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
       FROM   backtest_trades t
       WHERE  t.strategy_name = ?
         AND  t.run_id IN (SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5)
     `).get(stratName);
-    if (btRow && btRow.total >= 5) {
-      btWR   = btRow.wins / btRow.total;
-      btCount = btRow.total;
-    }
+    if (r && r.total >= 5) { btWR = r.wins / r.total; btCount = r.total; }
   } catch {}
 
-  // ── Backtest win rate filtered by direction ───────────────────────────────
+  // Direction-filtered backtest WR
   let btDirWR = null;
   try {
-    const btDirRow = db.prepare(`
+    const r = db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN t.outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
       FROM   backtest_trades t
       WHERE  t.strategy_name = ? AND t.direction = ?
         AND  t.run_id IN (SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5)
     `).get(stratName, direction);
-    if (btDirRow && btDirRow.total >= 5) {
-      btDirWR = btDirRow.wins / btDirRow.total;
-    }
+    if (r && r.total >= 5) btDirWR = r.wins / r.total;
   } catch {}
 
-  // ── Live signal win rate (last 30 days for this strategy) ─────────────────
+  // ── Live signal win rate (last 30 days) ───────────────────────────────────
   let liveWR = null, liveCount = 0;
   try {
-    const liveRow = db.prepare(`
+    const r = db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
-      FROM   signals s
-      JOIN   outcomes o ON o.signal_id = s.id
+      FROM   signals s JOIN outcomes o ON o.signal_id = s.id
       WHERE  s.strategy_name = ?
         AND  s.received_at >= datetime('now', '-30 days')
     `).get(stratName);
-    if (liveRow && liveRow.total >= 3) {
-      liveWR    = liveRow.wins / liveRow.total;
-      liveCount = liveRow.total;
-    }
+    if (r && r.total >= 3) { liveWR = r.wins / r.total; liveCount = r.total; }
   } catch {}
 
-  // ── Live win rate filtered by direction ──────────────────────────────────
   let liveDirWR = null;
   try {
-    const liveDirRow = db.prepare(`
+    const r = db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
-      FROM   signals s
-      JOIN   outcomes o ON o.signal_id = s.id
+      FROM   signals s JOIN outcomes o ON o.signal_id = s.id
       WHERE  s.strategy_name = ? AND s.direction = ?
         AND  s.received_at >= datetime('now', '-30 days')
     `).get(stratName, direction);
-    if (liveDirRow && liveDirRow.total >= 3) {
-      liveDirWR = liveDirRow.wins / liveDirRow.total;
-    }
+    if (r && r.total >= 3) liveDirWR = r.wins / r.total;
   } catch {}
 
-  // ── Blended win rate ──────────────────────────────────────────────────────
-  // Use direction-filtered rates when available; fall back to overall.
-  const effectiveBT   = btDirWR  ?? btWR;
+  // ── Blend ─────────────────────────────────────────────────────────────────
+  const effectiveBT   = btDirWR   ?? btWR;
   const effectiveLive = liveDirWR ?? liveWR;
   const totalSamples  = btCount + liveCount;
 
   let predictedWR, source;
-
   if (effectiveLive !== null && effectiveBT !== null) {
-    // Weight live data proportionally — grows from 20% → 60% as live trades accumulate
     const liveWeight = Math.min(0.60, 0.20 + (liveCount / Math.max(1, totalSamples)) * 0.40);
     predictedWR = effectiveLive * liveWeight + effectiveBT * (1 - liveWeight);
     source      = 'live+backtest';
   } else if (effectiveLive !== null) {
-    predictedWR = effectiveLive;
-    source      = 'live';
+    predictedWR = effectiveLive; source = 'live';
   } else if (effectiveBT !== null) {
-    predictedWR = effectiveBT;
-    source      = 'backtest';
+    predictedWR = effectiveBT;   source = 'backtest';
   } else {
-    // No historical data — derive from confidence score as initial estimate
-    predictedWR = Math.min(0.85, Math.max(0.35, (confidence / 100) * 0.88));
+    predictedWR = Math.min(0.82, Math.max(0.35, (confidence / 100) * 0.88));
     source      = 'confidence-estimate';
   }
 
-  // ── Regime adjustment ─────────────────────────────────────────────────────
-  if (regime === 'trending') predictedWR = Math.min(0.95, predictedWR * 1.06);
-  else if (regime === 'choppy') predictedWR = Math.max(0.20, predictedWR * 0.88);
+  // ── Regime adjustment (live, re-computed every call) ──────────────────────
+  let regimeNote = '';
+  if (regime === 'trending')  { predictedWR = Math.min(0.92, predictedWR * 1.06); regimeNote = 'trending+'; }
+  else if (regime === 'choppy') { predictedWR = Math.max(0.20, predictedWR * 0.88); regimeNote = 'choppy-'; }
+  else if (regime === 'volatile') { predictedWR = Math.max(0.22, predictedWR * 0.82); regimeNote = 'volatile--'; }
 
-  // ── Confidence band (uncertainty shrinks as sample size grows) ────────────
-  const band = totalSamples >= 50 ? 3 : totalSamples >= 20 ? 6 : totalSamples >= 8 ? 9 : 12;
+  // ── Real-time ATR-based volatility spike detection ────────────────────────
+  // If current ATR is significantly above recent average → news/event spike
+  // → widen uncertainty band and reduce WR estimate (stops more likely to be hit)
+  let volatilityNote = '';
+  let atrSpike = false;
+  try {
+    const currentAtr = signal.indicators?.atr ?? null;
+    if (currentAtr != null) {
+      const recentAtrRow = db.prepare(`
+        SELECT AVG(CAST(json_extract(raw_payload,'$.indicators.atr') AS REAL)) AS avg_atr
+        FROM   signals
+        WHERE  instrument = ?
+          AND  received_at >= datetime('now', '-2 hours')
+          AND  json_extract(raw_payload,'$.indicators.atr') IS NOT NULL
+        LIMIT  20
+      `).get(signal.instrument ?? 'MNQ');
+      const avgAtr = recentAtrRow?.avg_atr ?? null;
+      if (avgAtr && currentAtr > avgAtr * 1.5) {
+        // ATR ≥ 1.5× recent avg — likely news/event spike in progress
+        predictedWR  = Math.max(0.20, predictedWR * 0.84);
+        atrSpike     = true;
+        volatilityNote = `ATR spike (${currentAtr.toFixed(1)} vs avg ${avgAtr.toFixed(1)}) — news/event possible`;
+      }
+    }
+  } catch { /* never crash */ }
+
+  // ── Recent news activity check ────────────────────────────────────────────
+  let newsNote = '';
+  let highNewsActivity = false;
+  try {
+    const newsRow = db.prepare(`
+      SELECT COUNT(*) AS cnt FROM news_items
+      WHERE  published_at >= datetime('now', '-1 hour')
+    `).get();
+    if (newsRow?.cnt >= 5) {
+      // Many news items in last hour — market may be reacting to events
+      highNewsActivity = true;
+      newsNote = `${newsRow.cnt} news items in last 1h — elevated event risk`;
+      if (!atrSpike) predictedWR = Math.max(0.22, predictedWR * 0.93);
+    }
+  } catch { /* optional */ }
+
+  // ── Confidence band ───────────────────────────────────────────────────────
+  // Band widens with: low sample count, ATR spike, high news activity
+  let band = totalSamples >= 50 ? 3 : totalSamples >= 20 ? 6 : totalSamples >= 8 ? 9 : 12;
+  if (atrSpike)          band = Math.min(20, band + 6);
+  if (highNewsActivity)  band = Math.min(20, band + 3);
 
   const predicted_wr_pct = Math.round(predictedWR * 100);
+
+  // Build dynamic note explaining what influenced this estimate
+  const dynamicParts = [];
+  if (regimeNote)     dynamicParts.push(`regime=${regime}`);
+  if (volatilityNote) dynamicParts.push(volatilityNote);
+  if (newsNote)       dynamicParts.push(newsNote);
+  const dynamic_note = dynamicParts.length ? dynamicParts.join(' | ') : null;
 
   return {
     predicted_wr:     +predictedWR.toFixed(3),
     predicted_wr_pct,
-    band,                       // ± percentage points
+    band,
     sample_size:      totalSamples,
     source,
     regime,
+    atr_spike:        atrSpike,
+    high_news:        highNewsActivity,
+    dynamic_note,
     factors: {
-      bt_wr:       effectiveBT   !== null ? +(effectiveBT   * 100).toFixed(1) : null,
-      live_wr:     effectiveLive !== null ? +(effectiveLive * 100).toFixed(1) : null,
-      bt_count:    btCount,
-      live_count:  liveCount,
+      bt_wr:      effectiveBT   !== null ? +(effectiveBT   * 100).toFixed(1) : null,
+      live_wr:    effectiveLive !== null ? +(effectiveLive * 100).toFixed(1) : null,
+      bt_count:   btCount,
+      live_count: liveCount,
     },
   };
 }
@@ -525,6 +571,235 @@ function updateLearningFromLiveSignals(db, instrument) {
   }
 }
 
+// ── Pattern memory — condition fingerprint → historical WR ────────────────────
+// Each unique combination of (strategy + direction + htfBias + session) is a
+// distinct trading context. The system tracks WR per context and adjusts the
+// effective confidence gate: high-WR patterns lower the bar, low-WR patterns
+// raise it or get blocked. This makes the indicator genuinely learn from itself.
+
+const PATTERN_MEMORY_KEY = 'PATTERN_MEMORY';
+const OVERRIDE_KEY       = 'ADAPTIVE_OVERRIDES';
+
+function _upsertStratParams(db, key, json) {
+  db.prepare(`
+    INSERT INTO strategy_params (instrument, params_json, updated_at, version)
+    VALUES (?, ?, datetime('now'), 1)
+    ON CONFLICT(instrument) DO UPDATE SET
+      params_json = excluded.params_json,
+      updated_at  = excluded.updated_at,
+      version     = version + 1
+  `).run(key, json);
+}
+
+function _loadStratParams(db, key) {
+  try {
+    const row = db.prepare(
+      `SELECT params_json FROM strategy_params WHERE instrument = ?`
+    ).get(key);
+    if (row) return JSON.parse(row.params_json);
+  } catch {}
+  return null;
+}
+
+function buildPatternKey(strategyName, direction, htfBias, session) {
+  const sess = (session ?? 'unknown').toLowerCase().replace(/[^a-z0-9_]/g, '_').slice(0, 20);
+  return `${strategyName}::${direction}::${htfBias ?? 'X'}::${sess}`;
+}
+
+function loadPatternMemory(db) {
+  return _loadStratParams(db, PATTERN_MEMORY_KEY) ?? {};
+}
+
+/**
+ * Update pattern memory from trades. Each trade needs:
+ * { strategy_name, direction, htf_bias, session, outcome }
+ */
+function updatePatternMemory(db, trades) {
+  if (!trades || !trades.length) return;
+  const patterns = loadPatternMemory(db);
+
+  for (const t of trades) {
+    if (!t.strategy_name || !t.direction) continue;
+    const key = buildPatternKey(t.strategy_name, t.direction, t.htf_bias, t.session);
+    if (!patterns[key]) patterns[key] = { wins: 0, total: 0 };
+    patterns[key].total++;
+    if (t.outcome === 'WIN') patterns[key].wins++;
+    patterns[key].wr = +(patterns[key].wins / patterns[key].total).toFixed(3);
+    patterns[key].updated = new Date().toISOString();
+  }
+
+  _upsertStratParams(db, PATTERN_MEMORY_KEY, JSON.stringify(patterns));
+  return patterns;
+}
+
+/**
+ * Returns a confidence gate adjustment for a candidate signal based on how this
+ * exact pattern (strategy + direction + htfBias + session) has historically performed.
+ *
+ * Rules (minimum sample sizes enforced to avoid noise):
+ *   WR ≥ 75% (≥8 trades) → -8  (strong pattern, widen the net)
+ *   WR ≥ 65% (≥6 trades) → -4
+ *   WR ≥ 55% (≥5 trades) → -2
+ *   WR 45-55%             →  0  (neutral — no adjustment)
+ *   WR < 45% (≥5 trades)  → +6  (underperforming — tighten)
+ *   WR < 35% (≥6 trades)  → +12 (poor — raise bar significantly)
+ *   WR < 28% (≥8 trades)  → +20 (effectively blocks the pattern)
+ */
+function getPatternAdjustment(db, signal) {
+  const key = buildPatternKey(signal.strategy_name, signal.direction, signal.htf_bias, signal.session);
+  const patterns = loadPatternMemory(db);
+  const p = patterns[key];
+
+  if (!p || p.total < 5) {
+    return { adjustment: 0, patternKey: key, patternWR: null, patternTrades: p?.total ?? 0 };
+  }
+
+  const wr = p.wins / p.total;
+  let adjustment = 0;
+
+  if      (p.total >= 8 && wr >= 0.75) adjustment = -8;
+  else if (p.total >= 6 && wr >= 0.65) adjustment = -4;
+  else if (p.total >= 5 && wr >= 0.55) adjustment = -2;
+  else if (p.total >= 8 && wr <  0.28) adjustment = +20;
+  else if (p.total >= 6 && wr <  0.35) adjustment = +12;
+  else if (p.total >= 5 && wr <  0.45) adjustment = +6;
+
+  return { adjustment, patternKey: key, patternWR: +wr.toFixed(3), patternTrades: p.total };
+}
+
+// ── Adaptive overrides — auto-pause, direction-block, session-block ───────────
+// Computed from live signal outcomes (last 30 days) after every backtest or
+// outcome-resolve cycle. Makes real behavioral decisions — not just threshold nudges.
+
+function loadAdaptiveOverrides(db) {
+  return _loadStratParams(db, OVERRIDE_KEY) ?? {};
+}
+
+function saveAdaptiveOverrides(db, overrides) {
+  _upsertStratParams(db, OVERRIDE_KEY, JSON.stringify(overrides));
+}
+
+/**
+ * Compute adaptive overrides from live signal + backtest outcome data.
+ *
+ * Rules (per strategy, last 30 days live signals):
+ *   Auto-pause:     overall WR < 38% with ≥ 8 trades
+ *   Auto-unpause:   overall WR ≥ 48% with ≥ 5 trades (cancels auto-pause)
+ *   Block LONG:     LONG WR < 35% with ≥ 8 trades
+ *   Block SHORT:    SHORT WR < 35% with ≥ 8 trades
+ *   Unblock dir:    directional WR ≥ 45% with ≥ 5 trades
+ *   Block session:  session WR < 35% with ≥ 5 trades
+ *   Unblock sess:   session WR ≥ 45% with ≥ 5 trades
+ *
+ * NOTE: manual overrides (manualPause: true) are never automatically cleared.
+ */
+function computeAdaptiveOverrides(db) {
+  const overrides = loadAdaptiveOverrides(db);
+
+  let stratRows = [], dirRows = [], sessRows = [];
+  try {
+    stratRows = db.prepare(`
+      SELECT s.strategy_name, COUNT(*) AS total,
+             SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
+      FROM   signals s JOIN outcomes o ON o.signal_id = s.id
+      WHERE  s.received_at >= datetime('now', '-30 days')
+      GROUP  BY s.strategy_name
+    `).all();
+  } catch {}
+
+  try {
+    dirRows = db.prepare(`
+      SELECT s.strategy_name, s.direction, COUNT(*) AS total,
+             SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
+      FROM   signals s JOIN outcomes o ON o.signal_id = s.id
+      WHERE  s.received_at >= datetime('now', '-30 days')
+      GROUP  BY s.strategy_name, s.direction
+    `).all();
+  } catch {}
+
+  try {
+    sessRows = db.prepare(`
+      SELECT s.strategy_name, s.session, COUNT(*) AS total,
+             SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
+      FROM   signals s JOIN outcomes o ON o.signal_id = s.id
+      WHERE  s.received_at >= datetime('now', '-30 days')
+      GROUP  BY s.strategy_name, s.session
+    `).all();
+  } catch {}
+
+  // Start from existing overrides (preserve manual overrides)
+  const result = {};
+  for (const [strat, existing] of Object.entries(overrides)) {
+    result[strat] = { ...existing };
+  }
+
+  const ensureEntry = (strat) => {
+    if (!result[strat]) result[strat] = { paused: false, blockLong: false, blockShort: false, blockedSessions: [], reasons: [] };
+    if (!result[strat].reasons) result[strat].reasons = [];
+    if (!result[strat].blockedSessions) result[strat].blockedSessions = [];
+  };
+
+  for (const r of stratRows) {
+    const strat = r.strategy_name; if (!strat) continue;
+    ensureEntry(strat);
+    const ov = result[strat];
+    if (ov.manualPause) continue; // respect manual overrides
+    const wr = r.total > 0 ? r.wins / r.total : 0;
+
+    if (r.total >= 8 && wr < 0.38) {
+      ov.paused = true;
+      const msg = `auto-paused: WR=${(wr * 100).toFixed(1)}% (${r.total} trades) < 38%`;
+      if (!ov.reasons.some(x => x.startsWith('auto-paused'))) ov.reasons.push(msg);
+    } else if (r.total >= 5 && wr >= 0.48 && ov.paused && !ov.manualPause) {
+      ov.paused = false;
+      ov.reasons = ov.reasons.filter(x => !x.startsWith('auto-paused'));
+      ov.reasons.push(`auto-unpaused: WR recovered to ${(wr * 100).toFixed(1)}% (${r.total} trades)`);
+    }
+  }
+
+  for (const r of dirRows) {
+    const strat = r.strategy_name; if (!strat || !r.direction) continue;
+    ensureEntry(strat);
+    const ov = result[strat];
+    const wr = r.total > 0 ? r.wins / r.total : 0;
+    const tag = `block-${r.direction}`;
+
+    if (r.total >= 8 && wr < 0.35) {
+      if (r.direction === 'LONG')  ov.blockLong  = true;
+      if (r.direction === 'SHORT') ov.blockShort = true;
+      if (!ov.reasons.some(x => x.startsWith(tag))) {
+        ov.reasons.push(`${tag}: WR=${(wr * 100).toFixed(1)}% (${r.total} trades) < 35%`);
+      }
+    } else if (r.total >= 5 && wr >= 0.45) {
+      if (r.direction === 'LONG'  && ov.blockLong)  { ov.blockLong  = false; ov.reasons = ov.reasons.filter(x => !x.startsWith(tag)); }
+      if (r.direction === 'SHORT' && ov.blockShort) { ov.blockShort = false; ov.reasons = ov.reasons.filter(x => !x.startsWith(tag)); }
+    }
+  }
+
+  for (const r of sessRows) {
+    const strat = r.strategy_name; if (!strat || !r.session) continue;
+    ensureEntry(strat);
+    const ov = result[strat];
+    const wr = r.total > 0 ? r.wins / r.total : 0;
+    const tag = `block-session(${r.session})`;
+
+    if (r.total >= 5 && wr < 0.35) {
+      if (!ov.blockedSessions.includes(r.session)) {
+        ov.blockedSessions.push(r.session);
+        if (!ov.reasons.some(x => x.startsWith(tag))) {
+          ov.reasons.push(`${tag}: WR=${(wr * 100).toFixed(1)}% (${r.total} trades) < 35%`);
+        }
+      }
+    } else if (r.total >= 5 && wr >= 0.45 && ov.blockedSessions.includes(r.session)) {
+      ov.blockedSessions = ov.blockedSessions.filter(s => s !== r.session);
+      ov.reasons = ov.reasons.filter(x => !x.startsWith(tag));
+    }
+  }
+
+  saveAdaptiveOverrides(db, result);
+  return result;
+}
+
 module.exports = {
   getAdaptiveMinScore,
   getLearnedThreshold,
@@ -539,4 +814,11 @@ module.exports = {
   computeAdaptiveDeltas,
   computeAdaptiveDeltasByStyle,
   THRESHOLD_BOUNDS,
+  buildPatternKey,
+  loadPatternMemory,
+  updatePatternMemory,
+  getPatternAdjustment,
+  loadAdaptiveOverrides,
+  saveAdaptiveOverrides,
+  computeAdaptiveOverrides,
 };

@@ -37,13 +37,29 @@ let lastSignalBar = -999;
 /**
  * Evaluate MGC gold scalp setup.
  *
- * @param {object[]} bars     - 5m primary bars (MGC/GC prices in USD)
+ * Multi-timeframe pyramid (all from aggregated 5m source):
+ *   bars     — 5m  (entry timing)
+ *   htfBars  — 15m (short-term direction)
+ *   bars30m  — 30m (intermediate confirmation)
+ *   bars45m  — 45m (bridge between 30m and 1h)
+ *   htf2Bars — 1h  (macro trend context)
+ *
+ * Confluence rule: at least 2 of the 4 HTF layers [15m, 30m, 45m, 1h] must
+ * agree with the trade direction. More agreement → higher confidence bonus.
+ *
+ * @param {object[]} bars     - 5m primary bars
  * @param {object[]} htfBars  - 15m bars
- * @param {object[]} htf2Bars - 1h bars (optional, improves scoring)
+ * @param {object[]} htf2Bars - 1h bars
+ * @param {object[]} bars30m  - 30m bars (optional but strongly recommended)
+ * @param {object[]} bars45m  - 45m bars (optional)
  * @param {object}   cfg
  * @param {number}   barIdx
  */
-function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
+function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = null) {
+  // Handle legacy callers that don't pass 30m/45m
+  if (bars30m && !Array.isArray(bars30m) && typeof bars30m === 'object' && !bars30m.length) {
+    cfg = bars30m; barIdx = bars45m ?? null; bars30m = []; bars45m = [];
+  }
   const MIN_BARS = 40;
   if (bars.length < MIN_BARS || htfBars.length < 20) return null;
 
@@ -131,11 +147,6 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     const macdOk = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
     if (!macdOk) continue;
 
-    // ── ATR confirms enough movement for scalp target ────────────────────────
-    // We need at least 1.0 ATR of room
-    const scalTgt = 1.0 * atr;
-    if (scalTgt < ATR_MIN_PTS) continue;
-
     // ── Stop-loss (tight, structure-based + 0.3 ATR) ─────────────────────────
     const swLow  = recentSwingLow(bars, 8);
     const swHigh = recentSwingHigh(bars, 8);
@@ -153,21 +164,50 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     // Scalp stop must be tight
     if (rawRisk < ATR_MIN_PTS * 0.5 || rawRisk > 3 * atr) continue;
 
-    // ── Take-profit ──────────────────────────────────────────────────────────
-    const tp1 = isBull ? entry + 0.5 * atr : entry - 0.5 * atr; // partial
-    const tp2 = isBull ? entry + 1.0 * atr : entry - 1.0 * atr; // primary
-    const tp3 = isBull ? entry + 1.5 * atr : entry - 1.5 * atr; // extended
+    // ── Fixed MGC take-profit levels (pts from entry) ────────────────────────
+    // TP1=10, TP2=14, TP3=20, TP4=25
+    const tp1 = isBull ? entry + 10 : entry - 10;
+    const tp2 = isBull ? entry + 14 : entry - 14;
+    const tp3 = isBull ? entry + 20 : entry - 20;
+    const tp4 = isBull ? entry + 25 : entry - 25;
 
-    const rr = +(scalTgt / rawRisk).toFixed(2);
-    if (rr < 0.9) continue; // scalp must have at least near 1:1 RR
+    // RR based on TP2 (primary target)
+    const rr = +(rawRisk > 0 ? 14 / rawRisk : 0).toFixed(2);
+    if (rr < 0.9) continue;
 
     // ── S/R distance check ───────────────────────────────────────────────────
     const srDist = srDistanceAtr(tp2, bars, atr, 40);
-    // Don't need large room for scalp, but can't enter if S/R is right at target
     if (srDist < 0.5) continue;
 
+    // ── 30m / 45m multi-timeframe confluence ─────────────────────────────────
+    // Count how many of the 4 HTF layers agree with direction.
+    // Require at least 2/4 agreement. Each aligned TF adds a confidence bonus.
+    const b30mBias = (bars30m && bars30m.length >= 6)  ? calcHtfBias(bars30m, 9, 21) : null;
+    const b45mBias = (bars45m && bars45m.length >= 5)  ? calcHtfBias(bars45m, 9, 21) : null;
+    const expectedBias = isBull ? 1 : -1;
+
+    const htfLayers = [
+      { name: '15m', bias: htfBias,   present: true },
+      { name: '30m', bias: b30mBias,  present: b30mBias !== null },
+      { name: '45m', bias: b45mBias,  present: b45mBias !== null },
+      { name: '1h',  bias: htf2Bias,  present: htf2Bars != null && htf2Bars.length >= 21 },
+    ];
+    const presentLayers = htfLayers.filter(l => l.present);
+    const agreedLayers  = presentLayers.filter(l => l.bias === expectedBias);
+    const conflictLayers = presentLayers.filter(l => l.bias !== 0 && l.bias !== expectedBias);
+
+    // Need at least 2 layers to agree (or 1 if only 1-2 are available)
+    const minAgree = presentLayers.length >= 3 ? 2 : 1;
+    if (agreedLayers.length < minAgree) continue;
+
+    // Block if majority of present layers are explicitly against us
+    if (conflictLayers.length > agreedLayers.length) continue;
+
+    // Confluence bonus: each extra agreeing layer adds to confidence
+    const confluenceBonus = (agreedLayers.length - minAgree) * 4; // +4 per extra aligned TF
+
     // ── Confidence score ─────────────────────────────────────────────────────
-    const confidence = scoreSignal({
+    const baseConfidence = scoreSignal({
       direction: dir,
       bars,
       htfBias,
@@ -180,12 +220,13 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       srDistanceAtr: srDist,
       timestamp: last.timestamp,
     });
+    const confidence = Math.min(100, baseConfidence + confluenceBonus);
 
     if (confidence < THRESHOLDS.MGC_SCALP) continue;
 
     lastSignalBar = curIdx;
 
-    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4 } = deriveGradeAndProbs(confidence);
 
     return {
       instrument:    'MGC',
@@ -198,15 +239,16 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       tp1:           +tp1.toFixed(2),
       tp2:           +tp2.toFixed(2),
       tp3:           +tp3.toFixed(2),
+      tp4:           +tp4.toFixed(2),
       rr,
       confidence,
       grade,
-      win_prob_tp1, win_prob_tp2, win_prob_tp3,
+      win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4,
       score:         Math.round(confidence / 4),
       setup:         'MGC Scalp',
       htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
-      trigger_reason: `VWAP/EMA pullback rejected ${dir === 'LONG' ? 'bullish' : 'bearish'}, ${sess.name} session, ATR=${atr.toFixed(2)}, target=${scalTgt.toFixed(2)} pts`,
+      trigger_reason: `VWAP/EMA scalp ${dir}, ${agreedLayers.map(l=>l.name).join('+')} aligned (${agreedLayers.length}/${presentLayers.length} TFs), ${sess.name}, ATR=${atr.toFixed(2)}`,
       indicators: {
         atr:   +atr.toFixed(2),
         vwap:  +vwap.toFixed(2),
@@ -214,7 +256,11 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
         ema21: +ema21.toFixed(2),
         rsi:   rsi != null ? +rsi.toFixed(1) : null,
         htfBias, htf2Bias,
-        scalTgt: +scalTgt.toFixed(2),
+        bias30m:       b30mBias,
+        bias45m:       b45mBias,
+        mtfAgreed:     agreedLayers.length,
+        mtfPresent:    presentLayers.length,
+        confluenceBonus,
       },
       timestamp:    last.timestamp,
       trade_status: 'PENDING',
