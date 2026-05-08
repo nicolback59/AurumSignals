@@ -607,7 +607,7 @@ app.get('/news',     (req, res) => res.sendFile(path.join(__dirname, 'news.html'
 app.get('/setup',    (req, res) => res.sendFile(path.join(__dirname, 'setup.html')));
 
 // ── START SERVER + SCANNER ────────────────────────────────────────────────────────────────
-app.listen(PORT, () => {
+app.listen(PORT, '0.0.0.0', () => {
   console.log(`NQ Signal Pro V3  →  http://localhost:${PORT}`);
   console.log(`SQLite            →  ${DB_PATH}`);
 
