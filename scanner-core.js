@@ -68,10 +68,10 @@ class Scanner extends EventEmitter {
       ntfyUrl:         config.ntfyUrl         || (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, ''),
       ntfyTopic:       config.ntfyTopic       || process.env.NTFY_TOPIC || '',
       ntfyToken:       config.ntfyToken       || process.env.NTFY_TOKEN || '',
-      btIntervalH:     config.btIntervalH     || parseFloat(process.env.BACKTEST_INTERVAL_H  || '4'),
-      btBars:          config.btBars          || parseInt(process.env.BACKTEST_BARS           || '10000'),
+      btIntervalH:     config.btIntervalH     || parseFloat(process.env.BACKTEST_INTERVAL_H  || '6'),
+      btBars:          config.btBars          || parseInt(process.env.BACKTEST_BARS           || '2000'),
       btSlippage:      config.btSlippage      || parseFloat(process.env.BT_SLIPPAGE          || '0.5'),
-      btTargetTrades:  config.btTargetTrades  || parseInt(process.env.BT_TARGET_TRADES        || '250'),
+      btTargetTrades:  config.btTargetTrades  || parseInt(process.env.BT_TARGET_TRADES        || '120'),
       optIntervalH:    config.optIntervalH    || parseFloat(process.env.OPTIMIZER_INTERVAL_H  || '12'),
       btSymbols:       config.btSymbols       || {
         MNQ: process.env.SCANNER_BT_MNQ || process.env.SCANNER_SYMBOL     || 'NQ=F',
@@ -937,7 +937,8 @@ class Scanner extends EventEmitter {
     if (!symbol) return;
 
     try {
-      this._log(`BACKTEST START: ${instrument} (${this.cfg.btBars} bars, target ${this.cfg.btTargetTrades} trades)`);
+      const heapMB = Math.round(process.memoryUsage().heapUsed / 1_048_576);
+      this._log(`BACKTEST START: ${instrument} (${this.cfg.btBars} bars, target ${this.cfg.btTargetTrades} trades) heap=${heapMB}MB`);
 
       // Check for pending shadow revision first
       const pendingShadow = this.db.prepare(
@@ -1091,6 +1092,13 @@ class Scanner extends EventEmitter {
 
     } catch (err) {
       this._err(`Backtest error (${instrument})`, err);
+    } finally {
+      // Log memory after backtest so we can see if we're near the limit
+      const heapMB = Math.round(process.memoryUsage().heapUsed / 1_048_576);
+      const rssMB  = Math.round(process.memoryUsage().rss       / 1_048_576);
+      this._log(`BACKTEST END: ${instrument} heap=${heapMB}MB rss=${rssMB}MB`);
+      // Nudge GC if available (node --expose-gc) to free backtest arrays immediately
+      if (typeof global.gc === 'function') { try { global.gc(); } catch {} }
     }
   }
 
@@ -1162,13 +1170,15 @@ class Scanner extends EventEmitter {
     this.scan();
     this._intervals.push(setInterval(() => this.scan(), cfg.scanInterval));
 
-    // Startup backtests — staggered to avoid simultaneous rate-limit hits
-    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'),  5 * 60_000);   //  5 min
-    setTimeout(() => this.runBacktestCycle('MGC', 'startup'),  9 * 60_000);   //  9 min (was 12)
+    // Startup backtests — delayed so the service stabilises and scan traffic settles
+    // before the memory-heavy backtest runs. Staggered 6 min apart to avoid
+    // simultaneous Yahoo Finance requests.
+    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'), 20 * 60_000);   // 20 min
+    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 26 * 60_000);   // 26 min
 
-    // Startup optimizers (after backtests settle)
-    setTimeout(() => this.runOptimizerCycle('MNQ'), 22 * 60_000);
-    setTimeout(() => this.runOptimizerCycle('MGC'), 28 * 60_000);
+    // Startup optimizers (after backtests finish)
+    setTimeout(() => this.runOptimizerCycle('MNQ'), 45 * 60_000);
+    setTimeout(() => this.runOptimizerCycle('MGC'), 52 * 60_000);
 
     // News at startup + every 30 min
     setTimeout(() => this.fetchAndStoreNews(), 8_000);
