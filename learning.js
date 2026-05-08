@@ -8,11 +8,13 @@ const MIN_SAMPLE = 5;    // minimum trades before adjusting
 // Low win rate → raise (be more selective). High win rate → lower (cast wider net).
 
 const THRESHOLD_BOUNDS = {
-  MNQ_INTRADAY: { min: 52, max: 76, default: 60 },  // lowered to generate more MNQ signals
+  MNQ_INTRADAY: { min: 52, max: 76, default: 60 },
   MNQ_SWING:    { min: 55, max: 78, default: 63 },
   MNQ_50PT:     { min: 58, max: 80, default: 68 },
   MGC_SCALP:    { min: 50, max: 74, default: 62 },
-  MGC_INTRADAY: { min: 50, max: 72, default: 60 },  // kept for data purposes (strategy disabled)
+  MGC_INTRADAY: { min: 50, max: 72, default: 60 },  // "MGC Scalp" display name
+  MGC_30PT:     { min: 50, max: 72, default: 60 },
+  MGC_45PT:     { min: 52, max: 74, default: 62 },
 };
 
 // ── Learned threshold persistence ─────────────────────────────────────────────
@@ -358,130 +360,176 @@ function getLearningStats(db) {
 
 // ── Predicted win rate for a candidate signal (pre-fire) ─────────────────────
 /**
- * Compute a predicted win rate for a signal before it is released.
- * Combines backtest history + live signal outcomes, weighted by sample size.
- * The system learns over time: more live data → higher live weight.
+ * Compute a DYNAMIC predicted win rate for a signal before it is released.
+ *
+ * This is NOT a static number. It reacts in real time to:
+ *   • Backtest win rate history (last 5 runs for this strategy)
+ *   • Live signal outcomes (last 30 days for this strategy + direction)
+ *   • Market regime (trending / ranging / choppy / volatile)
+ *   • Current ATR vs recent average (detects volatility spikes from news)
+ *   • Recent news count (high news volume → wider uncertainty band)
+ *
+ * The estimate changes every time a signal fires because all inputs are
+ * re-queried fresh from the database — not cached.
  *
  * @param {object} db
- * @param {object} signal - { strategy_name, direction, session, confidence }
- * @returns {{ predicted_wr_pct, predicted_wr, band, sample_size, source, regime, factors }}
+ * @param {object} signal - { strategy_name, direction, session, confidence, indicators? }
+ * @returns {{ predicted_wr_pct, predicted_wr, band, sample_size, source, regime, factors, dynamic_note }}
  */
 function getPredictedWinRate(db, signal) {
-  const stratName = signal.strategy_name;
-  const direction = signal.direction;
+  const stratName  = signal.strategy_name;
+  const direction  = signal.direction;
   const confidence = signal.confidence ?? 70;
-  const regime    = getMarketRegime(db);
+  const regime     = getMarketRegime(db);
 
-  // ── Backtest win rate (last 5 runs for this strategy) ─────────────────────
+  // ── Backtest win rate (last 5 runs) ───────────────────────────────────────
   let btWR = null, btCount = 0;
   try {
-    const btRow = db.prepare(`
+    const r = db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN t.outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
       FROM   backtest_trades t
       WHERE  t.strategy_name = ?
         AND  t.run_id IN (SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5)
     `).get(stratName);
-    if (btRow && btRow.total >= 5) {
-      btWR   = btRow.wins / btRow.total;
-      btCount = btRow.total;
-    }
+    if (r && r.total >= 5) { btWR = r.wins / r.total; btCount = r.total; }
   } catch {}
 
-  // ── Backtest win rate filtered by direction ───────────────────────────────
+  // Direction-filtered backtest WR
   let btDirWR = null;
   try {
-    const btDirRow = db.prepare(`
+    const r = db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN t.outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
       FROM   backtest_trades t
       WHERE  t.strategy_name = ? AND t.direction = ?
         AND  t.run_id IN (SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5)
     `).get(stratName, direction);
-    if (btDirRow && btDirRow.total >= 5) {
-      btDirWR = btDirRow.wins / btDirRow.total;
-    }
+    if (r && r.total >= 5) btDirWR = r.wins / r.total;
   } catch {}
 
-  // ── Live signal win rate (last 30 days for this strategy) ─────────────────
+  // ── Live signal win rate (last 30 days) ───────────────────────────────────
   let liveWR = null, liveCount = 0;
   try {
-    const liveRow = db.prepare(`
+    const r = db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
-      FROM   signals s
-      JOIN   outcomes o ON o.signal_id = s.id
+      FROM   signals s JOIN outcomes o ON o.signal_id = s.id
       WHERE  s.strategy_name = ?
         AND  s.received_at >= datetime('now', '-30 days')
     `).get(stratName);
-    if (liveRow && liveRow.total >= 3) {
-      liveWR    = liveRow.wins / liveRow.total;
-      liveCount = liveRow.total;
-    }
+    if (r && r.total >= 3) { liveWR = r.wins / r.total; liveCount = r.total; }
   } catch {}
 
-  // ── Live win rate filtered by direction ──────────────────────────────────
   let liveDirWR = null;
   try {
-    const liveDirRow = db.prepare(`
+    const r = db.prepare(`
       SELECT COUNT(*) AS total,
              SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
-      FROM   signals s
-      JOIN   outcomes o ON o.signal_id = s.id
+      FROM   signals s JOIN outcomes o ON o.signal_id = s.id
       WHERE  s.strategy_name = ? AND s.direction = ?
         AND  s.received_at >= datetime('now', '-30 days')
     `).get(stratName, direction);
-    if (liveDirRow && liveDirRow.total >= 3) {
-      liveDirWR = liveDirRow.wins / liveDirRow.total;
-    }
+    if (r && r.total >= 3) liveDirWR = r.wins / r.total;
   } catch {}
 
-  // ── Blended win rate ──────────────────────────────────────────────────────
-  // Use direction-filtered rates when available; fall back to overall.
-  const effectiveBT   = btDirWR  ?? btWR;
+  // ── Blend ─────────────────────────────────────────────────────────────────
+  const effectiveBT   = btDirWR   ?? btWR;
   const effectiveLive = liveDirWR ?? liveWR;
   const totalSamples  = btCount + liveCount;
 
   let predictedWR, source;
-
   if (effectiveLive !== null && effectiveBT !== null) {
-    // Weight live data proportionally — grows from 20% → 60% as live trades accumulate
     const liveWeight = Math.min(0.60, 0.20 + (liveCount / Math.max(1, totalSamples)) * 0.40);
     predictedWR = effectiveLive * liveWeight + effectiveBT * (1 - liveWeight);
     source      = 'live+backtest';
   } else if (effectiveLive !== null) {
-    predictedWR = effectiveLive;
-    source      = 'live';
+    predictedWR = effectiveLive; source = 'live';
   } else if (effectiveBT !== null) {
-    predictedWR = effectiveBT;
-    source      = 'backtest';
+    predictedWR = effectiveBT;   source = 'backtest';
   } else {
-    // No historical data — derive from confidence score as initial estimate
-    predictedWR = Math.min(0.85, Math.max(0.35, (confidence / 100) * 0.88));
+    predictedWR = Math.min(0.82, Math.max(0.35, (confidence / 100) * 0.88));
     source      = 'confidence-estimate';
   }
 
-  // ── Regime adjustment ─────────────────────────────────────────────────────
-  if (regime === 'trending') predictedWR = Math.min(0.95, predictedWR * 1.06);
-  else if (regime === 'choppy') predictedWR = Math.max(0.20, predictedWR * 0.88);
+  // ── Regime adjustment (live, re-computed every call) ──────────────────────
+  let regimeNote = '';
+  if (regime === 'trending')  { predictedWR = Math.min(0.92, predictedWR * 1.06); regimeNote = 'trending+'; }
+  else if (regime === 'choppy') { predictedWR = Math.max(0.20, predictedWR * 0.88); regimeNote = 'choppy-'; }
+  else if (regime === 'volatile') { predictedWR = Math.max(0.22, predictedWR * 0.82); regimeNote = 'volatile--'; }
 
-  // ── Confidence band (uncertainty shrinks as sample size grows) ────────────
-  const band = totalSamples >= 50 ? 3 : totalSamples >= 20 ? 6 : totalSamples >= 8 ? 9 : 12;
+  // ── Real-time ATR-based volatility spike detection ────────────────────────
+  // If current ATR is significantly above recent average → news/event spike
+  // → widen uncertainty band and reduce WR estimate (stops more likely to be hit)
+  let volatilityNote = '';
+  let atrSpike = false;
+  try {
+    const currentAtr = signal.indicators?.atr ?? null;
+    if (currentAtr != null) {
+      const recentAtrRow = db.prepare(`
+        SELECT AVG(CAST(json_extract(raw_payload,'$.indicators.atr') AS REAL)) AS avg_atr
+        FROM   signals
+        WHERE  instrument = ?
+          AND  received_at >= datetime('now', '-2 hours')
+          AND  json_extract(raw_payload,'$.indicators.atr') IS NOT NULL
+        LIMIT  20
+      `).get(signal.instrument ?? 'MNQ');
+      const avgAtr = recentAtrRow?.avg_atr ?? null;
+      if (avgAtr && currentAtr > avgAtr * 1.5) {
+        // ATR ≥ 1.5× recent avg — likely news/event spike in progress
+        predictedWR  = Math.max(0.20, predictedWR * 0.84);
+        atrSpike     = true;
+        volatilityNote = `ATR spike (${currentAtr.toFixed(1)} vs avg ${avgAtr.toFixed(1)}) — news/event possible`;
+      }
+    }
+  } catch { /* never crash */ }
+
+  // ── Recent news activity check ────────────────────────────────────────────
+  let newsNote = '';
+  let highNewsActivity = false;
+  try {
+    const newsRow = db.prepare(`
+      SELECT COUNT(*) AS cnt FROM news_items
+      WHERE  published_at >= datetime('now', '-1 hour')
+    `).get();
+    if (newsRow?.cnt >= 5) {
+      // Many news items in last hour — market may be reacting to events
+      highNewsActivity = true;
+      newsNote = `${newsRow.cnt} news items in last 1h — elevated event risk`;
+      if (!atrSpike) predictedWR = Math.max(0.22, predictedWR * 0.93);
+    }
+  } catch { /* optional */ }
+
+  // ── Confidence band ───────────────────────────────────────────────────────
+  // Band widens with: low sample count, ATR spike, high news activity
+  let band = totalSamples >= 50 ? 3 : totalSamples >= 20 ? 6 : totalSamples >= 8 ? 9 : 12;
+  if (atrSpike)          band = Math.min(20, band + 6);
+  if (highNewsActivity)  band = Math.min(20, band + 3);
 
   const predicted_wr_pct = Math.round(predictedWR * 100);
+
+  // Build dynamic note explaining what influenced this estimate
+  const dynamicParts = [];
+  if (regimeNote)     dynamicParts.push(`regime=${regime}`);
+  if (volatilityNote) dynamicParts.push(volatilityNote);
+  if (newsNote)       dynamicParts.push(newsNote);
+  const dynamic_note = dynamicParts.length ? dynamicParts.join(' | ') : null;
 
   return {
     predicted_wr:     +predictedWR.toFixed(3),
     predicted_wr_pct,
-    band,                       // ± percentage points
+    band,
     sample_size:      totalSamples,
     source,
     regime,
+    atr_spike:        atrSpike,
+    high_news:        highNewsActivity,
+    dynamic_note,
     factors: {
-      bt_wr:       effectiveBT   !== null ? +(effectiveBT   * 100).toFixed(1) : null,
-      live_wr:     effectiveLive !== null ? +(effectiveLive * 100).toFixed(1) : null,
-      bt_count:    btCount,
-      live_count:  liveCount,
+      bt_wr:      effectiveBT   !== null ? +(effectiveBT   * 100).toFixed(1) : null,
+      live_wr:    effectiveLive !== null ? +(effectiveLive * 100).toFixed(1) : null,
+      bt_count:   btCount,
+      live_count: liveCount,
     },
   };
 }

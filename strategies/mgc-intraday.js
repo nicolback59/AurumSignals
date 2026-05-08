@@ -202,7 +202,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       grade,
       win_prob_tp1, win_prob_tp2, win_prob_tp3,
       score:         Math.round(confidence / 4),
-      setup:         'MGC Intraday',
+      setup:         'MGC Scalp',
       htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
       trigger_reason: `EMA9/21 ${dir} trend, pullback held, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF ${htfBias >= 0 ? 'neutral/bull' : 'bear'}, ADX=${adxVal != null ? adxVal.toFixed(1) : '?'}`,

@@ -424,7 +424,7 @@ class Scanner extends EventEmitter {
     const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
     const stratTag = s.strategy_name ? `[${s.strategy_name}] ` : '';
     const predWR = s.predicted_wr_pct != null
-      ? `WinRate: ${s.predicted_wr_pct}%±${s.predicted_wr_band ?? 9}% (${s.predicted_wr_source ?? '?'})`
+      ? `WinRate: ${s.predicted_wr_pct}%±${s.predicted_wr_band ?? 9}% (${s.predicted_wr_source ?? '?'})${s.predicted_wr_atr_spike ? ' ⚠️NEWS/SPIKE' : ''}`
       : null;
     const body = [
       s.setup        ? `Setup:   ${stratTag}${s.setup}`   : null,
@@ -475,12 +475,15 @@ class Scanner extends EventEmitter {
     // Attach predicted win rate before storage — this is the pre-completion success estimate
     try {
       const pred = getPredictedWinRate(this.db, signal);
-      signal.predicted_wr         = pred.predicted_wr;
-      signal.predicted_wr_pct     = pred.predicted_wr_pct;
-      signal.predicted_wr_band    = pred.band;
-      signal.predicted_wr_source  = pred.source;
-      signal.predicted_wr_factors = pred.factors;
-      signal.predicted_wr_regime  = pred.regime;
+      signal.predicted_wr          = pred.predicted_wr;
+      signal.predicted_wr_pct      = pred.predicted_wr_pct;
+      signal.predicted_wr_band     = pred.band;
+      signal.predicted_wr_source   = pred.source;
+      signal.predicted_wr_factors  = pred.factors;
+      signal.predicted_wr_regime   = pred.regime;
+      signal.predicted_wr_atr_spike  = pred.atr_spike;
+      signal.predicted_wr_high_news  = pred.high_news;
+      signal.predicted_wr_dynamic_note = pred.dynamic_note;
     } catch { /* never crash signal storage */ }
 
     const info = this._stmts.insertSignal.run({
@@ -1046,13 +1049,13 @@ class Scanner extends EventEmitter {
     this.scan();
     this._intervals.push(setInterval(() => this.scan(), cfg.scanInterval));
 
-    // Startup backtests — delayed well past first scan to avoid rate-limit collision
-    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'),  5 * 60_000);   // 5 min
-    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 12 * 60_000);   // 12 min
+    // Startup backtests — staggered to avoid simultaneous rate-limit hits
+    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'),  5 * 60_000);   //  5 min
+    setTimeout(() => this.runBacktestCycle('MGC', 'startup'),  9 * 60_000);   //  9 min (was 12)
 
     // Startup optimizers (after backtests settle)
-    setTimeout(() => this.runOptimizerCycle('MNQ'), 25 * 60_000);
-    setTimeout(() => this.runOptimizerCycle('MGC'), 35 * 60_000);
+    setTimeout(() => this.runOptimizerCycle('MNQ'), 22 * 60_000);
+    setTimeout(() => this.runOptimizerCycle('MGC'), 28 * 60_000);
 
     // News at startup + every 30 min
     setTimeout(() => this.fetchAndStoreNews(), 8_000);
@@ -1062,15 +1065,21 @@ class Scanner extends EventEmitter {
     setTimeout(() => this.runStorageCleanup(), 15_000);
     this._intervals.push(setInterval(() => this.runStorageCleanup(), 24 * 3_600_000));
 
-    // Periodic backtests (staggered so they don't overlap)
+    // Periodic backtests — same interval for both instruments; MGC offset by 4 min
+    // so they never run at the same time and compete for rate-limit budget.
     const btMs  = cfg.btIntervalH * 3_600_000;
     this._intervals.push(setInterval(() => this.runBacktestCycle('MNQ'), btMs));
-    this._intervals.push(setInterval(() => this.runBacktestCycle('MGC'), btMs + btMs / 2));
+    // Delay first MGC periodic run by 4 min so the two timers are staggered for life
+    setTimeout(() => {
+      this._intervals.push(setInterval(() => this.runBacktestCycle('MGC'), btMs));
+    }, 4 * 60_000);
 
-    // Periodic optimizers
+    // Periodic optimizers — same cadence, offset by 5 min
     const optMs = cfg.optIntervalH * 3_600_000;
     this._intervals.push(setInterval(() => this.runOptimizerCycle('MNQ'), optMs));
-    this._intervals.push(setInterval(() => this.runOptimizerCycle('MGC'), optMs + optMs / 3));
+    setTimeout(() => {
+      this._intervals.push(setInterval(() => this.runOptimizerCycle('MGC'), optMs));
+    }, 5 * 60_000);
 
     this._log(
       `Scanner started — symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +

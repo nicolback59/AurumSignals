@@ -11,7 +11,9 @@ const THRESHOLDS = {
   MNQ_SWING:    63,  // lowered from 72
   MNQ_50PT:     68,  // lowered from 78
   MGC_SCALP:    62,  // lowered from 65
-  MGC_INTRADAY: 60,  // kept as reference (strategy disabled)
+  MGC_INTRADAY: 60,  // displayed as "MGC Scalp" (intraday trend variant)
+  MGC_30PT:     60,  // MGC 30-point fixed-target setups
+  MGC_45PT:     62,  // MGC 45-point fixed-target setups (slightly stricter)
 };
 
 /**

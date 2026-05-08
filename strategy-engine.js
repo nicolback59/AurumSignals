@@ -20,6 +20,8 @@ const mnqSwing     = require('./strategies/mnq-swing');
 const mnq50Point   = require('./strategies/mnq-50-point');
 const mgcScalp     = require('./strategies/mgc-scalp');
 const mgcIntraday  = require('./strategies/mgc-intraday');
+const mgc30Point   = require('./strategies/mgc-30point');
+const mgc45Point   = require('./strategies/mgc-45point');
 
 const {
   aggregate1mTo5m,
@@ -101,7 +103,29 @@ function evaluateAll(barSets, cfg = {}) {
     }
   }
 
-  // MGC_INTRADAY disabled — MGC is scalp-only (MGC_SCALP above handles all gold signals)
+  // ── MGC INTRADAY (displayed as "MGC Scalp") ───────────────────────────────────
+  if (instrument === 'MGC' || instrument == null) {
+    if (bars5mMgc.length >= 50 && bars1hMgc.length >= 20) {
+      const sig = mgcIntraday.evaluate(bars5mMgc, bars1hMgc, cfg, barIdx);
+      if (sig) signals.push(sig);
+    }
+  }
+
+  // ── MGC 30-POINT ─────────────────────────────────────────────────────────────
+  if (instrument === 'MGC' || instrument == null) {
+    if (bars5mMgc.length >= 40 && bars15mMgc.length >= 20) {
+      const sig = mgc30Point.evaluate(bars5mMgc, bars15mMgc, bars1hMgc, cfg, barIdx);
+      if (sig) signals.push(sig);
+    }
+  }
+
+  // ── MGC 45-POINT ─────────────────────────────────────────────────────────────
+  if (instrument === 'MGC' || instrument == null) {
+    if (bars5mMgc.length >= 50 && bars1hMgc.length >= 20) {
+      const sig = mgc45Point.evaluate(bars5mMgc, bars1hMgc, bars15mMgc, cfg, barIdx);
+      if (sig) signals.push(sig);
+    }
+  }
 
   return signals;
 }
@@ -161,6 +185,8 @@ function resetAllStrategies() {
   mnq50Point.reset();
   mgcScalp.reset();
   mgcIntraday.reset();
+  mgc30Point.reset();
+  mgc45Point.reset();
 }
 
 /**
@@ -200,12 +226,28 @@ const STRATEGY_META = {
     description: '5-minute VWAP/EMA rejection scalp during London/NY sessions',
   },
   MGC_INTRADAY: {
-    name:        'MGC Intraday',
+    name:        'MGC Scalp',
+    instrument:  'MGC',
+    timeframe:   '5m',
+    trade_style: 'scalp',
+    threshold:   THRESHOLDS.MGC_INTRADAY,
+    description: '5-minute EMA9/21 trend-following with 1h HTF bias confirmation (scalp range)',
+  },
+  MGC_30PT: {
+    name:        'MGC Scalp 30pt',
+    instrument:  'MGC',
+    timeframe:   '5m',
+    trade_style: 'scalp',
+    threshold:   THRESHOLDS.MGC_30PT,
+    description: '5-minute consolidation breakout or EMA momentum targeting 30 MGC points',
+  },
+  MGC_45PT: {
+    name:        'MGC Scalp 45pt',
     instrument:  'MGC',
     timeframe:   '5m',
     trade_style: 'intraday',
-    threshold:   THRESHOLDS.MGC_INTRADAY,
-    description: '5-minute EMA9/21 trend-following with 1h HTF bias confirmation',
+    threshold:   THRESHOLDS.MGC_45PT,
+    description: '5-minute EMA pullback in 1h-confirmed trend targeting 45 MGC points',
   },
 };
 
