@@ -60,15 +60,15 @@ class Scanner extends EventEmitter {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
       symbolMgc:       config.symbolMgc       || process.env.SCANNER_SYMBOL_MGC   || 'GC=F',
       scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '120') * 1000, 300_000),
-      cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '20'),
+      cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '10'),
       baseScore:       config.baseScore       || parseInt(process.env.SCANNER_MIN_SCORE   || '6'),
-      dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '15'),
-      dailyMinSignals: config.dailyMinSignals || parseInt(process.env.DAILY_MIN_SIGNALS   || '10'),
+      dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '20'),
+      dailyMinSignals: config.dailyMinSignals || parseInt(process.env.DAILY_MIN_SIGNALS   || '20'),
       logLevel:        config.logLevel        || (process.env.SCANNER_LOG_LEVEL || 'full').toLowerCase(),
       ntfyUrl:         config.ntfyUrl         || (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, ''),
       ntfyTopic:       config.ntfyTopic       || process.env.NTFY_TOPIC || '',
       ntfyToken:       config.ntfyToken       || process.env.NTFY_TOKEN || '',
-      btIntervalH:     config.btIntervalH     || parseFloat(process.env.BACKTEST_INTERVAL_H  || '6'),
+      btIntervalH:     config.btIntervalH     || parseFloat(process.env.BACKTEST_INTERVAL_H  || '4'),
       btBars:          config.btBars          || parseInt(process.env.BACKTEST_BARS           || '2000'),
       btSlippage:      config.btSlippage      || parseFloat(process.env.BT_SLIPPAGE          || '0.5'),
       btTargetTrades:  config.btTargetTrades  || parseInt(process.env.BT_TARGET_TRADES        || '120'),
@@ -664,26 +664,31 @@ class Scanner extends EventEmitter {
     }
 
     // ── Minimum daily signal guarantee — 3-tier confidence relaxation ────────────
-    // Each instrument targets dailyMinSignals (default 10) = 20 total across MNQ+MGC.
-    // If running behind, confidence gate is progressively relaxed throughout the day.
+    // Target: 20 signals per instrument per day (20 MNQ + 20 MGC = 40 total).
+    // Cap: 20 per instrument — fills the full allocation every trading day.
+    // 10-min cooldown allows up to 39 signals in a 6.5h session; cap keeps it clean.
+    // When behind pace, confidence gate is progressively relaxed across the day.
     const todayCountNow = this._stmts.dailySignalCount.get(instrument)?.cnt ?? 0;
-    const minTarget     = this.cfg.dailyMinSignals ?? 10;
+    const minTarget     = this.cfg.dailyMinSignals ?? 20;
     const nowHhmm = (() => {
       const d = new Date();
       return (d.getUTCHours() - 4) * 100 + d.getUTCMinutes(); // rough ET
     })();
-    // Tier 1: 9:30 AM+, behind on signals → -10 pts
-    // Tier 2: 12:00 PM+, still behind → -16 pts
-    // Tier 3: 2:00 PM+, very behind (< half target) → -22 pts
+    // Expected pace: 20 signals over 6.5h ≈ 3 signals/hour
+    //   By 9:30 AM  → 0 expected (market just opened)
+    //   By 11:00 AM → ~5 expected
+    //   By 1:00 PM  → ~11 expected
+    //   By 3:00 PM  → ~17 expected
+    const expectedByNow = Math.min(minTarget, Math.max(0, Math.round((nowHhmm - 930) / 650 * minTarget)));
+    const pace          = todayCountNow - expectedByNow; // negative = behind pace
     let minConfBonus = 0;
-    const belowMin     = todayCountNow < minTarget;
-    const veryBehind   = todayCountNow < Math.floor(minTarget / 2);
-    if      (belowMin && veryBehind  && nowHhmm >= 1400 && nowHhmm < 1600) minConfBonus = -22;
-    else if (belowMin                && nowHhmm >= 1200 && nowHhmm < 1600) minConfBonus = -16;
-    else if (belowMin                && nowHhmm >= 930  && nowHhmm < 1600) minConfBonus = -10;
+    if      (pace <= -8  && nowHhmm >= 1300 && nowHhmm < 1600) minConfBonus = -22; // very behind afternoon
+    else if (pace <= -5  && nowHhmm >= 1100 && nowHhmm < 1600) minConfBonus = -16; // behind midday
+    else if (pace <= -3  && nowHhmm >= 930  && nowHhmm < 1600) minConfBonus = -10; // slightly behind morning
+    else if (pace <= -1  && nowHhmm >= 930  && nowHhmm < 1600) minConfBonus = -6;  // just a bit slow
 
     if (minConfBonus < 0 && this._scanCount % 3 === 0) {
-      this._log(`📊 ${instrument} signal pace: ${todayCountNow}/${minTarget} — gate relaxed ${minConfBonus} pts`);
+      this._log(`📊 ${instrument} pace: ${todayCountNow}/${minTarget} (expected ${expectedByNow}) — gate ${minConfBonus} pts`);
     }
 
     // Load adaptive overrides once per scan (auto-computed from live WR data)
