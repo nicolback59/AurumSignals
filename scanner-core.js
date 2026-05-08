@@ -60,9 +60,9 @@ class Scanner extends EventEmitter {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
       symbolMgc:       config.symbolMgc       || process.env.SCANNER_SYMBOL_MGC   || 'GC=F',
       scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '120') * 1000, 300_000),
-      cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '30'),
+      cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '20'),
       baseScore:       config.baseScore       || parseInt(process.env.SCANNER_MIN_SCORE   || '6'),
-      dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '25'),
+      dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '15'),
       dailyMinSignals: config.dailyMinSignals || parseInt(process.env.DAILY_MIN_SIGNALS   || '10'),
       logLevel:        config.logLevel        || (process.env.SCANNER_LOG_LEVEL || 'full').toLowerCase(),
       ntfyUrl:         config.ntfyUrl         || (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, ''),
@@ -663,16 +663,28 @@ class Scanner extends EventEmitter {
       this._log(`📉 ${instrument} — no strategy candidates (bars=${bars5m.length})`);
     }
 
-    // Check if we need to guarantee minimum daily signals — lower the bar if running behind
+    // ── Minimum daily signal guarantee — 3-tier confidence relaxation ────────────
+    // Each instrument targets dailyMinSignals (default 10) = 20 total across MNQ+MGC.
+    // If running behind, confidence gate is progressively relaxed throughout the day.
     const todayCountNow = this._stmts.dailySignalCount.get(instrument)?.cnt ?? 0;
+    const minTarget     = this.cfg.dailyMinSignals ?? 10;
     const nowHhmm = (() => {
       const d = new Date();
-      return (d.getUTCHours() - 4) * 100 + d.getUTCMinutes(); // rough ET conversion
+      return (d.getUTCHours() - 4) * 100 + d.getUTCMinutes(); // rough ET
     })();
-    // After 11 AM ET, if still below minimum, allow 8 pts lower confidence
-    const belowMin   = todayCountNow < (this.cfg.dailyMinSignals ?? 10);
-    const lateEnough = nowHhmm >= 1100 && nowHhmm < 1600;
-    const minConfBonus = (belowMin && lateEnough) ? -8 : 0;
+    // Tier 1: 9:30 AM+, behind on signals → -10 pts
+    // Tier 2: 12:00 PM+, still behind → -16 pts
+    // Tier 3: 2:00 PM+, very behind (< half target) → -22 pts
+    let minConfBonus = 0;
+    const belowMin     = todayCountNow < minTarget;
+    const veryBehind   = todayCountNow < Math.floor(minTarget / 2);
+    if      (belowMin && veryBehind  && nowHhmm >= 1400 && nowHhmm < 1600) minConfBonus = -22;
+    else if (belowMin                && nowHhmm >= 1200 && nowHhmm < 1600) minConfBonus = -16;
+    else if (belowMin                && nowHhmm >= 930  && nowHhmm < 1600) minConfBonus = -10;
+
+    if (minConfBonus < 0 && this._scanCount % 3 === 0) {
+      this._log(`📊 ${instrument} signal pace: ${todayCountNow}/${minTarget} — gate relaxed ${minConfBonus} pts`);
+    }
 
     // Load adaptive overrides once per scan (auto-computed from live WR data)
     let adaptiveOverrides = {};
