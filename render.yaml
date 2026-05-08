@@ -7,7 +7,7 @@ services:
     name: nq-signal-pro-api
     runtime: node
     buildCommand: npm install
-    startCommand: node server.js
+    startCommand: node --max-old-space-size=400 server.js
     plan: starter
     healthCheckPath: /api/health
     envVars:
@@ -50,7 +50,7 @@ services:
       - key: BACKTEST_INTERVAL_H
         value: 4         # hours between scheduled backtests
       - key: BACKTEST_BARS
-        value: 10000     # 1m bars to fetch (7 days max from Yahoo)
+        value: 2000      # 1m bars to fetch (~1.4 days); 10000 OOMs on 512MB Starter
       - key: BT_TARGET_TRADES
         value: 250       # stop backtest early once this many trades are found
       - key: BT_SLIPPAGE
