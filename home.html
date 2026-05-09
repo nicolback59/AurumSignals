@@ -480,15 +480,21 @@
   <!-- ── Live Charts ─────────────────────────────────────── -->
   <div class="chart-pair">
     <div class="chart-wrap">
-      <div class="chart-lbl">MNQ — Micro NQ Futures · 15m</div>
-      <div class="tradingview-widget-container">
-        <div class="tradingview-widget-container__widget" id="tv-mnq"></div>
+      <div class="chart-lbl">MNQ — Micro NQ Futures · 1D</div>
+      <div class="tradingview-widget-container" style="height:240px">
+        <div class="tradingview-widget-container__widget" style="height:100%"></div>
+        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
+        {"symbol":"CME_MINI:MNQ1!","width":"100%","height":"240","locale":"en","dateRange":"1D","colorTheme":"dark","isTransparent":true,"autosize":false,"largeChartUrl":"","chartOnly":false,"noTimeScale":false}
+        </script>
       </div>
     </div>
     <div class="chart-wrap">
-      <div class="chart-lbl">MGC — Micro Gold Futures · 15m</div>
-      <div class="tradingview-widget-container">
-        <div class="tradingview-widget-container__widget" id="tv-mgc"></div>
+      <div class="chart-lbl">MGC — Micro Gold Futures · 1D</div>
+      <div class="tradingview-widget-container" style="height:240px">
+        <div class="tradingview-widget-container__widget" style="height:100%"></div>
+        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
+        {"symbol":"COMEX:MGC1!","width":"100%","height":"240","locale":"en","dateRange":"1D","colorTheme":"dark","isTransparent":true,"autosize":false,"largeChartUrl":"","chartOnly":false,"noTimeScale":false}
+        </script>
       </div>
     </div>
   </div>
@@ -599,36 +605,11 @@
   </div>
 </nav>
 
-<script src="https://s3.tradingview.com/tv.js" async onload="initTVCharts()"></script>
 <script src="/ui-components.js"></script>
 <script>
 'use strict';
 
 let perfChart = null;
-let _tvChartsReady = false;
-
-function initTVCharts() {
-  if (_tvChartsReady || typeof TradingView === 'undefined') return;
-  _tvChartsReady = true;
-  const sharedOpts = {
-    width: '100%',
-    height: 240,
-    interval: '15',
-    timezone: 'America/New_York',
-    theme: 'dark',
-    style: '1',
-    locale: 'en',
-    hide_top_toolbar: false,
-    hide_legend: true,
-    hide_side_toolbar: true,
-    allow_symbol_change: false,
-    save_image: false,
-    withdateranges: false,
-    calendar: false,
-  };
-  new TradingView.widget({ ...sharedOpts, symbol: 'CME_MINI:MNQ1!', container_id: 'tv-mnq' });
-  new TradingView.widget({ ...sharedOpts, symbol: 'COMEX:MGC1!',     container_id: 'tv-mgc' });
-}
 
 /* ── Market status (NY time) ─────────────────────────── */
 function getMarketContext() {
@@ -665,7 +646,7 @@ function renderHero(sig) {
 
   // Header badges
   const stratLabel = sig.strategy_name
-    ? { MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing', MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp' }[sig.strategy_name] ?? sig.strategy_name
+    ? { MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing', MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday' }[sig.strategy_name] ?? sig.strategy_name
     : (sig.setup ?? '');
   document.getElementById('heroMeta').innerHTML =
     directionBadge(sig.direction) +
@@ -958,7 +939,7 @@ function renderRecentTrades(journalSigs) {
     return `<div class="recent-trade-row">
       <span class="rt-time">${hhmm(s.received_at)}</span>
       <span class="rt-dir ${s.direction === 'LONG' ? 'long' : 'short'}">${s.direction === 'LONG' ? '▲' : '▼'}</span>
-      <span class="rt-setup">${escH(s.strategy_name ? ({ MNQ_INTRADAY: 'Intraday', MNQ_SWING: 'Swing', MNQ_50PT: '50-Point', MGC_SCALP: 'Scalp' }[s.strategy_name] ?? s.strategy_name) : (s.setup || '—'))}</span>
+      <span class="rt-setup">${escH(s.strategy_name ? ({ MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing', MNQ_50PT: 'MNQ 50-Pt', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday' }[s.strategy_name] ?? s.strategy_name) : (s.setup || '—'))}</span>
       <span class="rt-style">${escH(s.trade_style || '')}</span>
       ${outcomeBadge(s.result)}
       <span class="rt-pts ${ptsCls}">${ptsText}</span>
@@ -1105,7 +1086,18 @@ async function load() {
       learningRes ? learningRes.json() : Promise.resolve({}),
     ]);
 
-    renderHero(sigs[0] || null);
+    // Only show the most recent signal if the trade ended less than 30 minutes ago.
+    // If the signal has no outcome yet (still active) it always shows.
+    // If it has an outcome, hide it once 30 minutes have passed since exit_at.
+    const SIGNAL_SHOW_WINDOW_MS = 30 * 60 * 1000;
+    const latestSig = sigs.find(s => {
+      if (!s.result) return true; // still active
+      const exitMs = s.exit_at
+        ? new Date(s.exit_at + (s.exit_at.includes('T') ? '' : ' UTC')).getTime()
+        : new Date(s.received_at + (s.received_at.includes('T') ? '' : ' UTC')).getTime();
+      return (Date.now() - exitMs) < SIGNAL_SHOW_WINDOW_MS;
+    }) || null;
+    renderHero(latestSig);
     renderRecordBar(stats, journal);
     renderStats(stats, sigs, journal);
     renderPerfChart(journal);
@@ -1141,9 +1133,6 @@ load().then(() => {
   // Connect SSE for real-time scanner updates (supplements 30s polling)
   connectSSE();
 });
-
-// Fallback: if tv.js loaded before its onload callback fired, init charts now
-if (typeof TradingView !== 'undefined') initTVCharts();
 </script>
 </body>
 </html>

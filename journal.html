@@ -36,6 +36,7 @@
 <div class="section-switcher">
   <button class="section-switch-btn active" id="btnReal"    onclick="showSection('real')">Real Signals</button>
   <button class="section-switch-btn"        id="btnBt"      onclick="showSection('bt')">Backtesting</button>
+  <button class="section-switch-btn"        id="btnWeekly"  onclick="showSection('weekly')">Weekly Summary</button>
   <button class="section-switch-btn"        id="btnCompose" onclick="showSection('compose')">Compose</button>
 </div>
 
@@ -67,6 +68,33 @@
       <div class="mini-stats" id="btStats"></div>
     </div>
     <div id="btFeed" style="flex:1;overflow-y:auto"></div>
+  </div>
+
+  <!-- ── WEEKLY SUMMARY SECTION ── -->
+  <div class="page-section" id="secWeekly" style="overflow-y:auto;padding:0 16px 88px;">
+    <div style="max-width:720px;margin:0 auto;padding-top:16px;">
+
+      <!-- Week selector + generate button -->
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px;">
+        <div style="font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-muted);">Weekly Learning Summary</div>
+        <span style="flex:1"></span>
+        <select id="weekSelect" onchange="loadWeeklySummary(this.value)"
+          style="background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:6px;padding:6px 10px;font-size:12px;color:var(--text-primary);font-family:var(--font-body);outline:none;">
+        </select>
+        <button onclick="generateWeeklySummary()" id="genBtn"
+          style="background:var(--blue);color:#fff;border:none;border-radius:7px;padding:7px 16px;font-size:12px;font-weight:700;cursor:pointer;white-space:nowrap;">
+          ↻ Generate This Week
+        </button>
+      </div>
+
+      <div id="weeklyFeed">
+        <div class="empty-state" style="padding:40px 0">
+          <div class="empty-state-icon">◎</div>
+          <div class="empty-state-title">No summaries yet</div>
+          <div class="empty-state-desc">Click "Generate This Week" to create the first weekly learning summary.</div>
+        </div>
+      </div>
+    </div>
   </div>
 
   <!-- ── COMPOSE SECTION ── -->
@@ -157,7 +185,7 @@
 'use strict';
 
 // ── State ─────────────────────────────────────────────────────────────────────
-let realSignals = [], btRuns = [], journalEntries = [];
+let realSignals = [], btRuns = [], journalEntries = [], weeklySummaries = [];
 let rFilter = 'ALL', btFilter = 'ALL';
 let composeType = 'observation';
 const expandedSigs = new Set();
@@ -169,12 +197,13 @@ let activeSection = 'real';
 // ── Section switch ─────────────────────────────────────────────────────────────
 function showSection(s) {
   activeSection = s;
-  ['real','bt','compose'].forEach(sec => {
+  ['real','bt','weekly','compose'].forEach(sec => {
     document.getElementById('sec' + sec.charAt(0).toUpperCase() + sec.slice(1))?.classList.toggle('active', s === sec);
     document.getElementById('btn' + sec.charAt(0).toUpperCase() + sec.slice(1))?.classList.toggle('active', s === sec);
   });
   if (s === 'bt' && !btRuns.length) loadBacktest();
   if (s === 'compose') loadEntries();
+  if (s === 'weekly') loadWeeklySummaries();
 }
 
 // ── Filters ────────────────────────────────────────────────────────────────────
@@ -596,9 +625,147 @@ async function loadBacktest() {
   } catch(e) { console.error('loadBt:', e); }
 }
 
+// ── Weekly Summary ─────────────────────────────────────────────────────────────
+
+function getWeekMonday(date = new Date()) {
+  const d = new Date(date);
+  const day = d.getDay(); // 0=Sun
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+async function loadWeeklySummaries() {
+  try {
+    const res = await fetch('/api/weekly-summary?limit=100');
+    weeklySummaries = await res.json();
+    populateWeekSelect();
+    const sel = document.getElementById('weekSelect');
+    if (sel && sel.value) renderWeeklyFeed(sel.value);
+    else if (weeklySummaries.length) renderWeeklyFeed(weeklySummaries[0].week_start);
+    else document.getElementById('weeklyFeed').innerHTML = buildEmptyState('◎','No summaries yet','Click "Generate This Week" to create the first weekly learning summary.');
+  } catch(e) { console.error('loadWeekly:', e); }
+}
+
+function populateWeekSelect() {
+  const sel = document.getElementById('weekSelect');
+  if (!sel) return;
+  const weeks = [...new Set(weeklySummaries.map(s => s.week_start))].sort().reverse();
+  const curWeek = getWeekMonday();
+  if (!weeks.includes(curWeek)) weeks.unshift(curWeek);
+  const curVal = sel.value || weeks[0];
+  sel.innerHTML = weeks.map(w => {
+    const d = new Date(w + 'T12:00:00Z');
+    const lbl = 'Week of ' + d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+    return `<option value="${w}" ${w === curVal ? 'selected' : ''}>${escH(lbl)}</option>`;
+  }).join('');
+}
+
+async function loadWeeklySummary(weekStart) {
+  renderWeeklyFeed(weekStart);
+}
+
+function renderWeeklyFeed(weekStart) {
+  const el = document.getElementById('weeklyFeed');
+  const rows = weeklySummaries.filter(s => s.week_start === weekStart);
+  if (!rows.length) {
+    el.innerHTML = buildEmptyState('◎', 'No summary for this week', 'Click "Generate This Week" to generate it.');
+    return;
+  }
+
+  const d = new Date(weekStart + 'T12:00:00Z');
+  const weekLabel = 'Week of ' + d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+
+  const stratOrder = ['MNQ_INTRADAY','MNQ_SWING','MNQ_50PT','MGC_SCALP','MGC_INTRADAY'];
+  const sorted = [...rows].sort((a, b) => stratOrder.indexOf(a.strategy_key) - stratOrder.indexOf(b.strategy_key));
+
+  const stratColors = {
+    MNQ_INTRADAY: 'var(--teal)',
+    MNQ_SWING:    'var(--blue)',
+    MNQ_50PT:     'var(--purple)',
+    MGC_SCALP:    'var(--orange)',
+    MGC_INTRADAY: 'var(--yellow)',
+  };
+
+  let html = `<div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:4px;">${escH(weekLabel)}</div>`;
+  const genAt = rows[0]?.generated_at;
+  if (genAt) html += `<div style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-bottom:16px;">Generated ${timeAgo(genAt)}</div>`;
+
+  for (const s of sorted) {
+    const color = stratColors[s.strategy_key] || 'var(--text-muted)';
+    const wr = s.win_rate != null ? s.win_rate.toFixed(1) + '%' : '—';
+    const wrColor = s.win_rate == null ? 'var(--text-muted)' : s.win_rate >= 55 ? 'var(--green)' : s.win_rate >= 45 ? 'var(--yellow)' : 'var(--red)';
+    const escalBadge = s.escalated
+      ? `<span style="margin-left:8px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;background:var(--red-glow);color:var(--red);border:1px solid var(--red-border);">ESCALATED</span>`
+      : (s.prior_repeats > 0 ? `<span style="margin-left:8px;font-size:9px;font-weight:700;padding:2px 7px;border-radius:4px;background:var(--yellow-glow);color:var(--yellow);border:1px solid var(--yellow-border);">REPEAT ×${s.prior_repeats}</span>` : '');
+
+    const sectionHtml = (title, content, accentColor) => {
+      if (!content) return '';
+      const lines = content.split('\n').filter(Boolean);
+      const linesHtml = lines.map(l => {
+        const colonIdx = l.indexOf(':');
+        if (colonIdx > 0 && colonIdx < 40) {
+          const key = l.slice(0, colonIdx);
+          const val = l.slice(colonIdx + 1).trim();
+          const keyColor = key.startsWith('REPEAT') || key.startsWith('PERSISTENT') || key.startsWith('ESCALATED') ? 'var(--red)'
+            : key.startsWith('NO_') || key.startsWith('MAINTAIN') || key.startsWith('WR_IMPROVING') ? 'var(--green)'
+            : accentColor;
+          return `<div style="margin-bottom:5px;line-height:1.5;font-size:12px;">
+            <span style="font-family:var(--font-mono);font-size:10px;font-weight:700;color:${keyColor};margin-right:6px;">[${escH(key)}]</span>
+            <span style="color:var(--text-secondary);">${escH(val)}</span>
+          </div>`;
+        }
+        return `<div style="font-size:12px;color:var(--text-secondary);line-height:1.5;margin-bottom:4px;">${escH(l)}</div>`;
+      }).join('');
+      return `<div style="margin-top:12px;">
+        <div style="font-size:10px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:${accentColor};margin-bottom:6px;">${title}</div>
+        ${linesHtml}
+      </div>`;
+    };
+
+    html += `<div style="background:var(--bg-surface);border:1px solid var(--border-default);border-left:3px solid ${color};border-radius:10px;padding:14px 16px;margin-bottom:12px;">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:10px;">
+        <span style="font-size:13px;font-weight:700;color:${color};">${escH(s.strategy_label)}</span>
+        ${escalBadge}
+        <span style="flex:1"></span>
+        <span style="font-family:var(--font-mono);font-size:11px;font-weight:700;color:${wrColor};">${wr} WR</span>
+        <span style="font-size:10px;color:var(--text-muted);">${s.total_signals} signals · ${s.wins}W/${s.losses}L/${s.breakevens}BE</span>
+      </div>
+      ${sectionHtml('Performance Review', s.performance_review, 'var(--teal)')}
+      ${sectionHtml('Failure Analysis',   s.failure_analysis,   'var(--red)')}
+      ${sectionHtml('Corrective Actions', s.corrective_actions, 'var(--yellow)')}
+      ${sectionHtml('Pattern Tracking',   s.pattern_tracking,   'var(--purple)')}
+    </div>`;
+  }
+
+  el.innerHTML = html;
+}
+
+async function generateWeeklySummary() {
+  const btn = document.getElementById('genBtn');
+  if (btn) { btn.textContent = 'Generating…'; btn.disabled = true; }
+  try {
+    const weekStart = document.getElementById('weekSelect')?.value || getWeekMonday();
+    const res = await fetch('/api/weekly-summary/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week_start: weekStart }),
+    });
+    const d = await res.json();
+    if (d.ok) {
+      await loadWeeklySummaries();
+      renderWeeklyFeed(weekStart);
+    }
+  } catch(e) { console.error('generate weekly:', e); }
+  finally {
+    if (btn) { btn.textContent = '↻ Generate This Week'; btn.disabled = false; }
+  }
+}
+
 async function refresh() {
   await loadReal();
   if (activeSection === 'bt') await loadBacktest();
+  if (activeSection === 'weekly') await loadWeeklySummaries();
   document.getElementById('lastRefresh').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 

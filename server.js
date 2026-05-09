@@ -187,7 +187,7 @@ app.post('/webhook', (req, res) => {
 app.get('/api/signals', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const rows = db.prepare(`
-    SELECT s.*, o.result, o.exit_price, o.pnl_pts, o.pnl_usd
+    SELECT s.*, o.result, o.exit_price, o.exit_at, o.pnl_pts, o.pnl_usd
     FROM   signals s
     LEFT   JOIN outcomes o ON o.signal_id = s.id
     ORDER  BY s.received_at DESC
@@ -281,10 +281,52 @@ app.get('/api/backtest/details', (req, res) => {
   if (!detail) return res.json(null);
 
   const result = { ...detail };
-  // Parse per-strategy breakdown stored in style_breakdown JSON
-  try { result.by_strategy = JSON.parse(detail.style_breakdown ?? '{}'); } catch { result.by_strategy = {}; }
+  // Parse existing JSON columns
   try { result.by_regime   = JSON.parse(detail.regime_breakdown ?? '{}'); } catch { result.by_regime = {}; }
   try { result.by_setup    = JSON.parse(detail.setup_breakdown  ?? '{}'); } catch { result.by_setup = {}; }
+  try { result.by_style    = JSON.parse(detail.style_breakdown  ?? '{}'); } catch { result.by_style = {}; }
+
+  // Build per-strategy breakdown from actual trade records (accurate, not cached JSON)
+  try {
+    const stratRows = db.prepare(`
+      SELECT strategy_name,
+             COUNT(*)                                           AS tradeCount,
+             SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END)    AS wins,
+             AVG(CASE WHEN outcome='WIN' THEN 1.0 ELSE 0 END)  AS winRate,
+             AVG(CASE WHEN pnl_pts IS NOT NULL THEN pnl_pts ELSE 0 END) AS avgPnl
+      FROM   backtest_trades
+      WHERE  run_id = ? AND strategy_name IS NOT NULL
+      GROUP  BY strategy_name
+    `).all(runId);
+
+    result.by_strategy = {};
+    for (const r of stratRows) {
+      result.by_strategy[r.strategy_name] = {
+        tradeCount:   r.tradeCount,
+        wins:         r.wins,
+        winRate:      r.winRate != null ? +r.winRate.toFixed(4) : null,
+        profitFactor: null, // computed per-strategy below
+        avgPnl:       r.avgPnl != null ? +r.avgPnl.toFixed(2) : null,
+      };
+    }
+
+    // Compute profit factor per strategy
+    const pfRows = db.prepare(`
+      SELECT strategy_name,
+             SUM(CASE WHEN pnl_pts > 0 THEN pnl_pts ELSE 0 END)              AS gross_win,
+             ABS(SUM(CASE WHEN pnl_pts < 0 THEN pnl_pts ELSE 0 END))         AS gross_loss
+      FROM   backtest_trades
+      WHERE  run_id = ? AND strategy_name IS NOT NULL AND pnl_pts IS NOT NULL
+      GROUP  BY strategy_name
+    `).all(runId);
+    for (const r of pfRows) {
+      if (result.by_strategy[r.strategy_name]) {
+        result.by_strategy[r.strategy_name].profitFactor =
+          r.gross_loss > 0 ? +(r.gross_win / r.gross_loss).toFixed(2) : null;
+      }
+    }
+  } catch { result.by_strategy = {}; }
+
   res.json(result);
 });
 
@@ -396,6 +438,302 @@ app.get('/api/health', (req, res) => {
   } catch (err) {
     res.status(500).json({ service: 'ok', database: 'error', error: err.message });
   }
+});
+
+// ── WEEKLY LEARNING SUMMARIES ─────────────────────────────────────────────────────────
+
+// Returns the Monday of the ISO week that contains `date` (default: today).
+function getWeekMonday(date = new Date()) {
+  const d = new Date(date);
+  const day = d.getUTCDay(); // 0=Sun, 1=Mon, … 6=Sat
+  const diff = (day === 0 ? -6 : 1 - day); // shift to Monday
+  d.setUTCDate(d.getUTCDate() + diff);
+  return d.toISOString().slice(0, 10);
+}
+
+function fmtWeekLabel(weekStart) {
+  const d = new Date(weekStart + 'T12:00:00Z');
+  return 'Week of ' + d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
+}
+
+const STRATEGY_CONFIGS = [
+  { key: 'MGC_SCALP',    label: 'MGC Scalp',         instrument: 'MGC' },
+  { key: 'MGC_INTRADAY', label: 'MGC Intraday',       instrument: 'MGC' },
+  { key: 'MNQ_INTRADAY', label: 'MNQ Intraday',       instrument: 'MNQ' },
+  { key: 'MNQ_SWING',    label: 'MNQ Swing',          instrument: 'MNQ' },
+  { key: 'MNQ_50PT',     label: 'MNQ 50-Point',       instrument: 'MNQ' },
+];
+
+function generateWeeklySummaryData(db, weekStart) {
+  const weekEnd = new Date(weekStart + 'T00:00:00Z');
+  weekEnd.setUTCDate(weekEnd.getUTCDate() + 7);
+  const weekEndStr = weekEnd.toISOString().slice(0, 10);
+
+  const results = [];
+
+  for (const cfg of STRATEGY_CONFIGS) {
+    // Pull all live signals for this strategy/week with outcomes
+    const sigs = db.prepare(`
+      SELECT s.direction, s.grade, s.session, s.htf_bias, s.score, s.trade_style,
+             o.result, o.pnl_pts, o.exit_at
+      FROM   signals s
+      LEFT   JOIN outcomes o ON o.signal_id = s.id
+      WHERE  s.strategy_name = ?
+        AND  date(s.received_at) >= ?
+        AND  date(s.received_at) <  ?
+      ORDER  BY s.received_at ASC
+    `).all(cfg.key, weekStart, weekEndStr);
+
+    // Pull backtest trades from runs that ran during this week
+    const btTrades = db.prepare(`
+      SELECT t.direction, t.outcome, t.regime, t.session, t.confidence, t.pnl_pts, t.note
+      FROM   backtest_trades t
+      JOIN   backtest_runs   r ON r.id = t.run_id
+      WHERE  t.strategy_name = ?
+        AND  date(r.run_at) >= ?
+        AND  date(r.run_at) <  ?
+    `).all(cfg.key, weekStart, weekEndStr);
+
+    const allTrades = sigs.filter(s => s.result);
+    const wins   = allTrades.filter(s => s.result === 'WIN').length;
+    const losses = allTrades.filter(s => s.result === 'LOSS').length;
+    const be     = allTrades.filter(s => s.result === 'BE').length;
+    const total  = wins + losses;
+    const wr     = total > 0 ? +(wins / total * 100).toFixed(1) : null;
+
+    // ── Previous week's summary for pattern-tracking comparison ───────────────
+    const prevWeekStart = new Date(weekStart + 'T00:00:00Z');
+    prevWeekStart.setUTCDate(prevWeekStart.getUTCDate() - 7);
+    const prevWeekStr = prevWeekStart.toISOString().slice(0, 10);
+    const prevSummary = db.prepare(
+      `SELECT * FROM weekly_summaries WHERE week_start = ? AND strategy_key = ?`
+    ).get(prevWeekStr, cfg.key);
+
+    // ── Derive analytical text sections ──────────────────────────��────────────
+    const sessionCounts = {};
+    const htfMismatches = allTrades.filter(t => {
+      if (!t.htf_bias || !t.direction) return false;
+      return (t.direction === 'LONG' && t.htf_bias === 'BEAR') ||
+             (t.direction === 'SHORT' && t.htf_bias === 'BULL');
+    }).length;
+
+    for (const t of allTrades) {
+      const s = (t.session || 'unknown').toLowerCase();
+      sessionCounts[s] = (sessionCounts[s] || 0) + 1;
+    }
+
+    const worstSession = Object.entries(sessionCounts)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 1)[0]?.[0] || null;
+
+    const btWins   = btTrades.filter(t => t.outcome === 'WIN').length;
+    const btLosses = btTrades.filter(t => t.outcome === 'LOSS' || t.outcome === 'BE').length;
+    const btTotal  = btWins + btLosses;
+    const btWr     = btTotal > 0 ? +(btWins / btTotal * 100).toFixed(1) : null;
+
+    const btRegimes = {};
+    for (const t of btTrades) {
+      const r = t.regime || 'unknown';
+      if (!btRegimes[r]) btRegimes[r] = { win: 0, total: 0 };
+      btRegimes[r].total++;
+      if (t.outcome === 'WIN') btRegimes[r].win++;
+    }
+    const worstRegime = Object.entries(btRegimes)
+      .filter(([, v]) => v.total >= 3)
+      .sort((a, b) => (a[1].win / a[1].total) - (b[1].win / b[1].total))[0]?.[0] || null;
+
+    // ── Performance review (structured) ─────────────────────��───────────────
+    const perfLines = [
+      `LIVE_SIGNALS: ${sigs.length} total | ${wins}W / ${losses}L / ${be}BE | WR=${wr != null ? wr + '%' : 'N/A (no resolved trades)'}`,
+      `BACKTEST: ${btTotal} trades | WR=${btWr != null ? btWr + '%' : 'N/A'}`,
+    ];
+    if (wr != null) {
+      if (wr >= 65) perfLines.push('ASSESSMENT: Strong week — win rate above 65%; strategy is performing at expected edge.');
+      else if (wr >= 52) perfLines.push('ASSESSMENT: Acceptable week — win rate within normal range (52-65%); no immediate changes needed.');
+      else if (wr >= 40) perfLines.push('ASSESSMENT: Below-average week — win rate under 52%; confidence threshold should be reviewed.');
+      else perfLines.push('ASSESSMENT: Poor week — win rate under 40%; confidence threshold escalated; review trade quality.');
+    } else {
+      perfLines.push('ASSESSMENT: Insufficient live data this week; judgment based on backtest only.');
+    }
+    if (htfMismatches > 0) {
+      perfLines.push(`HTF_COUNTER_TREND: ${htfMismatches} counter-trend entries taken — these carry lower expected WR (~35%); filter required.`);
+    }
+
+    const performanceReview = perfLines.join('\n');
+
+    // ── Failure analysis ─────────────────────────────────────────────────────
+    const failureLines = [];
+    const lostTrades = allTrades.filter(t => t.result === 'LOSS');
+    if (lostTrades.length === 0) {
+      failureLines.push('NO_LOSSES: No losses recorded this week from live signals.');
+    }
+    if (htfMismatches > 0) {
+      failureLines.push(`COUNTER_TREND_ENTRIES: ${htfMismatches} trades entered against HTF bias — primary risk factor for this week.`);
+    }
+    if (worstRegime === 'ranging') {
+      failureLines.push('RANGING_REGIME_LOSSES: Backtest shows elevated losses in ranging conditions — continuation signals underperform in chop.');
+    }
+    if (worstRegime === 'volatile') {
+      failureLines.push('VOLATILE_REGIME_LOSSES: High-ATR conditions caused stop-outs; SL distance was insufficient for expanded volatility.');
+    }
+    if (btWr != null && btWr < 45) {
+      failureLines.push(`LOW_BT_WIN_RATE: Backtest WR=${btWr}% is below 45% threshold — strategy parameter revision required.`);
+    }
+    if (failureLines.length === 0) failureLines.push('NO_IDENTIFIED_FAILURES: Performance within acceptable bounds; no systematic failure detected.');
+
+    const failureAnalysis = failureLines.join('\n');
+
+    // ── Corrective actions ───────────────────────────────────────────────────
+    const correctiveLines = [];
+    if (wr != null && wr < 45) {
+      correctiveLines.push(`RAISE_THRESHOLD: Increase minimum confidence for ${cfg.key} by 3-5 pts; current WR=${wr}% requires tighter filter.`);
+    }
+    if (htfMismatches > 0) {
+      correctiveLines.push('ENFORCE_HTF_FILTER: Block entries where direction conflicts with HTF bias; implement hard filter in strategy logic.');
+    }
+    if (worstRegime === 'ranging') {
+      correctiveLines.push('SKIP_CONTINUATION_IN_CHOP: Add regime check before continuation signals; require ADX >= 20 or ATR expansion confirmation.');
+    }
+    if (worstRegime === 'volatile') {
+      correctiveLines.push('WIDEN_SL_IN_VOLATILE: Add 0.5 ATR buffer to SL when ATR > 1.5× 20-bar average; prevents noise-triggered stops.');
+    }
+    if (correctiveLines.length === 0) {
+      correctiveLines.push('MAINTAIN_CURRENT_APPROACH: No corrective actions required; continue monitoring for 2 more weeks before changing parameters.');
+    }
+
+    const correctiveActions = correctiveLines.join('\n');
+
+    // ── Pattern tracking — compare with prior week's summary ────────────────
+    const patternLines = [];
+    let priorRepeats = 0;
+    let escalated = 0;
+
+    if (prevSummary) {
+      const prevFailures = (prevSummary.failure_analysis || '').split('\n').filter(Boolean);
+      const currentFailureKeys = new Set(failureLines.map(l => l.split(':')[0]));
+
+      for (const prevLine of prevFailures) {
+        const key = prevLine.split(':')[0];
+        if (key !== 'NO_IDENTIFIED_FAILURES' && currentFailureKeys.has(key)) {
+          priorRepeats++;
+          patternLines.push(`REPEAT_ERROR [${key}]: Same mistake identified for 2nd consecutive week — escalating corrective action required.`);
+          escalated = 1;
+        }
+      }
+
+      // Check if prior week also had escalation
+      if (prevSummary.escalated && escalated) {
+        patternLines.push(`PERSISTENT_ERROR: This mistake has persisted 3+ weeks — mandatory strategy parameter override recommended; do not wait for optimizer.`);
+      }
+
+      const prevWr = prevSummary.win_rate;
+      if (prevWr != null && wr != null) {
+        const trend = wr - prevWr;
+        if (trend >= 10) patternLines.push(`WR_IMPROVING: Win rate improved +${trend.toFixed(1)}pp week-over-week — prior corrective actions appear effective.`);
+        else if (trend <= -10) patternLines.push(`WR_DECLINING: Win rate dropped ${Math.abs(trend).toFixed(1)}pp week-over-week — investigate if prior corrections were applied.`);
+        else patternLines.push(`WR_STABLE: Win rate change ${trend >= 0 ? '+' : ''}${trend.toFixed(1)}pp — stable performance, continue monitoring.`);
+      }
+    } else {
+      patternLines.push('FIRST_WEEK: No prior week data available for pattern comparison.');
+    }
+
+    if (patternLines.length === 0) patternLines.push('NO_REPEAT_PATTERNS: No recurring mistakes detected from prior week.');
+
+    const patternTracking = patternLines.join('\n');
+
+    // ── Raw signal compact log for machine re-analysis ───────────────────────
+    const rawLog = allTrades.slice(0, 50).map(t => ({
+      dir: t.direction,
+      res: t.result,
+      htf: t.htf_bias,
+      sess: t.session,
+      score: t.score,
+      pnl: t.pnl_pts,
+    }));
+
+    results.push({
+      week_start:          weekStart,
+      week_label:          fmtWeekLabel(weekStart),
+      strategy_key:        cfg.key,
+      strategy_label:      cfg.label,
+      total_signals:       sigs.length,
+      wins,
+      losses,
+      breakevens:          be,
+      win_rate:            wr,
+      performance_review:  performanceReview,
+      failure_analysis:    failureAnalysis,
+      corrective_actions:  correctiveActions,
+      pattern_tracking:    patternTracking,
+      prior_repeats:       priorRepeats,
+      escalated,
+      raw_signals_json:    JSON.stringify(rawLog),
+    });
+  }
+
+  return results;
+}
+
+// GET all weekly summaries (paginated, latest first)
+app.get('/api/weekly-summary', (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    const rows  = db.prepare(
+      'SELECT * FROM weekly_summaries ORDER BY week_start DESC, strategy_key ASC LIMIT ?'
+    ).all(limit);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// GET summaries for a specific week
+app.get('/api/weekly-summary/:weekStart', (req, res) => {
+  try {
+    const rows = db.prepare(
+      'SELECT * FROM weekly_summaries WHERE week_start = ? ORDER BY strategy_key ASC'
+    ).all(req.params.weekStart);
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// POST — generate (or regenerate) the current week's summaries
+app.post('/api/weekly-summary/generate', (req, res) => {
+  try {
+    const weekStart = req.body?.week_start || getWeekMonday();
+    const summaries = generateWeeklySummaryData(db, weekStart);
+
+    const upsert = db.prepare(`
+      INSERT INTO weekly_summaries
+        (week_start, week_label, strategy_key, strategy_label, total_signals,
+         wins, losses, breakevens, win_rate, performance_review, failure_analysis,
+         corrective_actions, pattern_tracking, prior_repeats, escalated, raw_signals_json, generated_at)
+      VALUES
+        (@week_start, @week_label, @strategy_key, @strategy_label, @total_signals,
+         @wins, @losses, @breakevens, @win_rate, @performance_review, @failure_analysis,
+         @corrective_actions, @pattern_tracking, @prior_repeats, @escalated, @raw_signals_json, datetime('now'))
+      ON CONFLICT(week_start, strategy_key) DO UPDATE SET
+        week_label         = excluded.week_label,
+        strategy_label     = excluded.strategy_label,
+        total_signals      = excluded.total_signals,
+        wins               = excluded.wins,
+        losses             = excluded.losses,
+        breakevens         = excluded.breakevens,
+        win_rate           = excluded.win_rate,
+        performance_review = excluded.performance_review,
+        failure_analysis   = excluded.failure_analysis,
+        corrective_actions = excluded.corrective_actions,
+        pattern_tracking   = excluded.pattern_tracking,
+        prior_repeats      = excluded.prior_repeats,
+        escalated          = excluded.escalated,
+        raw_signals_json   = excluded.raw_signals_json,
+        generated_at       = datetime('now')
+    `);
+
+    db.transaction(() => {
+      for (const s of summaries) upsert.run(s);
+    })();
+
+    res.json({ ok: true, week_start: weekStart, week_label: fmtWeekLabel(weekStart), count: summaries.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── JOURNAL ENTRIES (free-form composer) ──────────────────────────────────────────────

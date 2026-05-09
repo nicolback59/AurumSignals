@@ -89,8 +89,8 @@ function evaluateAll(barSets, cfg = {}) {
     }
   }
 
-  // ── MGC INTRADAY (displayed as "MGC Scalp") ───────────────────────────────────
-  // Same 30m/45m confluence enhancement.
+  // ── MGC INTRADAY ──────────────────────────────────────────────────────────────
+  // Broader gold intraday trend-following (wider sessions, more signals than MGC_SCALP).
   if (instrument === 'MGC' || instrument == null) {
     if (bars5mMgc.length >= 50 && bars1hMgc.length >= 20) {
       const sig = mgcIntraday.evaluate(bars5mMgc, bars1hMgc, bars30mMgc, bars45mMgc, cfg, barIdx);
@@ -168,12 +168,12 @@ const STRATEGY_META = {
     description: '5m VWAP/EMA scalp with 15m/30m/45m/1h multi-timeframe confluence',
   },
   MGC_INTRADAY: {
-    name:        'MGC Scalp',
+    name:        'MGC Intraday',
     instrument:  'MGC',
     timeframe:   '5m',
-    trade_style: 'scalp',
+    trade_style: 'intraday',
     threshold:   THRESHOLDS.MGC_INTRADAY,
-    description: '5m EMA trend-following scalp with 30m/45m/1h HTF confirmation',
+    description: '5m EMA trend-following intraday with 30m/45m/1h HTF confirmation',
   },
 };
 
