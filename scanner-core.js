@@ -814,10 +814,58 @@ class Scanner extends EventEmitter {
     return { mnq5m, mnq1h, mgc5m, mgc1h };
   }
 
+  // ── Market hours check ────────────────────────────────────────────────────────
+  // CME NQ (MNQ) and COMEX Gold (MGC) futures trade nearly 24h on weekdays.
+  // Schedule: Sunday 6:00 PM ET open → Friday 5:00 PM ET close.
+  // Daily maintenance break: 5:00–6:00 PM ET (Mon–Thu).
+  // Returns true when the market is open and scanning should proceed.
+
+  _isMarketOpen() {
+    const now = new Date();
+    const etParts = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'America/New_York',
+      weekday: 'short',
+      hour:    'numeric',
+      minute:  'numeric',
+      hour12:  false,
+    }).formatToParts(now);
+
+    const weekday = etParts.find(p => p.type === 'weekday').value; // Mon,Tue,…,Sun
+    const hour    = parseInt(etParts.find(p => p.type === 'hour').value, 10);
+    const minute  = parseInt(etParts.find(p => p.type === 'minute').value, 10);
+    const t = hour * 60 + minute; // minutes since midnight ET
+
+    // Saturday — fully closed
+    if (weekday === 'Sat') return false;
+
+    // Sunday — only open from 6:00 PM ET onward (t >= 1080)
+    if (weekday === 'Sun') return t >= 1080;
+
+    // Friday — closes at 5:00 PM ET (t >= 1020)
+    if (weekday === 'Fri' && t >= 1020) return false;
+
+    // Mon–Thu daily maintenance break: 5:00–6:00 PM ET (1020–1080)
+    if (t >= 1020 && t < 1080) return false;
+
+    return true;
+  }
+
   // ── Main scan cycle ───────────────────────────────────────────────────────────
 
   async scan() {
     this._scanCount++;
+
+    // Skip signal evaluation entirely when futures markets are closed.
+    // Heartbeat is still emitted so the UI knows the scanner process is alive.
+    if (!this._isMarketOpen()) {
+      if (this._scanCount % 10 === 0) {
+        this._log('⏸️  Market closed — scanner paused until next session opens');
+      }
+      try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash */ }
+      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true });
+      return;
+    }
+
     try {
       // Fetch primary bars — use last known good on failure
       let mnq5mRaw = [], mnq1hRaw = [], mgc5mRaw = [], mgc1hRaw = [];
@@ -1146,6 +1194,171 @@ class Scanner extends EventEmitter {
     }
   }
 
+  // ── Weekly learning summary generation ───────────────────────────────────────
+  // Runs automatically every Friday at 5:30 PM ET (after the week's last session).
+  // Also runs on Saturday/Sunday mornings as a catch-up in case Friday evening was missed.
+  // Generates per-strategy summaries for MGC_SCALP, MGC_INTRADAY, MNQ_INTRADAY, MNQ_SWING, MNQ_50PT.
+
+  _maybeGenerateWeeklySummary() {
+    try {
+      const now = new Date();
+      const etParts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: false,
+      }).formatToParts(now);
+      const weekday = etParts.find(p => p.type === 'weekday').value;
+      const hour    = parseInt(etParts.find(p => p.type === 'hour').value, 10);
+
+      // Only generate on Fri after 17:00 ET, or Sat/Sun as catch-up
+      const isGenerationWindow =
+        (weekday === 'Fri' && hour >= 17) ||
+        weekday === 'Sat' ||
+        (weekday === 'Sun' && hour < 18);
+      if (!isGenerationWindow) return;
+
+      // Find Monday of this week
+      const d = new Date(now);
+      const day = d.getDay(); // 0=Sun, 1=Mon, …
+      const diff = day === 0 ? -6 : 1 - day;
+      d.setDate(d.getDate() + diff);
+      const weekStart = d.toISOString().slice(0, 10);
+
+      // Skip if already generated for this week
+      const existing = this.db.prepare(
+        'SELECT id FROM weekly_summaries WHERE week_start = ? LIMIT 1'
+      ).get(weekStart);
+      if (existing) return;
+
+      this._log(`📋 Generating weekly learning summary for week of ${weekStart}…`);
+
+      const STRATEGY_CONFIGS = [
+        { key: 'MGC_SCALP',    label: 'MGC Scalp',    instrument: 'MGC' },
+        { key: 'MGC_INTRADAY', label: 'MGC Intraday',  instrument: 'MGC' },
+        { key: 'MNQ_INTRADAY', label: 'MNQ Intraday',  instrument: 'MNQ' },
+        { key: 'MNQ_SWING',    label: 'MNQ Swing',     instrument: 'MNQ' },
+        { key: 'MNQ_50PT',     label: 'MNQ 50-Point',  instrument: 'MNQ' },
+      ];
+
+      const weekEnd = new Date(weekStart + 'T00:00:00Z');
+      weekEnd.setUTCDate(weekEnd.getUTCDate() + 7);
+      const weekEndStr = weekEnd.toISOString().slice(0, 10);
+
+      const fmtLabel = (ws) => {
+        const dL = new Date(ws + 'T12:00:00Z');
+        return 'Week of ' + dL.toLocaleDateString('en-US', {
+          month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC',
+        });
+      };
+
+      const upsert = this.db.prepare(`
+        INSERT INTO weekly_summaries
+          (week_start, week_label, strategy_key, strategy_label, total_signals,
+           wins, losses, breakevens, win_rate, performance_review, failure_analysis,
+           corrective_actions, pattern_tracking, prior_repeats, escalated, raw_signals_json)
+        VALUES
+          (@week_start, @week_label, @strategy_key, @strategy_label, @total_signals,
+           @wins, @losses, @breakevens, @win_rate, @performance_review, @failure_analysis,
+           @corrective_actions, @pattern_tracking, @prior_repeats, @escalated, @raw_signals_json)
+        ON CONFLICT(week_start, strategy_key) DO NOTHING
+      `);
+
+      this.db.transaction(() => {
+        for (const cfg of STRATEGY_CONFIGS) {
+          const sigs = this.db.prepare(`
+            SELECT s.direction, s.grade, s.session, s.htf_bias, s.score, o.result, o.pnl_pts
+            FROM   signals s
+            LEFT   JOIN outcomes o ON o.signal_id = s.id
+            WHERE  s.strategy_name = ?
+              AND  date(s.received_at) >= ?
+              AND  date(s.received_at) <  ?
+            ORDER  BY s.received_at ASC
+          `).all(cfg.key, weekStart, weekEndStr);
+
+          const resolved = sigs.filter(s => s.result);
+          const wins   = resolved.filter(s => s.result === 'WIN').length;
+          const losses = resolved.filter(s => s.result === 'LOSS').length;
+          const be     = resolved.filter(s => s.result === 'BE').length;
+          const total  = wins + losses;
+          const wr     = total > 0 ? +(wins / total * 100).toFixed(1) : null;
+
+          const prevWeek = new Date(weekStart + 'T00:00:00Z');
+          prevWeek.setUTCDate(prevWeek.getUTCDate() - 7);
+          const prevWeekStr = prevWeek.toISOString().slice(0, 10);
+          const prevSummary = this.db.prepare(
+            'SELECT * FROM weekly_summaries WHERE week_start = ? AND strategy_key = ?'
+          ).get(prevWeekStr, cfg.key);
+
+          const htfMismatches = resolved.filter(t => {
+            return (t.direction === 'LONG' && t.htf_bias === 'BEAR') ||
+                   (t.direction === 'SHORT' && t.htf_bias === 'BULL');
+          }).length;
+
+          const perfLines = [
+            `LIVE_SIGNALS: ${sigs.length} total | ${wins}W/${losses}L/${be}BE | WR=${wr != null ? wr + '%' : 'N/A'}`,
+          ];
+          if (wr >= 65) perfLines.push('ASSESSMENT: Strong — WR >= 65%');
+          else if (wr >= 52) perfLines.push('ASSESSMENT: Acceptable — WR 52-65%');
+          else if (wr != null) perfLines.push('ASSESSMENT: Below average — WR < 52%; threshold review required');
+          else perfLines.push('ASSESSMENT: No resolved live trades this week');
+          if (htfMismatches > 0) perfLines.push(`HTF_COUNTER_TREND: ${htfMismatches} counter-trend trades taken`);
+
+          const failureLines = [];
+          if (htfMismatches > 0) failureLines.push(`COUNTER_TREND_ENTRIES: ${htfMismatches} trades against HTF bias`);
+          if (wr != null && wr < 45) failureLines.push(`LOW_WIN_RATE: WR=${wr}% — confidence filter should be raised`);
+          if (!failureLines.length) failureLines.push('NO_IDENTIFIED_FAILURES: Performance acceptable');
+
+          const correctiveLines = [];
+          if (wr != null && wr < 45) correctiveLines.push(`RAISE_THRESHOLD: Increase ${cfg.key} confidence minimum`);
+          if (htfMismatches > 0) correctiveLines.push('ENFORCE_HTF_FILTER: Require HTF alignment before entry');
+          if (!correctiveLines.length) correctiveLines.push('MAINTAIN_CURRENT_APPROACH: No changes required');
+
+          const patternLines = [];
+          let priorRepeats = 0, escalated = 0;
+          if (prevSummary) {
+            const prevKeys = new Set((prevSummary.failure_analysis || '').split('\n').map(l => l.split(':')[0]));
+            for (const l of failureLines) {
+              const k = l.split(':')[0];
+              if (k !== 'NO_IDENTIFIED_FAILURES' && prevKeys.has(k)) {
+                priorRepeats++;
+                patternLines.push(`REPEAT_ERROR [${k}]: Same mistake 2nd consecutive week — escalating`);
+                escalated = 1;
+              }
+            }
+            if (prevSummary.escalated && escalated) {
+              patternLines.push('PERSISTENT_ERROR: 3+ week repeat — mandatory parameter override');
+            }
+          } else {
+            patternLines.push('FIRST_WEEK: No prior data for comparison');
+          }
+          if (!patternLines.length) patternLines.push('NO_REPEAT_PATTERNS: No recurring mistakes');
+
+          upsert.run({
+            week_start:         weekStart,
+            week_label:         fmtLabel(weekStart),
+            strategy_key:       cfg.key,
+            strategy_label:     cfg.label,
+            total_signals:      sigs.length,
+            wins, losses, breakevens: be,
+            win_rate:           wr,
+            performance_review: perfLines.join('\n'),
+            failure_analysis:   failureLines.join('\n'),
+            corrective_actions: correctiveLines.join('\n'),
+            pattern_tracking:   patternLines.join('\n'),
+            prior_repeats:      priorRepeats,
+            escalated,
+            raw_signals_json:   JSON.stringify(resolved.slice(0, 50).map(s => ({
+              dir: s.direction, res: s.result, htf: s.htf_bias, sess: s.session, pnl: s.pnl_pts,
+            }))),
+          });
+        }
+      })();
+
+      this._log(`📋 Weekly summary generated for week of ${weekStart}`);
+    } catch (err) {
+      this._err('Weekly summary generation error', err);
+    }
+  }
+
   // ── Storage cleanup ───────────────────────────────────────────────────────────
 
   runStorageCleanup() {
@@ -1220,6 +1433,10 @@ class Scanner extends EventEmitter {
     setTimeout(() => {
       this._intervals.push(setInterval(() => this.runOptimizerCycle('MGC'), optMs));
     }, 5 * 60_000);
+
+    // Weekly learning summary — check every hour; generates once per week on Friday after close
+    this._intervals.push(setInterval(() => this._maybeGenerateWeeklySummary(), 60 * 60_000));
+    setTimeout(() => this._maybeGenerateWeeklySummary(), 30_000); // check shortly after startup
 
     this._log(
       `Scanner started — symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +

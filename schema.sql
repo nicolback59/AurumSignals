@@ -227,6 +227,32 @@ CREATE TABLE IF NOT EXISTS news_items (
 );
 CREATE INDEX IF NOT EXISTS idx_news_items ON news_items(fetched_at DESC);
 
+-- Weekly learning summaries — one row per strategy per calendar week.
+-- Preserves full history so the assistant can detect recurring mistakes across weeks.
+-- week_start is the Monday of the week (ISO format: YYYY-MM-DD).
+CREATE TABLE IF NOT EXISTS weekly_summaries (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  week_start           TEXT    NOT NULL,  -- Monday date, e.g. "2025-05-05"
+  week_label           TEXT    NOT NULL,  -- human label, e.g. "Week of May 5, 2025"
+  strategy_key         TEXT    NOT NULL,  -- MGC_SCALP | MNQ_INTRADAY | MNQ_SWING | MNQ_50PT | MGC_INTRADAY
+  strategy_label       TEXT    NOT NULL,  -- human label
+  total_signals        INTEGER DEFAULT 0,
+  wins                 INTEGER DEFAULT 0,
+  losses               INTEGER DEFAULT 0,
+  breakevens           INTEGER DEFAULT 0,
+  win_rate             REAL    DEFAULT 0,
+  performance_review   TEXT,   -- JSON or text block
+  failure_analysis     TEXT,
+  corrective_actions   TEXT,
+  pattern_tracking     TEXT,
+  prior_repeats        INTEGER DEFAULT 0, -- count of mistakes flagged as repeat from prior week
+  escalated            INTEGER DEFAULT 0, -- 1 if same mistake repeated 2 weeks in a row
+  raw_signals_json     TEXT,              -- compact signal log for machine re-analysis
+  generated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(week_start, strategy_key)
+);
+CREATE INDEX IF NOT EXISTS idx_weekly_summaries ON weekly_summaries(week_start DESC, strategy_key);
+
 -- ── Schema migrations (safe no-ops on fresh DBs) ─────────────────────────────
 -- Add strategy_name to signals if missing (existing databases)
 CREATE TABLE IF NOT EXISTS _schema_migrations (migration TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')));
