@@ -168,12 +168,12 @@ const STRATEGY_META = {
     description: '5m VWAP/EMA scalp with 15m/30m/45m/1h multi-timeframe confluence',
   },
   MGC_INTRADAY: {
-    name:        'MGC Intraday',
+    name:        'MGC Scalp+',
     instrument:  'MGC',
     timeframe:   '5m',
-    trade_style: 'intraday',
+    trade_style: 'scalp',
     threshold:   THRESHOLDS.MGC_INTRADAY,
-    description: '5m EMA trend-following intraday with 30m/45m/1h HTF confirmation',
+    description: '5m EMA trend-following scalp (broader sessions) with 30m/45m/1h HTF confirmation',
   },
 };
 

@@ -1232,8 +1232,8 @@ class Scanner extends EventEmitter {
       this._log(`📋 Generating weekly learning summary for week of ${weekStart}…`);
 
       const STRATEGY_CONFIGS = [
-        { key: 'MGC_SCALP',    label: 'MGC Scalp',    instrument: 'MGC' },
-        { key: 'MGC_INTRADAY', label: 'MGC Intraday',  instrument: 'MGC' },
+        { key: 'MGC_SCALP',    label: 'MGC Scalp',   instrument: 'MGC' },
+        { key: 'MGC_INTRADAY', label: 'MGC Scalp+',  instrument: 'MGC' },
         { key: 'MNQ_INTRADAY', label: 'MNQ Intraday',  instrument: 'MNQ' },
         { key: 'MNQ_SWING',    label: 'MNQ Swing',     instrument: 'MNQ' },
         { key: 'MNQ_50PT',     label: 'MNQ 50-Point',  instrument: 'MNQ' },

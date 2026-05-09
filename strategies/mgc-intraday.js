@@ -222,7 +222,7 @@ function evaluate(bars, htfBars, bars30m, bars45m, cfg = {}, barIdx = null) {
     return {
       instrument:    'MGC',
       strategy_name: 'MGC_INTRADAY',
-      trade_style:   'intraday',
+      trade_style:   'scalp',
       timeframe:     '5m',
       direction:     dir,
       entry:         +entry.toFixed(2),
