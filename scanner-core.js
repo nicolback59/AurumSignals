@@ -44,6 +44,11 @@ const {
 } = require('./strategy-params');
 const { runFullOptimizationCycle } = require('./strategy-optimizer');
 const { fetchAllNews }             = require('./news-fetcher');
+const {
+  loadDNA, updateDNAFromBacktest, updateDNAFromLive,
+  getDNAScore, getDNAGateAdjustment,
+} = require('./strategy-dna');
+const { runEvolutionCycle }        = require('./strategy-evolution');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function ts() { return new Date().toISOString(); }
@@ -755,10 +760,35 @@ class Scanner extends EventEmitter {
         }
       } catch { /* never crash */ }
 
+      // ── Strategy DNA score + gate adjustment ─────────────────────────────────
+      // DNA fingerprints winning trade conditions (combo × timing × quality).
+      // High-DNA signals get a confidence boost; gate is relaxed for strong matches.
+      let dnaGateAdj = 0;
+      try {
+        const dna = loadDNA(this.db, instrument);
+        if (dna) {
+          const dnaResult  = getDNAScore(dna, sig);
+          const dnaScore   = dnaResult.score;    // 0–100
+          const dnaBoost   = Math.round(Math.max(0, Math.min(8, (dnaScore - 50) / 6.25)));
+          dnaGateAdj       = getDNAGateAdjustment(dna, sig).adjustment;  // negative = relax gate
+
+          if (dnaBoost > 0) {
+            sig.confidence  = Math.min(100, sig.confidence + dnaBoost);
+            sig.dnaScore    = dnaScore;
+          }
+          if (Math.abs(dnaGateAdj) >= 3) {
+            this._log(
+              `🧬 DNA [${sig.strategy_name} ${sig.direction}/${sig.session}]: ` +
+              `score=${dnaScore} boost=+${dnaBoost} gate adj ${dnaGateAdj > 0 ? '+' : ''}${dnaGateAdj}`
+            );
+          }
+        }
+      } catch { /* never crash */ }
+
       // Learned confidence gate — threshold evolves based on backtest win rates.
-      // Pattern memory further adjusts the gate based on this specific context.
+      // Pattern memory and DNA gate adjustment further tune the gate per context.
       const learnedMin = getLearnedThreshold(this.db, sig.strategy_name, sig.confidence * 0.9);
-      const effectiveMin = Math.round(learnedMin + patternAdj + minConfBonus);
+      const effectiveMin = Math.round(learnedMin + patternAdj + dnaGateAdj + minConfBonus);
       if (sig.confidence < effectiveMin) {
         const reason = `confidence ${sig.confidence} < learned threshold ${effectiveMin}` +
           (patternAdj !== 0 ? ` (pattern adj ${patternAdj > 0 ? '+' : ''}${patternAdj})` : '') +
@@ -1135,6 +1165,16 @@ class Scanner extends EventEmitter {
         this._log(`PATTERN MEMORY ERR: ${e.message}`);
       }
 
+      // ── DNA: update pattern fingerprints from backtest trades ─────────────────
+      try {
+        if (allTrades.length > 0) {
+          updateDNAFromBacktest(this.db, instrument, allTrades);
+          this._log(`🧬 DNA updated from ${allTrades.length} backtest trades (${instrument})`);
+        }
+      } catch (e) {
+        this._log(`DNA UPDATE ERR: ${e.message}`);
+      }
+
       // ── Adaptive overrides: recompute after each backtest ─────────────────────
       // This is where real behavioral decisions get made: auto-pause strategies
       // with sustained poor WR, block LONG/SHORT directions, block bad sessions.
@@ -1204,6 +1244,32 @@ class Scanner extends EventEmitter {
       this._log(
         `OPTIMIZER DONE: ${instrument} | live=${(report.liveWinRate * 100).toFixed(1)}% | promoted=${report.globalPromoted}`
       );
+
+      // ── Evolution cycle: A/B test variants against the champion ──────────────
+      try {
+        const evoReport = runEvolutionCycle(this.db, instrument, bars1m, {
+          cooldown: 2,
+          slippage: this.cfg.btSlippage ?? 0.5,
+        });
+        this._log(evoReport.report);
+        if (evoReport.promoted) {
+          this._log(
+            `🧬 EVOLUTION PROMOTED: ${instrument} gen${evoReport.generation} ` +
+            `src=${evoReport.promotedVariant?.source} score=${evoReport.promotedVariant?.score?.toFixed(3)}`
+          );
+        }
+      } catch (e) {
+        this._log(`EVOLUTION ERR: ${e.message}`);
+      }
+
+      // ── DNA: update from resolved live signals after optimizer run ────────────
+      try {
+        updateDNAFromLive(this.db, instrument);
+        this._log(`🧬 DNA updated from live outcomes (${instrument})`);
+      } catch (e) {
+        this._log(`DNA LIVE UPDATE ERR: ${e.message}`);
+      }
+
     } catch (err) {
       this._err(`Optimizer error (${instrument})`, err);
     }

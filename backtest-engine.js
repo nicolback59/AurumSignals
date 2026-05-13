@@ -351,9 +351,19 @@ function _runBacktest(bars1m, instrument, opts = {}) {
 
       const regime  = detectRegime(bars5m, i);
 
+      // ET hour for DNA timing analysis
+      const tsBar   = bars5m[i].timestamp;
+      let hourEt    = null;
+      try {
+        const etParts = new Intl.DateTimeFormat('en-US', {
+          timeZone: 'America/New_York', hour: '2-digit', hour12: false,
+        }).formatToParts(new Date(tsBar));
+        hourEt = parseInt(etParts.find(p => p.type === 'hour').value);
+      } catch {}
+
       signalLog.push({
         bar:       i,
-        timestamp: bars5m[i].timestamp,
+        timestamp: tsBar,
         strategy_name: strat,
         direction: sig.direction,
         entry:     sig.entry,
@@ -368,6 +378,7 @@ function _runBacktest(bars1m, instrument, opts = {}) {
         session:     sig.session,
         trade_style: sig.trade_style,
         htf_bias:    sig.htf_bias,
+        hour_et:     hourEt,
         durationBars,
         // Legacy compat
         setup:      sig.setup,

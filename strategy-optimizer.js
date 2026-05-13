@@ -22,6 +22,7 @@ const {
   multiObjectiveScore, validateImprovement,
   DEFAULT_PARAMS_BY_STYLE, SAFEGUARDS,
 } = require('./strategy-params');
+const { loadDNA, getDNAGuidance } = require('./strategy-dna');
 
 // ── Optimization options ──────────────────────────────────────────────────────
 const DEFAULT_OPT_OPTS = {
@@ -43,6 +44,45 @@ function runBaselineBacktest(bars1m, params, opts) {
   });
 }
 
+// ── DNA-guided candidate augmentation ────────────────────────────────────────
+/**
+ * Blend standard perturbation candidates with DNA-guided variants.
+ * DNA guidance biases ATR floor and confidence threshold toward winning conditions.
+ * Returns an augmented candidate array (extras appended to the standard list).
+ */
+function augmentCandidatesWithDNA(baseParams, instrument, db, count) {
+  const extras = [];
+  try {
+    const dna = loadDNA(db, instrument);
+    if (!dna) return extras;
+    const guidance = getDNAGuidance(dna, instrument);
+
+    // Threshold hint from DNA top combos
+    if (guidance.thresholdHint != null) {
+      extras.push({ ...baseParams, minConfidence: guidance.thresholdHint });
+    }
+
+    // Regime-tuned ATR variants
+    for (const hint of (guidance.regimeHints ?? []).slice(0, 2)) {
+      const v = { ...baseParams };
+      if (hint.regime === 'trending' && hint.winRate > 0.63) {
+        v.atrMin = Math.max((baseParams.atrMin ?? 1.0) * 0.90, 0.4);
+      } else if (hint.regime === 'volatile' && hint.winRate > 0.63) {
+        v.atrMin = Math.min((baseParams.atrMin ?? 1.0) * 1.10, 3.5);
+      }
+      if (v.atrMin !== baseParams.atrMin) extras.push(v);
+    }
+
+    // Session-sensitive threshold relaxation for strongest sessions
+    for (const sess of (guidance.bestSessions ?? []).slice(0, 1)) {
+      if (sess.winRate > 0.67) {
+        extras.push({ ...baseParams, minConfidence: Math.max((baseParams.minConfidence ?? 60) - 2, 54) });
+      }
+    }
+  } catch {}
+  return extras.slice(0, count);
+}
+
 // ── Per-style optimization ────────────────────────────────────────────────────
 /**
  * Optimize params specifically for one trade style (scalp/intraday/swing).
@@ -55,6 +95,9 @@ function optimizeStyle(bars1m, instrument, style, db, opts) {
   const baseMetrics = baseline.metrics;
 
   const candidates = generateCandidates(baseParams, instrument, SAFEGUARDS.perturbTrials);
+  // Append DNA-guided extras for richer exploration
+  const styleExtras = augmentCandidatesWithDNA(baseParams, instrument, db, 3);
+  if (styleExtras.length > 0) candidates.push(...styleExtras);
 
   const evaluated = candidates.map(p => {
     const r = runBacktest(bars1m, p, {
@@ -144,6 +187,11 @@ async function runFullOptimizationCycle(db, instrument, bars1m, opts = {}) {
 
   // ── Phase 2: Global instrument-level optimisation ────────────────────────
   const globalCandidates = generateCandidates(liveParams, instrument, SAFEGUARDS.perturbTrials);
+  // Augment with DNA-guided variants (up to 5 extras based on winning patterns)
+  const dnaExtras = augmentCandidatesWithDNA(liveParams, instrument, db, 5);
+  if (dnaExtras.length > 0) {
+    globalCandidates.push(...dnaExtras);
+  }
   const globalEvaluated  = globalCandidates.map(p => {
     const r = runBacktest(bars1m, p, {
       cooldown: liveBaseline.cooldownUsed ?? 1,
