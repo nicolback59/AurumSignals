@@ -144,6 +144,7 @@
       <a href="/calendar" class="nav-link">Calendar</a>
       <a href="/backtest" class="nav-link">Backtest</a>
       <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/reports"  class="nav-link">Reports</a>
       <a href="/news"     class="nav-link">News</a>
       <a href="/setup"    class="nav-link active">Setup</a>
     </nav>
@@ -249,6 +250,12 @@
       <div class="config-row">
         <span class="config-key">NTFY_TOKEN</span>
         <span class="config-val masked" id="cfgNtfyToken"><span class="empty">Not configured</span></span>
+      </div>
+      <div class="config-row" style="margin-top:12px;gap:10px;align-items:center;flex-wrap:wrap">
+        <button id="btnTestNtfy" style="background:rgba(108,99,255,.18);border:1px solid rgba(108,99,255,.4);border-radius:6px;color:#a78bfa;font:600 12px var(--font-mono,monospace);padding:8px 16px;cursor:pointer">
+          🔔 Send Test Notification
+        </button>
+        <span id="ntfyTestResult" style="font:12px var(--font-mono,monospace);color:rgba(255,255,255,.5)"></span>
       </div>
     </div>
   </div>
@@ -385,6 +392,33 @@ async function load() {
 
 load();
 setInterval(load, 30_000);
+
+// ── Ntfy test button ──────────────────────────────────
+document.getElementById('btnTestNtfy').addEventListener('click', async () => {
+  const btn = document.getElementById('btnTestNtfy');
+  const res = document.getElementById('ntfyTestResult');
+  btn.disabled = true;
+  btn.textContent = '⏳ Sending…';
+  res.textContent = '';
+  res.style.color = 'rgba(255,255,255,.5)';
+  try {
+    const r    = await fetch('/api/ntfy/test', { method: 'POST' });
+    const data = await r.json();
+    if (data.ok) {
+      res.textContent = `✓ Sent! Check your ntfy app for topic "${data.topic}"`;
+      res.style.color = '#4ade80';
+    } else {
+      res.textContent = `✗ Failed (${data.status ?? '?'}): ${data.error}`;
+      res.style.color = '#f87171';
+    }
+  } catch (e) {
+    res.textContent = `✗ Error: ${e.message}`;
+    res.style.color = '#f87171';
+  } finally {
+    btn.disabled = false;
+    btn.textContent = '🔔 Send Test Notification';
+  }
+});
 </script>
 </body>
 </html>

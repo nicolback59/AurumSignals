@@ -422,6 +422,36 @@ app.post('/api/journal/backtest-note', (req, res) => {
   res.json({ ok: true });
 });
 
+// ── NTFY TEST ─────────────────────────────────────────────────────────────────────────────
+app.post('/api/ntfy/test', async (req, res) => {
+  if (!NTFY_TOPIC) {
+    return res.status(400).json({ ok: false, error: 'NTFY_TOPIC environment variable is not set. Add it in your Render/Railway dashboard and redeploy.' });
+  }
+
+  const url     = `${NTFY_URL}/${NTFY_TOPIC}`;
+  const headers = {
+    'Content-Type': 'text/plain',
+    'Title':    '🧪 NQ Signal Pro — Test Notification',
+    'Priority': 'default',
+    'Tags':     'bell',
+  };
+  if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
+
+  const body = `Test sent at ${new Date().toISOString()}\nURL: ${NTFY_URL}\nTopic: ${NTFY_TOPIC}\nToken: ${NTFY_TOKEN ? 'set (' + NTFY_TOKEN.slice(0, 4) + '…)' : 'not set'}`;
+
+  try {
+    const r = await fetch(url, { method: 'POST', headers, body });
+    const text = await r.text().catch(() => '');
+    if (r.ok) {
+      res.json({ ok: true, status: r.status, url, topic: NTFY_TOPIC, tokenSet: !!NTFY_TOKEN });
+    } else {
+      res.status(502).json({ ok: false, status: r.status, error: text || `HTTP ${r.status}`, url, topic: NTFY_TOPIC });
+    }
+  } catch (err) {
+    res.status(502).json({ ok: false, error: err.message, url, topic: NTFY_TOPIC });
+  }
+});
+
 // ── HEALTH ────────────────────────────────────────────────────────────────────────────────
 app.get('/api/health', (req, res) => {
   try {
@@ -1120,6 +1150,7 @@ app.get('/stats',    (req, res) => res.sendFile(path.join(__dirname, 'stats.html
 app.get('/calendar', (req, res) => res.sendFile(path.join(__dirname, 'calendar.html')));
 app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest-dashboard.html')));
 app.get('/journal',  (req, res) => res.sendFile(path.join(__dirname, 'journal.html')));
+app.get('/reports',  (req, res) => res.sendFile(path.join(__dirname, 'reports.html')));
 app.get('/news',     (req, res) => res.sendFile(path.join(__dirname, 'news.html')));
 app.get('/setup',    (req, res) => res.sendFile(path.join(__dirname, 'setup.html')));
 
