@@ -256,6 +256,7 @@
       <label style="color:rgba(255,255,255,.4);font:12px monospace">Week of:</label>
       <input type="date" class="week-picker" id="weekPicker">
       <button class="btn-sm" id="btnLoadWeekly">Load</button>
+      <button class="btn-sm" id="btnGenWeeklyTop" onclick="generateWeeklySummary()">Generate Learning</button>
       <span style="color:rgba(255,255,255,.3);font:12px monospace" id="weeklyMeta">—</span>
     </div>
     <div id="weeklyContent"><p class="loading-msg">Select a week and click Load.</p></div>
@@ -325,7 +326,7 @@ async function loadMidweek(force = false) {
     const d = await r.json();
     if (d.error) { document.getElementById('midweekContent').innerHTML = `<p class="error-msg">${d.error}</p>`; return; }
     document.getElementById('midweekMeta').textContent =
-      `Generated: ${fmtTs(d.generatedAt ?? d.generated_at)} | Week: ${d.weekStart ?? '—'}`;
+      `Generated: ${fmtTs(d.generated_at)} | Week: ${d.week_start ?? '—'}`;
     document.getElementById('midweekContent').innerHTML = renderMidweek(d);
   } catch(e) {
     document.getElementById('midweekContent').innerHTML = `<p class="error-msg">Error: ${e.message}</p>`;
@@ -333,61 +334,57 @@ async function loadMidweek(force = false) {
 }
 
 function renderMidweek(d) {
-  const r = d.report ?? d;
+  const m = d.metrics || {};
   const sections = [];
 
-  // Summary metrics
-  if (r.summary || r.winRate != null) {
-    const wr  = r.winRate ?? r.summary?.winRate;
-    const pf  = r.profitFactor ?? r.summary?.profitFactor;
-    const exp = r.expectancy ?? r.summary?.expectancy;
-    const n   = r.tradeCount ?? r.summary?.tradeCount;
-    sections.push(`
-      <div class="metrics-grid">
-        ${metric('Win Rate', pct(wr), wr >= .65 ? 'green' : wr >= .55 ? 'yellow' : 'red')}
-        ${metric('Profit Factor', fix2(pf), pf >= 1.5 ? 'green' : pf >= 1.0 ? 'yellow' : 'red')}
-        ${metric('Expectancy', fix2(exp) + 'R', exp >= 0.3 ? 'green' : exp >= 0 ? 'yellow' : 'red')}
-        ${metric('Trades', n ?? '—')}
-      </div>`);
-  }
+  // Summary metrics grid
+  const wr  = m.win_rate_pct != null ? m.win_rate_pct / 100 : null;
+  const pf  = m.profit_factor;
+  const exp = m.expectancy_pts;
+  const n   = m.total_trades;
+  const pnl = m.total_pnl;
+  const conf = m.avg_confidence;
+  sections.push(`<div class="metrics-grid">
+    ${metric('Win Rate',      wr != null ? m.win_rate_pct.toFixed(1) + '%' : '—', wr >= .65 ? 'green' : wr >= .55 ? 'yellow' : 'red')}
+    ${metric('Profit Factor', fix2(pf),  pf >= 1.5 ? 'green' : pf >= 1.0 ? 'yellow' : 'red')}
+    ${metric('Expectancy',    exp != null ? fix2(exp) + ' pts' : '—', exp >= 0 ? 'green' : 'red')}
+    ${metric('Trades',        n ?? '—')}
+    ${metric('Total PnL',     pnl != null ? (pnl > 0 ? '+' : '') + fix2(pnl) + ' pts' : '—', pnl > 0 ? 'green' : pnl < 0 ? 'red' : '')}
+    ${metric('Avg Confidence', conf != null ? conf : '—')}
+  </div>`);
 
-  // Render raw report text if present
-  if (r.reportText || typeof r.text === 'string') {
-    sections.push(`<div class="report-card"><pre class="report-pre">${highlightText(r.reportText ?? r.text)}</pre></div>`);
+  // Narrative text
+  if (d.narrative) {
+    sections.push(`<div class="report-card"><pre class="report-pre">${highlightText(d.narrative)}</pre></div>`);
   }
 
   // Strategy breakdown
-  if (r.byStrategy) {
-    sections.push(renderStrategyTable(r.byStrategy));
+  if (d.breakdowns?.byStrategy?.length) {
+    sections.push(renderStrategyTable(d.breakdowns.byStrategy));
   }
 
   // Session breakdown
-  if (r.bySession) {
-    sections.push(renderSessionTable(r.bySession));
+  if (d.breakdowns?.bySession?.length) {
+    sections.push(renderSessionTable(d.breakdowns.bySession));
   }
 
   // Warnings
-  if (r.warnings?.length) {
+  if (d.warnings?.length) {
     sections.push(`<div class="report-card">
-      <h3>⚠ Warnings</h3>
-      ${r.warnings.map(w => `<div style="color:#fbbf24;font:12px monospace;margin-bottom:6px">• ${w}</div>`).join('')}
+      <h3>Warnings</h3>
+      ${d.warnings.map(w => `<div style="color:#fbbf24;font:12px monospace;margin-bottom:6px">• ${w}</div>`).join('')}
     </div>`);
   }
 
   // Recommendations
-  if (r.recommendations?.length) {
+  if (d.recommendations?.length) {
     sections.push(`<div class="report-card">
-      <h3>✦ Recommendations</h3>
-      ${r.recommendations.map(w => `<div style="color:#a78bfa;font:12px monospace;margin-bottom:6px">→ ${w}</div>`).join('')}
+      <h3>Recommendations</h3>
+      ${d.recommendations.map(w => `<div style="color:#a78bfa;font:12px monospace;margin-bottom:6px">→ ${w}</div>`).join('')}
     </div>`);
   }
 
-  // Fallback — render everything as JSON
-  if (!sections.length) {
-    sections.push(`<div class="report-card"><pre class="report-pre">${JSON.stringify(r, null, 2)}</pre></div>`);
-  }
-
-  return sections.join('');
+  return sections.join('') || `<div class="report-card"><pre class="report-pre">${JSON.stringify(d, null, 2)}</pre></div>`;
 }
 
 // ── Weekly deep report ────────────────────────────────
@@ -400,62 +397,181 @@ function renderMidweek(d) {
   document.getElementById('weekPicker').value = d.toISOString().slice(0, 10);
 })();
 
+let weeklySummaries = [];
+
 async function loadWeekly() {
   const week = document.getElementById('weekPicker').value;
   if (!week) return;
   document.getElementById('weeklyContent').innerHTML = '<p class="loading-msg">Loading…</p>';
   try {
-    const r = await fetch(`/api/performance/weekly-deep?week=${week}`);
-    const d = await r.json();
+    const [deepRes, summaryRes] = await Promise.all([
+      fetch(`/api/performance/weekly-deep?week=${week}`),
+      fetch(`/api/weekly-summary?limit=100`),
+    ]);
+    const d  = await deepRes.json();
+    const ws = await summaryRes.json();
+    weeklySummaries = Array.isArray(ws) ? ws : [];
+
     if (d.error) { document.getElementById('weeklyContent').innerHTML = `<p class="error-msg">${d.error}</p>`; return; }
-    document.getElementById('weeklyMeta').textContent = `Week: ${d.weekStart ?? week} | Generated: ${fmtTs(d.generatedAt ?? d.generated_at)}`;
-    document.getElementById('weeklyContent').innerHTML = renderWeekly(d);
+    document.getElementById('weeklyMeta').textContent = `Week: ${d.week_start ?? week} | Generated: ${fmtTs(d.generated_at)}`;
+    document.getElementById('weeklyContent').innerHTML = renderWeekly(d, week);
   } catch(e) {
     document.getElementById('weeklyContent').innerHTML = `<p class="error-msg">Error: ${e.message}</p>`;
   }
 }
 
-function renderWeekly(d) {
-  const r = d.report ?? d;
+async function generateWeeklySummary() {
+  const week = document.getElementById('weekPicker').value || getWeekMonday();
+  const btn  = document.getElementById('btnGenWeekly');
+  if (btn) { btn.textContent = 'Generating…'; btn.disabled = true; }
+  try {
+    const res = await fetch('/api/weekly-summary/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ week_start: week }),
+    });
+    const d = await res.json();
+    if (d.ok) await loadWeekly();
+  } catch(e) { console.error('generate weekly:', e); }
+  finally {
+    if (btn) { btn.textContent = 'Generate This Week'; btn.disabled = false; }
+  }
+}
+
+function getWeekMonday(date = new Date()) {
+  const d   = new Date(date);
+  const day = d.getDay();
+  d.setDate(d.getDate() + (day === 0 ? -6 : 1 - day));
+  return d.toISOString().slice(0, 10);
+}
+
+function renderWeekly(d, weekFilter) {
+  const m = d.metrics || {};
   const sections = [];
 
-  // Summary metrics
-  const wr = r.winRate ?? r.summary?.winRate;
-  const pf = r.profitFactor ?? r.summary?.profitFactor;
-  if (wr != null || pf != null) {
-    sections.push(`<div class="metrics-grid">
-      ${metric('Win Rate', pct(wr), wr >= .65 ? 'green' : wr >= .55 ? 'yellow' : 'red')}
-      ${metric('Profit Factor', fix2(pf), pf >= 1.5 ? 'green' : pf >= 1.0 ? 'yellow' : 'red')}
-      ${metric('Trades', r.tradeCount ?? r.summary?.tradeCount ?? '—')}
-      ${metric('WoW Delta', r.wowDelta != null ? (r.wowDelta > 0 ? '+' : '') + pct(r.wowDelta) : '—', r.wowDelta > 0 ? 'green' : r.wowDelta < 0 ? 'red' : '')}
+  // Summary metrics grid
+  const wr     = m.win_rate_pct != null ? m.win_rate_pct / 100 : null;
+  const pf     = m.profit_factor;
+  const exp    = m.expectancy_pts;
+  const n      = m.total_trades;
+  const pnl    = m.total_pnl;
+  const delta  = m.wr_delta_pct;
+  const conf   = m.avg_confidence;
+  const dd     = m.max_drawdown_pts;
+  const rf     = m.recovery_factor;
+
+  sections.push(`<div class="metrics-grid">
+    ${metric('Win Rate',       wr != null ? m.win_rate_pct.toFixed(1) + '%' : '—', wr >= .65 ? 'green' : wr >= .55 ? 'yellow' : 'red')}
+    ${metric('Profit Factor',  fix2(pf), pf >= 1.5 ? 'green' : pf >= 1.0 ? 'yellow' : 'red')}
+    ${metric('Expectancy',     exp != null ? fix2(exp) + ' pts' : '—', exp >= 0 ? 'green' : 'red')}
+    ${metric('Trades',         n ?? '—')}
+    ${metric('Total PnL',      pnl != null ? (pnl > 0 ? '+' : '') + fix2(pnl) + ' pts' : '—', pnl > 0 ? 'green' : pnl < 0 ? 'red' : '')}
+    ${metric('WoW WR Delta',   delta != null ? (delta > 0 ? '+' : '') + delta.toFixed(1) + '%' : '—', delta > 0 ? 'green' : delta < 0 ? 'red' : '')}
+    ${metric('Max Drawdown',   dd != null ? fix2(dd) + ' pts' : '—')}
+    ${metric('Avg Confidence', conf != null ? conf : '—')}
+  </div>`);
+
+  // Narrative
+  if (d.narrative) {
+    sections.push(`<div class="report-card"><pre class="report-pre">${highlightText(d.narrative)}</pre></div>`);
+  }
+
+  // Strategy + session breakdowns
+  if (d.breakdowns?.byStrategy?.length) sections.push(renderStrategyTable(d.breakdowns.byStrategy));
+  if (d.breakdowns?.bySession?.length)  sections.push(renderSessionTable(d.breakdowns.bySession));
+
+  // Edge strengths / weaknesses
+  const es = d.edge_strengths;
+  if (es?.strengths?.length || es?.weaknesses?.length) {
+    const strengthRows = (es.strengths ?? []).map(s =>
+      `<div style="color:#4ade80;font:12px monospace;margin-bottom:5px">+ ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
+    const weakRows = (es.weaknesses ?? []).map(s =>
+      `<div style="color:#f87171;font:12px monospace;margin-bottom:5px">- ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
+    if (strengthRows || weakRows) {
+      sections.push(`<div class="report-card">
+        ${strengthRows ? `<h3>Edge Strengths</h3>${strengthRows}` : ''}
+        ${weakRows ? `<h3 style="margin-top:${strengthRows ? '14px' : '0'}">Edge Weaknesses</h3>${weakRows}` : ''}
+      </div>`);
+    }
+  }
+
+  // ── Learning summaries (journal integration) ──────
+  const learningRows = weeklySummaries.filter(s => s.week_start === (weekFilter ?? getWeekMonday()));
+  if (learningRows.length) {
+    sections.push(renderLearningCards(learningRows));
+  } else {
+    sections.push(`<div class="report-card">
+      <h3>Strategy Learning Summary</h3>
+      <p style="color:rgba(255,255,255,.35);font:12px monospace;margin:0">No learning summary for this week.
+        <button class="btn-sm" id="btnGenWeeklyInline" onclick="generateWeeklySummary()" style="margin-left:12px">Generate</button>
+      </p>
     </div>`);
   }
 
-  if (r.reportText || typeof r.text === 'string') {
-    sections.push(`<div class="report-card"><pre class="report-pre">${highlightText(r.reportText ?? r.text)}</pre></div>`);
-  }
-  if (r.byStrategy) sections.push(renderStrategyTable(r.byStrategy));
-  if (r.bySession)  sections.push(renderSessionTable(r.bySession));
-
-  if (r.edgeStrengths?.length) {
-    sections.push(`<div class="report-card"><h3>✦ Edge Strengths</h3>
-      ${r.edgeStrengths.map(s => `<div style="color:#4ade80;font:12px monospace;margin-bottom:5px">✓ ${s}</div>`).join('')}
-    </div>`);
-  }
-  if (r.edgeWeaknesses?.length) {
-    sections.push(`<div class="report-card"><h3>⚠ Edge Weaknesses</h3>
-      ${r.edgeWeaknesses.map(s => `<div style="color:#f87171;font:12px monospace;margin-bottom:5px">✗ ${s}</div>`).join('')}
-    </div>`);
-  }
-  if (r.forwardHypotheses?.length) {
-    sections.push(`<div class="report-card"><h3>🔭 Forward Hypotheses</h3>
-      ${r.forwardHypotheses.map((s,i) => `<div style="color:#a78bfa;font:12px monospace;margin-bottom:5px">${i+1}. ${s}</div>`).join('')}
-    </div>`);
-  }
-  if (!sections.length) {
-    sections.push(`<div class="report-card"><pre class="report-pre">${JSON.stringify(r, null, 2)}</pre></div>`);
-  }
   return sections.join('');
+}
+
+function renderLearningCards(rows) {
+  const stratOrder = ['MNQ_INTRADAY','MNQ_SWING','MNQ_50PT','MGC_SCALP','MGC_INTRADAY'];
+  const stratColors = { MNQ_INTRADAY:'#2dd4bf', MNQ_SWING:'#60a5fa', MNQ_50PT:'#a78bfa', MGC_SCALP:'#fb923c', MGC_INTRADAY:'#fbbf24' };
+  const sorted = [...rows].sort((a, b) => stratOrder.indexOf(a.strategy_key) - stratOrder.indexOf(b.strategy_key));
+
+  const cards = sorted.map(s => {
+    const color  = stratColors[s.strategy_key] || 'rgba(255,255,255,.4)';
+    const wr     = s.win_rate != null ? s.win_rate.toFixed(1) + '%' : '—';
+    const wrColor = s.win_rate == null ? 'rgba(255,255,255,.4)' : s.win_rate >= 55 ? '#4ade80' : s.win_rate >= 45 ? '#fbbf24' : '#f87171';
+
+    const sectionBlock = (title, content, accent) => {
+      if (!content) return '';
+      const lines = content.split('\n').filter(Boolean);
+      const linesHtml = lines.map(l => {
+        const ci = l.indexOf(':');
+        if (ci > 0 && ci < 40) {
+          const key = l.slice(0, ci), val = l.slice(ci + 1).trim();
+          const kc = key.startsWith('REPEAT') || key.startsWith('ESCALATED') ? '#f87171' : key.startsWith('NO_') || key.startsWith('MAINTAIN') ? '#4ade80' : accent;
+          return `<div style="margin-bottom:5px;font-size:12px;line-height:1.5">
+            <span style="font:700 10px monospace;color:${kc};margin-right:6px">[${escH(key)}]</span>
+            <span style="color:rgba(255,255,255,.65)">${escH(val)}</span>
+          </div>`;
+        }
+        return `<div style="font-size:12px;color:rgba(255,255,255,.6);line-height:1.5;margin-bottom:4px">${escH(l)}</div>`;
+      }).join('');
+      return `<div style="margin-top:12px">
+        <div style="font:700 10px monospace;letter-spacing:.08em;text-transform:uppercase;color:${accent};margin-bottom:6px">${title}</div>
+        ${linesHtml}
+      </div>`;
+    };
+
+    const escalBadge = s.escalated
+      ? `<span class="badge badge-red" style="margin-left:8px">ESCALATED</span>`
+      : s.prior_repeats > 0 ? `<span class="badge badge-yellow" style="margin-left:8px">REPEAT x${s.prior_repeats}</span>` : '';
+
+    return `<div style="border-left:3px solid ${color};background:rgba(255,255,255,.03);border-radius:8px;border:1px solid rgba(255,255,255,.07);border-left-width:3px;padding:14px 16px;margin-bottom:10px">
+      <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
+        <span style="font:700 13px sans-serif;color:${color}">${escH(s.strategy_label ?? s.strategy_key)}</span>
+        ${escalBadge}
+        <span style="flex:1"></span>
+        <span style="font:700 11px monospace;color:${wrColor}">${wr} WR</span>
+        <span style="font:10px monospace;color:rgba(255,255,255,.4)">${s.total_signals} signals · ${s.wins}W/${s.losses}L/${s.breakevens}BE</span>
+      </div>
+      ${sectionBlock('Performance Review', s.performance_review, '#2dd4bf')}
+      ${sectionBlock('Failure Analysis',   s.failure_analysis,   '#f87171')}
+      ${sectionBlock('Corrective Actions', s.corrective_actions, '#fbbf24')}
+      ${sectionBlock('Pattern Tracking',   s.pattern_tracking,   '#a78bfa')}
+    </div>`;
+  }).join('');
+
+  return `<div class="report-card">
+    <h3>Strategy Learning Summary</h3>
+    <div style="margin-bottom:10px;display:flex;align-items:center;gap:10px">
+      <button class="btn-sm" id="btnGenWeekly" onclick="generateWeeklySummary()">Regenerate Learning</button>
+    </div>
+    ${cards}
+  </div>`;
+}
+
+function escH(s) {
+  return String(s ?? '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
 }
 
 // ── Opening candle ────────────────────────────────────
@@ -572,41 +688,50 @@ function metric(label, value, colorClass = '') {
 }
 
 function renderStrategyTable(byStrategy) {
-  if (!byStrategy || !Object.keys(byStrategy).length) return '';
-  const rows = Object.entries(byStrategy).map(([strat, m]) => {
-    if (!m) return '';
+  if (!byStrategy?.length) return '';
+  const rows = byStrategy.map(s => {
+    const wr = s.total > 0 ? s.wins / s.total : null;
+    const wrCls = wr == null ? 'badge-gray' : wr >= 0.65 ? 'badge-green' : wr >= 0.55 ? 'badge-yellow' : 'badge-red';
+    const wrTxt = wr != null ? (wr * 100).toFixed(1) + '%' : '—';
+    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#4ade80' : '#f87171';
     return `<tr>
-      <td style="color:#fff;font-weight:700">${strat}</td>
-      <td>${badgeWR(m.winRate)}</td>
-      <td>${fix2(m.profitFactor)}</td>
-      <td>${m.tradeCount ?? '—'}</td>
-      <td style="color:${(m.totalReturn ?? 0) >= 0 ? '#4ade80' : '#f87171'}">${m.totalReturn != null ? (m.totalReturn > 0 ? '+' : '') + fix2(m.totalReturn) + 'pts' : '—'}</td>
+      <td style="color:#fff;font-weight:700">${s.strategy_name}</td>
+      <td style="color:rgba(255,255,255,.5)">${s.instrument ?? '—'}</td>
+      <td><span class="badge ${wrCls}">${wrTxt}</span></td>
+      <td>${s.total ?? '—'}</td>
+      <td>${s.wins ?? 0} / ${s.losses ?? 0}</td>
+      <td style="color:${pnlColor}">${s.total_pnl != null ? (s.total_pnl > 0 ? '+' : '') + fix2(s.total_pnl) + ' pts' : '—'}</td>
+      <td style="color:rgba(255,255,255,.45)">${s.avg_confidence != null ? (+s.avg_confidence).toFixed(0) : '—'}</td>
     </tr>`;
   }).join('');
   return `<div class="report-card">
     <h3>Strategy Breakdown</h3>
     <table class="data-table">
-      <thead><tr><th>Strategy</th><th>Win Rate</th><th>Profit Factor</th><th>Trades</th><th>Return</th></tr></thead>
+      <thead><tr><th>Strategy</th><th>Instr.</th><th>Win Rate</th><th>Trades</th><th>W/L</th><th>PnL</th><th>Avg Conf</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   </div>`;
 }
 
 function renderSessionTable(bySession) {
-  if (!bySession || !Object.keys(bySession).length) return '';
-  const rows = Object.entries(bySession).map(([sess, m]) => {
-    if (!m) return '';
+  if (!bySession?.length) return '';
+  const rows = bySession.map(s => {
+    const wr = s.total > 0 ? s.wins / s.total : null;
+    const wrCls = wr == null ? 'badge-gray' : wr >= 0.65 ? 'badge-green' : wr >= 0.55 ? 'badge-yellow' : 'badge-red';
+    const wrTxt = wr != null ? (wr * 100).toFixed(1) + '%' : '—';
+    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#4ade80' : '#f87171';
     return `<tr>
-      <td style="color:#fff">${sess}</td>
-      <td>${badgeWR(m.winRate)}</td>
-      <td>${m.tradeCount ?? '—'}</td>
-      <td style="color:${(m.totalReturn ?? 0) >= 0 ? '#4ade80' : '#f87171'}">${m.totalReturn != null ? (m.totalReturn > 0 ? '+' : '') + fix2(m.totalReturn) + 'pts' : '—'}</td>
+      <td style="color:#fff">${s.session}</td>
+      <td style="color:rgba(255,255,255,.5)">${s.instrument ?? '—'}</td>
+      <td><span class="badge ${wrCls}">${wrTxt}</span></td>
+      <td>${s.total ?? '—'}</td>
+      <td style="color:${pnlColor}">${s.total_pnl != null ? (s.total_pnl > 0 ? '+' : '') + fix2(s.total_pnl) + ' pts' : '—'}</td>
     </tr>`;
   }).join('');
   return `<div class="report-card">
     <h3>Session Breakdown</h3>
     <table class="data-table">
-      <thead><tr><th>Session</th><th>Win Rate</th><th>Trades</th><th>Return</th></tr></thead>
+      <thead><tr><th>Session</th><th>Instr.</th><th>Win Rate</th><th>Trades</th><th>PnL</th></tr></thead>
       <tbody>${rows}</tbody>
     </table>
   </div>`;

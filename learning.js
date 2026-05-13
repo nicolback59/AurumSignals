@@ -305,25 +305,46 @@ function detectEdgeDegradation(db, instrument) {
       ORDER  BY run_at DESC LIMIT 8
     `).all(instrument);
 
-    if (rows.length < 6) return { instrument, status: 'insufficient_data' };
+    if (rows.length < 6) {
+      return {
+        instrument,
+        status: 'insufficient_data',
+        alert:  false,
+        message: `Building data — need 6+ backtest runs (have ${rows.length}). No degradation alert until enough history exists.`,
+        recentAvgWR: null, priorAvgWR: null, delta: null,
+      };
+    }
 
     const wrs = rows.map(r => r.win_rate).filter(v => v != null);
-    const recent3 = (wrs[0] + wrs[1] + (wrs[2] ?? wrs[1])) / 3;
-    const prior3  = (wrs[3] + wrs[4] + (wrs[5] ?? wrs[4])) / 3;
+    if (wrs.length < 6) {
+      return { instrument, status: 'insufficient_data', alert: false, message: 'Win rate data unavailable.', recentAvgWR: null, priorAvgWR: null, delta: null };
+    }
+
+    const recent3 = (wrs[0] + wrs[1] + wrs[2]) / 3;
+    const prior3  = (wrs[3] + wrs[4] + wrs[5]) / 3;
     const delta   = recent3 - prior3;
+
+    // Only flag degradation if:
+    //  1. Drop is > 8 percentage points AND
+    //  2. Recent avg WR is actually below 50% (not just relatively worse)
+    const isDegrading = delta < -0.08 && recent3 < 0.50;
 
     return {
       instrument,
-      status:             delta < -0.08 ? 'degrading' : delta > 0.04 ? 'improving' : 'stable',
-      recent_avg_wr_pct:  +(recent3 * 100).toFixed(1),
-      prior_avg_wr_pct:   +(prior3  * 100).toFixed(1),
-      delta_pct:          +(delta   * 100).toFixed(1),
-      alert:              delta < -0.08,
-      explanation: delta < -0.08
-        ? `${instrument} edge is degrading — last 3 backtests avg ${(recent3*100).toFixed(1)}% WR vs prior 3 avg ${(prior3*100).toFixed(1)}% WR. Market regime may have shifted; optimizer will run next cycle.`
+      status:        isDegrading ? 'degrading' : delta > 0.04 ? 'improving' : 'stable',
+      recentAvgWR:   +(recent3 * 100).toFixed(1),
+      priorAvgWR:    +(prior3  * 100).toFixed(1),
+      delta:         +(delta   * 100).toFixed(1),
+      // Legacy field names for existing UI
+      recent_avg_wr_pct: +(recent3 * 100).toFixed(1),
+      prior_avg_wr_pct:  +(prior3  * 100).toFixed(1),
+      delta_pct:         +(delta   * 100).toFixed(1),
+      alert:         isDegrading,
+      message: isDegrading
+        ? `${instrument} edge degrading — last 3 avg ${(recent3*100).toFixed(1)}% WR vs prior 3 avg ${(prior3*100).toFixed(1)}% WR. Optimizer will run next cycle.`
         : delta > 0.04
-        ? `${instrument} edge is improving — recent backtests outperforming prior period by ${(delta*100).toFixed(1)}%.`
-        : `${instrument} edge is stable — win rate variance within normal bounds.`,
+        ? `${instrument} edge improving — +${(delta*100).toFixed(1)}% vs prior period.`
+        : `${instrument} edge stable — win rate variance within normal bounds.`,
     };
   } catch {
     return { instrument, status: 'error' };

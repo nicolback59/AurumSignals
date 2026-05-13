@@ -116,7 +116,7 @@ function sendNtfy(s) {
 
   const headers = {
     'Content-Type': 'text/plain',
-    'Title':    `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker}`,
+    'Title':    `${s.direction === 'LONG' ? '[LONG]' : '[SHORT]'} ${s.grade} - ${s.ticker}`,
     'Priority': priority,
     'Tags':     tags,
   };
@@ -431,7 +431,7 @@ app.post('/api/ntfy/test', async (req, res) => {
   const url     = `${NTFY_URL}/${NTFY_TOPIC}`;
   const headers = {
     'Content-Type': 'text/plain',
-    'Title':    '🧪 NQ Signal Pro — Test Notification',
+    'Title':    'NQ Signal Pro - Test Notification',
     'Priority': 'default',
     'Tags':     'bell',
   };
