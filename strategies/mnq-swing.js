@@ -82,10 +82,10 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const ema9  = ema9Arr[n];
   const ema21 = ema21Arr[n];
 
-  // ADX on 1h (trend strength)
+  // ADX on 1h (trend strength) — soft gate, just screen out flat chop
   const { adx: adxArr } = calcAdx(bars, 14);
   const adx = adxArr[n];
-  if (adx != null && adx < 12) return null; // weak trend
+  if (adx != null && adx < 8) return null; // extremely flat, skip
 
   // ── Market structure on 1h ───────────────────────────────────────────────────
   const struct = detectMarketStructure(bars, 30);
@@ -110,9 +110,9 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     if (esScore < 1) continue;
 
     // ── Pullback into value ──────────────────────────────────────────────────
-    const tolerance = 0.6 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 8);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 8);
+    const tolerance = 0.8 * atr;
+    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 12);
+    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 12);
     if (!pulledToVwap && !pulledTo21) continue;
 
     // ── Retest holds ─────────────────────────────────────────────────────────
@@ -127,9 +127,15 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
     const { histogram } = calcMacd(closes);
-    const hist = histogram[n];
-    const macdOk = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
-    if (!macdOk) continue;
+    const hist     = histogram[n];
+    const histPrev = histogram[n - 1];
+    // Soft MACD filter: only block if strongly counter-trend (accelerating against)
+    if (hist != null && histPrev != null) {
+      const stronglyAgainst = isBull
+        ? (hist < 0 && hist < histPrev)
+        : (hist > 0 && hist > histPrev);
+      if (stronglyAgainst) continue;
+    }
 
     // ── Stop-loss ────────────────────────────────────────────────────────────
     const swLow  = recentSwingLow(bars, 12);
@@ -158,7 +164,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     // ── Near key S/R? ────────────────────────────────────────────────────────
     const srDist = srDistanceAtr(entry, bars, atr, 60);
-    if (srDist < 0.8) continue; // too close to S/R for entry
+    if (srDist < 0.3) continue; // only block if sitting exactly on S/R
 
     // ── Confidence score ─────────────────────────────────────────────────────
     const confidence = scoreSignal({
@@ -202,14 +208,13 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       session:       sess.name,
       trigger_reason: `Daily EMA50/200 ${isBull ? 'bull' : 'bear'} alignment, 1h pullback held ${isBull ? 'above' : 'below'} EMA21, momentum confirms`,
       indicators: {
-        atr:    +atr.toFixed(2),
-        vwap:   +vwap.toFixed(2),
-        ema9:   +ema9.toFixed(2),
-        ema21:  +ema21.toFixed(2),
-        dly50:  dly50  != null ? +dly50.toFixed(2)  : null,
-        dly200: dly200 != null ? +dly200.toFixed(2) : null,
-        adx:    adx    != null ? +adx.toFixed(1)    : null,
-        rsi:    rsi    != null ? +rsi.toFixed(1)    : null,
+        atr:     +atr.toFixed(2),
+        vwap:    +vwap.toFixed(2),
+        ema9:    +ema9.toFixed(2),
+        ema21:   +ema21.toFixed(2),
+        dly21:   dly21  != null ? +dly21.toFixed(2)  : null,
+        adx:     adx    != null ? +adx.toFixed(1)    : null,
+        rsi:     rsi    != null ? +rsi.toFixed(1)    : null,
         struct, htfBias, htf2Bias,
       },
       timestamp:    last.timestamp,

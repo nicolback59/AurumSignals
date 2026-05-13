@@ -70,20 +70,20 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const htfBias = calcHtfBias(htfBars, 9, 21);
 
   // ── Consolidation detection ───────────────────────────────────────────────────
-  // Look for tight range in last 10 bars before current
+  // Look for tight range in last 12 bars before current
   const priorBars = bars.slice(0, -1); // exclude current bar
-  const consol = detectConsolidation(priorBars, 10, 14);
+  const consol = detectConsolidation(priorBars, 12, 14);
   if (!consol.isConsolidating) return null;
 
   const { rangeHigh, rangeLow, curAtr: consolAtr } = consol;
 
   // ── ATR expansion ─────────────────────────────────────────────────────────────
-  // Current ATR must be expanding relative to consolidation ATR
+  // Current ATR must be at least as large as consolidation ATR (breakout starting)
   const consolAtrRatio = consolAtr ? atr / consolAtr : 1;
-  if (consolAtrRatio < 1.1) return null; // no expansion yet
+  if (consolAtrRatio < 1.0) return null; // still inside consolidation range
 
-  // ── Volume spike ──────────────────────────────────────────────────────────────
-  const volSpike = hasVolumeSpike(bars, 20, 1.4);
+  // ── Volume spike (bonus but not required) ─────────────────────────────────────
+  const volSpike = hasVolumeSpike(bars, 20, 1.3);
 
   // ── Breakout check ────────────────────────────────────────────────────────────
   const breakoutLong  = last.close > rangeHigh && last.close > vwap;

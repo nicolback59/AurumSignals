@@ -61,8 +61,8 @@ function evaluate(bars, htfBars, bars30m, bars45m, cfg = {}, barIdx = null) {
   // ── Session filter: broader than scalp — London open through NY afternoon ──
   const sess = getSessionInfo(last.timestamp);
   // Allow London, NY overlap, NY open, mid-day; skip only overnight/pre-market
-  if (!sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay && !sess.isLondon) return null;
-  if (sess.quality < 0.45) return null;
+  if (!sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay && !sess.isLondon && !sess.isAftNoon) return null;
+  if (sess.quality < 0.40) return null;
 
   // ── Indicators ───────────────────────────────────────────────────────────────
   const closes = bars.map(b => b.close);
@@ -128,13 +128,14 @@ function evaluate(bars, htfBars, bars30m, bars45m, cfg = {}, barIdx = null) {
       if (!isBull && rsi <= 25) continue;
     }
 
-    // ── MACD momentum — histogram must be on the right side ──────────────────
-    // Requiring acceleration (hist > histPrev) blocks strong steady trends.
+    // ── MACD momentum — soft filter only ─────────────────────────────────────
     const { histogram } = calcMacd(closes);
-    const hist = histogram[n];
-    if (hist == null) continue;
-    const macdOk = isBull ? hist > 0 : hist < 0;
-    if (!macdOk) continue;
+    const hist     = histogram[n];
+    const histPrev = histogram[n - 1];
+    if (hist != null && histPrev != null) {
+      const stronglyAgainst = isBull ? (hist < 0 && hist < histPrev) : (hist > 0 && hist > histPrev);
+      if (stronglyAgainst) continue;
+    }
 
     // ── ADX — prefer trending market (ADX > 15) ────────────────────────────────
     let adxVal = null;

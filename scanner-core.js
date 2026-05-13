@@ -93,7 +93,7 @@ class Scanner extends EventEmitter {
     };
 
     // Runtime state
-    this._lastSignalTimes   = { MNQ: 0, MGC: 0 };
+    this._lastSignalTimes   = {}; // keyed by `${instrument}_${strategy_name}`
     this._lastDiagSave      = { MNQ: 0, MGC: 0 };
     this._lastRejectionSave = { MNQ: 0, MGC: 0 };
     this._scanCount         = 0;
@@ -677,7 +677,6 @@ class Scanner extends EventEmitter {
 
   async _scanInstrument(instrument, bars5m, bars15m, bars1h, bars4h, barsDly, bars30m = [], bars45m = []) {
     const cooldownMs = this.cfg.cooldown * 60_000;
-    if (Date.now() - (this._lastSignalTimes[instrument] ?? 0) < cooldownMs) return;
 
     // Daily cap
     const todayCount = this._stmts.dailySignalCount.get(instrument)?.cnt ?? 0;
@@ -753,8 +752,10 @@ class Scanner extends EventEmitter {
     try { adaptiveOverrides = loadAdaptiveOverrides(this.db); } catch { /* never crash */ }
 
     for (const sig of signals) {
-      // Re-check cooldown per signal (another strategy may have just fired)
-      if (Date.now() - (this._lastSignalTimes[instrument] ?? 0) < cooldownMs) {
+      // Per-strategy cooldown — each strategy has its own independent timer.
+      // This allows MNQ_SWING to fire even minutes after MNQ_INTRADAY did.
+      const stratKey = `${instrument}_${sig.strategy_name}`;
+      if (Date.now() - (this._lastSignalTimes[stratKey] ?? 0) < cooldownMs) {
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
           sig.confidence, null, 'cooldown');
         this._log(`⏳ Cooldown: ${sig.strategy_name} ${instrument} suppressed`);
@@ -868,7 +869,7 @@ class Scanner extends EventEmitter {
         continue;
       }
 
-      this._lastSignalTimes[instrument] = Date.now();
+      this._lastSignalTimes[stratKey] = Date.now();
       this._storeSignal({ ...sig, ticker: `${instrument}1!` });
       anyFired = true;
     }
