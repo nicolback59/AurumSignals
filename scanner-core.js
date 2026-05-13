@@ -32,8 +32,11 @@ const {
   updateLearnedThresholds, updateLearningFromLiveSignals,
   getPredictedWinRate, getBacktestWinRates,
   getPatternAdjustment, updatePatternMemory, computeAdaptiveOverrides,
-  loadAdaptiveOverrides,
+  loadAdaptiveOverrides, detectEdgeDegradation,
 } = require('./learning');
+const {
+  generateMidWeekReport, generateWeeklyDeepReport,
+} = require('./performance-reporter');
 const { runBacktest }          = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
@@ -933,34 +936,43 @@ class Scanner extends EventEmitter {
         mgc1hRaw = this._lastGoodBars.mgc1h;
       }
 
-      // Slice to useful window
+      // Slice to useful window (full bars kept for outcome resolution)
       const mnq5m = mnq5mRaw.slice(-500);
       const mnq1h = mnq1hRaw.slice(-500);
       const mgc5m = mgc5mRaw.slice(-500);
       const mgc1h = mgc1hRaw.slice(-500);
 
-      // Build multi-TF sets
-      const mnq15m = aggregate5mTo15m(mnq5m);
-      const mnq4h  = aggregate1hTo4h(mnq1h);
-      const mnqDly = aggregate1hToDaily(mnq1h);
-      const mgc15m = aggregate5mTo15m(mgc5m);
-      const mgc30m = aggregate5mTo30m(mgc5m);  // 30m confluence layer for MGC scalp
-      const mgc45m = aggregate5mTo45m(mgc5m);  // 45m confluence layer for MGC scalp
+      // Confirmed-bar slices (exclude the last possibly still-forming bar).
+      // Signal evaluation must use only closed bars to match backtest behavior
+      // and prevent intrabar repainting — the most common live/backtest divergence cause.
+      const mnq5mConf = mnq5m.length > 1 ? mnq5m.slice(0, -1) : mnq5m;
+      const mnq1hConf = mnq1h.length > 1 ? mnq1h.slice(0, -1) : mnq1h;
+      const mgc5mConf = mgc5m.length > 1 ? mgc5m.slice(0, -1) : mgc5m;
+      const mgc1hConf = mgc1h.length > 1 ? mgc1h.slice(0, -1) : mgc1h;
+
+      // Build multi-TF sets from confirmed bars only
+      const mnq15m = aggregate5mTo15m(mnq5mConf);
+      const mnq4h  = aggregate1hTo4h(mnq1hConf);
+      const mnqDly = aggregate1hToDaily(mnq1hConf);
+      const mgc15m = aggregate5mTo15m(mgc5mConf);
+      const mgc30m = aggregate5mTo30m(mgc5mConf);  // 30m confluence layer for MGC scalp
+      const mgc45m = aggregate5mTo45m(mgc5mConf);  // 45m confluence layer for MGC scalp
 
       if (mnq5m.length >= 2) this._savePrice(this.cfg.symbol,    mnq5m);
       if (mgc5m.length >= 2) this._savePrice(this.cfg.symbolMgc, mgc5m);
 
-      const mnqReady = mnq5m.length >= 60 && mnq15m.length >= 20 && mnq1h.length >= 30;
-      const mgcReady = mgc5m.length >= 60 && mgc15m.length >= 20;
+      const mnqReady = mnq5mConf.length >= 60 && mnq15m.length >= 20 && mnq1hConf.length >= 30;
+      const mgcReady = mgc5mConf.length >= 60 && mgc15m.length >= 20;
 
       if (!mnqReady && !mgcReady) {
-        this._log(`⏳ Insufficient bars: MNQ 5m=${mnq5m.length}/15m=${mnq15m.length}/1h=${mnq1h.length} MGC 5m=${mgc5m.length}`);
+        this._log(`⏳ Insufficient bars: MNQ 5m=${mnq5mConf.length}/15m=${mnq15m.length}/1h=${mnq1hConf.length} MGC 5m=${mgc5mConf.length}`);
         return;
       }
 
+      // Signal evaluation uses confirmed bars; outcome resolution uses full bars (including forming)
       await Promise.all([
-        mnqReady ? this._scanInstrument('MNQ', mnq5m, mnq15m, mnq1h, mnq4h, mnqDly) : null,
-        mgcReady ? this._scanInstrument('MGC', mgc5m, mgc15m, mgc1h, [], [], mgc30m, mgc45m) : null,
+        mnqReady ? this._scanInstrument('MNQ', mnq5mConf, mnq15m, mnq1hConf, mnq4h, mnqDly) : null,
+        mgcReady ? this._scanInstrument('MGC', mgc5mConf, mgc15m, mgc1hConf, [], [], mgc30m, mgc45m) : null,
       ].filter(Boolean));
 
       if (mnqReady) this._autoResolveOutcomes(mnq5m, 'MNQ');
@@ -1096,7 +1108,7 @@ class Scanner extends EventEmitter {
       // ── Learning feedback: update thresholds from last 3 backtest runs ─────────
       try {
         const btWinRates  = getBacktestWinRates(this.db, instrument, 3);
-        const learnResult = updateLearnedThresholds(this.db, btWinRates);
+        const learnResult = updateLearnedThresholds(this.db, btWinRates, instrument);
         for (const [strat, { from, to, wr, trades, delta }] of Object.entries(learnResult.changes)) {
           const dir = delta > 0 ? '↑' : '↓';
           this._log(`📚 LEARNED [${strat}]: threshold ${from} ${dir} ${to} (WR=${wr}%, ${trades} trades)`);
@@ -1146,6 +1158,9 @@ class Scanner extends EventEmitter {
 
       this.emit('backtest', { instrument, runId, metrics });
 
+      // Check edge degradation after every backtest cycle
+      try { this._checkEdgeDegradation(); } catch { /* never crash */ }
+
       const best = proposeRevision(this.db, instrument, bars1m, runId,
         { cooldown: result.cooldownUsed, slippage: this.cfg.btSlippage });
       if (best) {
@@ -1191,6 +1206,83 @@ class Scanner extends EventEmitter {
       );
     } catch (err) {
       this._err(`Optimizer error (${instrument})`, err);
+    }
+  }
+
+  // ── Mid-week intelligence report ─────────────────────────────────────────────
+  // Auto-generated Wednesday after 3:00 PM ET. Persisted to strategy_params.
+  // Also checks for edge degradation on both instruments after every backtest cycle.
+
+  _maybeGenerateMidWeekReport() {
+    try {
+      const now = new Date();
+      const etParts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: false,
+      }).formatToParts(now);
+      const weekday = etParts.find(p => p.type === 'weekday').value;
+      const hour    = parseInt(etParts.find(p => p.type === 'hour').value, 10);
+
+      // Generate on Wednesday after 15:00 ET or Thursday/Friday as catch-up
+      const isWindow = (weekday === 'Wed' && hour >= 15) || weekday === 'Thu' || (weekday === 'Fri' && hour < 10);
+      if (!isWindow) return;
+
+      // Compute Monday of current week
+      const d = new Date(now);
+      const day = d.getDay();
+      const diff = day === 0 ? -6 : 1 - day;
+      d.setDate(d.getDate() + diff);
+      const weekStart = d.toISOString().slice(0, 10);
+
+      // Skip if already generated this week
+      const key = `REPORT_MIDWEEK_${weekStart}`;
+      const existing = this.db.prepare(
+        'SELECT instrument FROM strategy_params WHERE instrument = ?'
+      ).get(key);
+      if (existing) return;
+
+      this._log(`📊 Generating mid-week intelligence report for week of ${weekStart}…`);
+      const report = generateMidWeekReport(this.db);
+      this._log(`📊 Mid-week report generated — WR=${report.metrics.win_rate_pct ?? 'N/A'}% on ${report.metrics.total_trades} trades`);
+
+      // Surface critical warnings to ntfy
+      if (this.cfg.ntfyTopic && report.metrics.win_rate_pct !== null && report.metrics.win_rate_pct < 45) {
+        const headers = {
+          'Content-Type': 'text/plain',
+          'Title':    '⚠️ Mid-Week Alert — WR Below 45%',
+          'Priority': 'high', 'Tags': 'warning',
+        };
+        if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+        const body = `Mid-Week Report: WR=${report.metrics.win_rate_pct}% (${report.metrics.total_trades} trades)\nPF=${report.metrics.profit_factor} | MaxDD=${report.metrics.worst_trade} pts\nCheck dashboard for full analysis.`;
+        fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body }).catch(() => {});
+      }
+    } catch (err) {
+      this._err('Mid-week report error', err);
+    }
+  }
+
+  _checkEdgeDegradation() {
+    for (const instrument of ['MNQ', 'MGC']) {
+      try {
+        const result = detectEdgeDegradation(this.db, instrument);
+        if (result.alert) {
+          this._log(`🚨 EDGE DEGRADATION [${instrument}]: ${result.explanation}`);
+          if (this.cfg.ntfyTopic) {
+            const headers = {
+              'Content-Type': 'text/plain',
+              'Title':    `🚨 Edge Degradation — ${instrument}`,
+              'Priority': 'high', 'Tags': 'chart_decreasing,red_circle',
+            };
+            if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+            fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
+              method: 'POST', headers,
+              body: result.explanation,
+            }).catch(() => {});
+          }
+        } else if (result.status !== 'insufficient_data' && result.status !== 'error') {
+          this._log(`📈 Edge stability [${instrument}]: ${result.status} (recent ${result.recent_avg_wr_pct}% vs prior ${result.prior_avg_wr_pct}%)`);
+        }
+      } catch { /* never crash */ }
     }
   }
 
@@ -1437,6 +1529,14 @@ class Scanner extends EventEmitter {
     // Weekly learning summary — check every hour; generates once per week on Friday after close
     this._intervals.push(setInterval(() => this._maybeGenerateWeeklySummary(), 60 * 60_000));
     setTimeout(() => this._maybeGenerateWeeklySummary(), 30_000); // check shortly after startup
+
+    // Mid-week intelligence report — check every hour; generates once on Wednesday after 15:00 ET
+    this._intervals.push(setInterval(() => this._maybeGenerateMidWeekReport(), 60 * 60_000));
+    setTimeout(() => this._maybeGenerateMidWeekReport(), 45_000);
+
+    // Edge degradation monitoring — runs after each backtest cycle (called inline in runBacktestCycle)
+    // Also check once at startup after backtests have run (35 min delay)
+    setTimeout(() => this._checkEdgeDegradation(), 35 * 60_000);
 
     this._log(
       `Scanner started — symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +
