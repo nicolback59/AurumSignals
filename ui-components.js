@@ -16,9 +16,19 @@ function escH(s) {
     .replace(/"/g, '&quot;');
 }
 
+// Normalize SQLite "YYYY-MM-DD HH:MM:SS" to ISO "YYYY-MM-DDTHH:MM:SSZ"
+// so Safari (strict date parser) doesn't return Invalid Date / NaN
+function normalizeTs(ts) {
+  if (!ts) return null;
+  if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}/.test(ts)) return ts.replace(' ', 'T') + 'Z';
+  return ts;
+}
+
 function timeAgo(ts) {
-  if (!ts) return '';
-  const s = (Date.now() - new Date(ts + ' UTC').getTime()) / 1000;
+  const iso = normalizeTs(ts);
+  if (!iso) return '';
+  const s = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (isNaN(s)) return '';
   if (s < 60)    return Math.floor(s) + 's ago';
   if (s < 3600)  return Math.floor(s / 60) + 'm ago';
   if (s < 86400) return Math.floor(s / 3600) + 'h ago';
@@ -26,15 +36,28 @@ function timeAgo(ts) {
 }
 
 function hhmm(ts) {
-  if (!ts) return '—';
-  const d = new Date(ts + (ts.includes('T') ? '' : ' UTC'));
+  const iso = normalizeTs(ts);
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
   return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 function dateKey(ts) {
-  if (!ts) return '?';
-  return new Date(ts + (ts.includes('T') ? '' : ' UTC'))
-    .toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+  const iso = normalizeTs(ts);
+  if (!iso) return '?';
+  const d = new Date(iso);
+  if (isNaN(d)) return '?';
+  return d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
+
+// Full datetime: "Mon May 13, 1:04 PM"
+function fmtDatetime(ts) {
+  const iso = normalizeTs(ts);
+  if (!iso) return '—';
+  const d = new Date(iso);
+  if (isNaN(d)) return '—';
+  return d.toLocaleString('en-US', { weekday: 'short', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit', hour12: true });
 }
 
 function pct(v) { return v != null ? (v * 100).toFixed(1) + '%' : '—'; }
@@ -110,19 +133,18 @@ function probBar(label, val, cls) {
   </div>`;
 }
 
-/* ── Outcome section (buttons or badge) ──────────────── */
+/* ── Outcome section ─────────────────────────────────── */
 function outcomeSection(sig) {
   if (sig.result) {
-    const pts = sig.pnl_pts != null ? ` ${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts` : '';
-    return outcomeBadge(sig.result) + (sig.pnl_pts != null
-      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted)">${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts</span>`
-      : '');
+    const pts = sig.pnl_pts != null
+      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts</span>`
+      : '';
+    const exitTs = sig.exit_at
+      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:8px">${fmtDatetime(sig.exit_at)}</span>`
+      : '';
+    return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">${outcomeBadge(sig.result)}${pts}${exitTs}</div>`;
   }
-  return `<div class="outcome-buttons">
-    <button class="outcome-btn win"  onclick="logOutcome(${sig.id},'WIN')">WIN</button>
-    <button class="outcome-btn loss" onclick="logOutcome(${sig.id},'LOSS')">LOSS</button>
-    <button class="outcome-btn be"   onclick="logOutcome(${sig.id},'BE')">BE</button>
-  </div>`;
+  return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);letter-spacing:.05em">PENDING — auto-resolving</span>`;
 }
 
 /* ── Signal Card ─────────────────────────────────────── */
@@ -138,7 +160,10 @@ function buildSignalCard(sig) {
       ${gradeBadge(sig.grade)}
       ${setupBadge(sig.setup)}
       ${sig.score != null ? `<span class="score-chip">${sig.score}/35</span>` : ''}
-      <span class="signal-card-time">${timeAgo(sig.received_at)}</span>
+      <span class="signal-card-time" title="${fmtDatetime(sig.received_at)}">${timeAgo(sig.received_at)}</span>
+    </div>
+    <div style="font-family:var(--font-mono);font-size:10px;color:rgba(255,255,255,.35);padding:2px 0 4px;letter-spacing:.03em">
+      Initiated: ${fmtDatetime(sig.received_at)}
     </div>
     <div class="signal-card-body">
       <div class="signal-card-levels">
