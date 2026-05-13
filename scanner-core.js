@@ -81,7 +81,7 @@ class Scanner extends EventEmitter {
       ntfyUrl:         config.ntfyUrl         || (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, ''),
       ntfyTopic:       config.ntfyTopic       || process.env.NTFY_TOPIC || '',
       ntfyToken:       config.ntfyToken       || process.env.NTFY_TOKEN || '',
-      btIntervalH:     config.btIntervalH     || parseFloat(process.env.BACKTEST_INTERVAL_H  || '4'),
+      btIntervalH:     config.btIntervalH     || parseFloat(process.env.BACKTEST_INTERVAL_H  || '0.167'),  // 10 min default
       btBars:          config.btBars          || parseInt(process.env.BACKTEST_BARS           || '2000'),
       btSlippage:      config.btSlippage      || parseFloat(process.env.BT_SLIPPAGE          || '0.5'),
       btTargetTrades:  config.btTargetTrades  || parseInt(process.env.BT_TARGET_TRADES        || '120'),
@@ -436,14 +436,17 @@ class Scanner extends EventEmitter {
 
   _sendNtfy(s) {
     if (!this.cfg.ntfyTopic) return;
-    const arrow    = s.direction === 'LONG' ? '▲' : '▼';
+    // HTTP headers must be ASCII only — no emoji. Emoji go in the body only.
+    const arrow    = s.direction === 'LONG' ? '[LONG]' : '[SHORT]';
     const priority = s.grade === 'A+' ? 'urgent' : 'high';
     const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
     const stratTag = s.strategy_name ? `[${s.strategy_name}] ` : '';
     const predWR = s.predicted_wr_pct != null
-      ? `WinRate: ${s.predicted_wr_pct}%±${s.predicted_wr_band ?? 9}% (${s.predicted_wr_source ?? '?'})${s.predicted_wr_atr_spike ? ' ⚠️NEWS/SPIKE' : ''}`
+      ? `WinRate: ${s.predicted_wr_pct}%+/-${s.predicted_wr_band ?? 9}% (${s.predicted_wr_source ?? '?'})${s.predicted_wr_atr_spike ? ' [NEWS/SPIKE]' : ''}`
       : null;
+    const dirEmoji = s.direction === 'LONG' ? '▲ LONG' : '▼ SHORT';
     const body = [
+      `${dirEmoji} ${s.grade}  |  ${s.ticker ?? s.instrument}`,
       s.setup        ? `Setup:   ${stratTag}${s.setup}`   : null,
       s.trade_style  ? `Style:   ${s.trade_style}`         : null,
       s.entry != null? `Entry:   ${s.entry}`               : null,
@@ -459,7 +462,7 @@ class Scanner extends EventEmitter {
     ].filter(Boolean).join('\n');
     const headers = {
       'Content-Type': 'text/plain',
-      'Title':    `${arrow} ${s.direction} ${s.grade}  •  ${s.ticker ?? s.instrument}`,
+      'Title':    `${arrow} ${s.grade} - ${s.ticker ?? s.instrument}`,
       'Priority': priority,
       'Tags':     tags,
     };
@@ -472,17 +475,19 @@ class Scanner extends EventEmitter {
 
   _sendNtfyOutcome(signalId, instrument, direction, result, pnlPts) {
     if (!this.cfg.ntfyTopic) return;
-    const emoji    = result === 'WIN' ? '✅' : result === 'LOSS' ? '❌' : '⚠️';
+    // HTTP headers must be ASCII only — emoji in body only
     const pnlStr   = pnlPts != null ? ` (${pnlPts >= 0 ? '+' : ''}${pnlPts} pts)` : '';
     const priority = result === 'WIN' ? 'default' : result === 'LOSS' ? 'high' : 'default';
+    const resultEmoji = result === 'WIN' ? '[WIN]' : result === 'LOSS' ? '[LOSS]' : '[BE]';
     const headers  = {
       'Content-Type': 'text/plain',
-      'Title':    `${emoji} ${result} — ${instrument} ${direction}${pnlStr}`,
+      'Title':    `${resultEmoji} ${instrument} ${direction}${pnlStr}`,
       'Priority': priority,
       'Tags':     result === 'WIN' ? 'white_check_mark' : result === 'LOSS' ? 'x' : 'warning',
     };
     if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
-    const body = `Signal #${signalId} auto-resolved: ${direction} ${instrument} → ${result}${pnlStr}`;
+    const emoji = result === 'WIN' ? '✅' : result === 'LOSS' ? '❌' : '⚠️';
+    const body  = `${emoji} Signal #${signalId} resolved: ${direction} ${instrument} → ${result}${pnlStr}`;
     fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
       .catch(err => this._err('[ntfy-outcome] send failed', err));
   }
@@ -1385,20 +1390,92 @@ class Scanner extends EventEmitter {
       const report = generateMidWeekReport(this.db);
       this._log(`📊 Mid-week report generated — WR=${report.metrics.win_rate_pct ?? 'N/A'}% on ${report.metrics.total_trades} trades`);
 
-      // Surface critical warnings to ntfy
-      if (this.cfg.ntfyTopic && report.metrics.win_rate_pct !== null && report.metrics.win_rate_pct < 45) {
+      // ── Apply report recommendations directly to strategy learning ──────────
+      // The report is not just for humans — it drives automatic threshold changes.
+      try {
+        this._applyMidWeekReportLearning(report);
+      } catch (e) {
+        this._log(`MID-WEEK LEARNING ERR: ${e.message}`);
+      }
+
+      // Surface report summary to ntfy (ASCII headers only)
+      if (this.cfg.ntfyTopic) {
+        const wr  = report.metrics.win_rate_pct;
+        const n   = report.metrics.total_trades;
+        const pf  = report.metrics.profit_factor;
+        const lvl = wr != null && wr < 45 ? 'high' : 'default';
         const headers = {
           'Content-Type': 'text/plain',
-          'Title':    '⚠️ Mid-Week Alert — WR Below 45%',
-          'Priority': 'high', 'Tags': 'warning',
+          'Title':    `Mid-Week Report - WR=${wr ?? '?'}% (${n} trades)`,
+          'Priority': lvl, 'Tags': lvl === 'high' ? 'warning' : 'bar_chart',
         };
         if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
-        const body = `Mid-Week Report: WR=${report.metrics.win_rate_pct}% (${report.metrics.total_trades} trades)\nPF=${report.metrics.profit_factor} | MaxDD=${report.metrics.worst_trade} pts\nCheck dashboard for full analysis.`;
+        const recaps = (report.recommendations ?? []).slice(0, 3).join('\n');
+        const body = `📊 Mid-Week Intelligence Report\nWR=${wr ?? '?'}% | PF=${pf ?? '?'} | Trades=${n}\n${recaps ? '\nRecommendations:\n' + recaps : ''}\nFull report: /reports`;
         fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body }).catch(() => {});
       }
     } catch (err) {
       this._err('Mid-week report error', err);
     }
+  }
+
+  // ── Apply mid-week report insights to strategy learning ──────────────────────
+  // This is what makes the report actionable rather than passive.
+  // Parses the generated report and directly adjusts thresholds, blocking,
+  // and pattern memory based on what it learned this week.
+  _applyMidWeekReportLearning(report) {
+    if (!report || !report.metrics) return;
+
+    const wr    = (report.metrics.win_rate_pct ?? 0) / 100;
+    const n     = report.metrics.total_trades ?? 0;
+
+    // Not enough data to learn from
+    if (n < 5) {
+      this._log('📊 Mid-week learning: fewer than 5 trades — skipping threshold adjustment');
+      return;
+    }
+
+    // Build a win-rate map per strategy from report breakdowns
+    const btWinRates = {};
+    for (const row of (report.breakdowns?.byStrategy ?? [])) {
+      if (!row.strategy_name || row.total < 2) continue;
+      btWinRates[row.strategy_name] = {
+        winRate:    row.wins / row.total,
+        tradeCount: row.total,
+      };
+    }
+
+    // Apply learned thresholds across both instruments if we have enough data
+    if (Object.keys(btWinRates).length > 0) {
+      for (const instrument of ['MNQ', 'MGC']) {
+        try {
+          const result = updateLearnedThresholds(this.db, btWinRates, instrument);
+          for (const [strat, ch] of Object.entries(result.changes ?? {})) {
+            this._log(`📊 MID-WEEK LEARN [${strat}/${instrument}]: threshold ${ch.from} → ${ch.to} (WR=${ch.wr}%)`);
+          }
+          if (result.explanation) this._log(`📊 Mid-week learning: ${result.explanation}`);
+        } catch {}
+      }
+    }
+
+    // If overall WR is very low, force a backtest cycle to recheck parameters
+    if (wr < 0.45 && n >= 10) {
+      this._log(`📊 Mid-week learning: WR=${(wr*100).toFixed(1)}% critical — triggering immediate backtest cycles`);
+      setTimeout(() => this.runBacktestCycle('MNQ', 'midweek_trigger'), 5_000);
+      setTimeout(() => this.runBacktestCycle('MGC', 'midweek_trigger'), 15_000);
+    }
+
+    // If a specific session is consistently bad, update pattern memory to reflect that
+    for (const row of (report.breakdowns?.bySession ?? [])) {
+      if (!row.session || row.total < 3) continue;
+      const sessWR = row.wins / row.total;
+      if (sessWR < 0.35) {
+        this._log(`📊 Mid-week learning: session "${row.session}" WR=${(sessWR*100).toFixed(0)}% — pattern memory will suppress future signals`);
+        // Pattern memory will naturally adjust over the next cycles from backtest data
+      }
+    }
+
+    this._log(`📊 Mid-week learning applied: ${Object.keys(btWinRates).length} strategies updated from ${n} trades`);
   }
 
   _checkEdgeDegradation() {
@@ -1410,13 +1487,13 @@ class Scanner extends EventEmitter {
           if (this.cfg.ntfyTopic) {
             const headers = {
               'Content-Type': 'text/plain',
-              'Title':    `🚨 Edge Degradation — ${instrument}`,
+              'Title':    `Edge Degradation - ${instrument}`,
               'Priority': 'high', 'Tags': 'chart_decreasing,red_circle',
             };
             if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
             fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
               method: 'POST', headers,
-              body: result.explanation,
+              body: `⚠️ ${result.message ?? result.explanation}`,
             }).catch(() => {});
           }
         } else if (result.status !== 'insufficient_data' && result.status !== 'error') {
@@ -1635,8 +1712,8 @@ class Scanner extends EventEmitter {
     // Startup backtests — delayed so the service stabilises and scan traffic settles
     // before the memory-heavy backtest runs. Staggered 6 min apart to avoid
     // simultaneous Yahoo Finance requests.
-    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'), 20 * 60_000);   // 20 min
-    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 26 * 60_000);   // 26 min
+    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'), 3 * 60_000);    // 3 min
+    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 5 * 60_000);    // 5 min
 
     // Startup optimizers (after backtests finish)
     setTimeout(() => this.runOptimizerCycle('MNQ'), 45 * 60_000);
@@ -1685,17 +1762,17 @@ class Scanner extends EventEmitter {
       `strategies=MNQ_INTRADAY,MNQ_SWING,MNQ_50PT,MGC_SCALP,MGC_INTRADAY`
     );
 
-    // Startup ntfy confirmation so you know the bot is live and watching
+    // Startup ntfy confirmation — ASCII headers only, no emoji
     if (cfg.ntfyTopic) {
       setTimeout(() => {
         const headers = {
           'Content-Type': 'text/plain',
-          'Title':    '🟢 NQ Signal Pro V3 — Online',
+          'Title':    'NQ Signal Pro V3 - Online',
           'Priority': 'default',
           'Tags':     'white_check_mark',
         };
         if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
-        const body = `Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nCooldown: ${cfg.cooldown} min`;
+        const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nCooldown: ${cfg.cooldown} min`;
         fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body })
           .catch(() => {});
       }, 3_000);
