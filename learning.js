@@ -56,7 +56,7 @@ function getLearnedThreshold(db, strategyName, fallback) {
  * @param {object} btMetricsByStrategy - { strategyName: { winRate, tradeCount } }
  * @returns {{ thresholds, changes }}
  */
-function updateLearnedThresholds(db, btMetricsByStrategy) {
+function updateLearnedThresholds(db, btMetricsByStrategy, instrument = null) {
   const current = getLearnedThresholds(db);
   const changes = {};
 
@@ -77,15 +77,38 @@ function updateLearnedThresholds(db, btMetricsByStrategy) {
     else if (wr >= 0.58) delta = -1;
 
     if (delta !== 0) {
-      const newVal = Math.max(bounds.min, Math.min(bounds.max, thresh + delta));
+      const candidate = Math.max(bounds.min, Math.min(bounds.max, thresh + delta));
+
+      // Anti-regression safeguard — never regress after successful periods
+      if (instrument && !isThresholdChangeSafe(db, instrument, strat, candidate)) {
+        changes[strat] = {
+          from:     thresh,
+          to:       thresh,  // unchanged
+          wr:       +(wr * 100).toFixed(1),
+          trades:   metrics.tradeCount,
+          delta:    0,
+          blocked:  true,
+          reason:   delta < 0
+            ? `Lowering blocked by anti-regression safeguard (degradation alert or poor BT WR)`
+            : `Raising blocked — delta ${delta} exceeds single-cycle cap`,
+        };
+        continue;
+      }
+
+      const explanation = delta > 0
+        ? `WR=${(wr*100).toFixed(1)}% on ${metrics.tradeCount} trades is below target — threshold raised from ${thresh} to ${candidate} to reduce false positives`
+        : `WR=${(wr*100).toFixed(1)}% on ${metrics.tradeCount} trades is strong — threshold lowered from ${thresh} to ${candidate} to capture more high-quality setups`;
+
       changes[strat] = {
-        from:   thresh,
-        to:     newVal,
-        wr:     +(wr * 100).toFixed(1),
-        trades: metrics.tradeCount,
+        from:        thresh,
+        to:          candidate,
+        wr:          +(wr * 100).toFixed(1),
+        trades:      metrics.tradeCount,
         delta,
+        blocked:     false,
+        explanation,
       };
-      current[strat] = newVal;
+      current[strat] = candidate;
     }
   }
 
@@ -222,6 +245,129 @@ function getMarketRegime(db) {
   if (recent.length < 8) return 'unknown';
   const wr = recent.filter(r => r.result === 'WIN').length / recent.length;
   return wr >= 0.60 ? 'trending' : wr <= 0.38 ? 'choppy' : 'mixed';
+}
+
+// ── Per-instrument behavior profile (live signal stats) ───────────────────────
+/**
+ * Returns key behavioral metrics for one instrument from live signal outcomes.
+ * Used by the scanner and confidence scorer to apply instrument-specific intelligence.
+ */
+function getInstrumentProfile(db, instrument) {
+  try {
+    const rows = db.prepare(`
+      SELECT s.session, s.direction, s.htf_bias, s.trade_style, o.result
+      FROM   signals s JOIN outcomes o ON o.signal_id = s.id
+      WHERE  s.instrument = ?
+        AND  s.received_at >= datetime('now', '-60 days')
+    `).all(instrument);
+
+    if (rows.length < 10) return null;
+
+    const groupWR = (field) => {
+      const m = {};
+      for (const r of rows) {
+        const k = r[field] ?? 'unknown';
+        if (!m[k]) m[k] = { w: 0, t: 0 };
+        m[k].t++;
+        if (r.result === 'WIN') m[k].w++;
+      }
+      return Object.fromEntries(
+        Object.entries(m)
+          .filter(([, v]) => v.t >= 3)
+          .map(([k, v]) => [k, { wr: +(v.w / v.t).toFixed(3), n: v.t }])
+      );
+    };
+
+    return {
+      instrument,
+      sample: rows.length,
+      bySession:   groupWR('session'),
+      byDirection: groupWR('direction'),
+      byHtfBias:   groupWR('htf_bias'),
+      byStyle:     groupWR('trade_style'),
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Edge degradation detection ────────────────────────────────────────────────
+/**
+ * Detects when a historically successful strategy is degrading.
+ * Compares the last 3 backtest run win rates vs the prior 3.
+ * If recent avg WR dropped > 8% → alert.
+ */
+function detectEdgeDegradation(db, instrument) {
+  try {
+    const rows = db.prepare(`
+      SELECT win_rate, run_at FROM backtest_runs
+      WHERE  instrument = ?
+      ORDER  BY run_at DESC LIMIT 8
+    `).all(instrument);
+
+    if (rows.length < 6) return { instrument, status: 'insufficient_data' };
+
+    const wrs = rows.map(r => r.win_rate).filter(v => v != null);
+    const recent3 = (wrs[0] + wrs[1] + (wrs[2] ?? wrs[1])) / 3;
+    const prior3  = (wrs[3] + wrs[4] + (wrs[5] ?? wrs[4])) / 3;
+    const delta   = recent3 - prior3;
+
+    return {
+      instrument,
+      status:             delta < -0.08 ? 'degrading' : delta > 0.04 ? 'improving' : 'stable',
+      recent_avg_wr_pct:  +(recent3 * 100).toFixed(1),
+      prior_avg_wr_pct:   +(prior3  * 100).toFixed(1),
+      delta_pct:          +(delta   * 100).toFixed(1),
+      alert:              delta < -0.08,
+      explanation: delta < -0.08
+        ? `${instrument} edge is degrading — last 3 backtests avg ${(recent3*100).toFixed(1)}% WR vs prior 3 avg ${(prior3*100).toFixed(1)}% WR. Market regime may have shifted; optimizer will run next cycle.`
+        : delta > 0.04
+        ? `${instrument} edge is improving — recent backtests outperforming prior period by ${(delta*100).toFixed(1)}%.`
+        : `${instrument} edge is stable — win rate variance within normal bounds.`,
+    };
+  } catch {
+    return { instrument, status: 'error' };
+  }
+}
+
+// ── Anti-regression safeguard ─────────────────────────────────────────────────
+/**
+ * Checks whether a proposed threshold change would regress the system.
+ * Returns true if the change is safe to apply.
+ *
+ * Anti-regression rules:
+ *   1. Cannot lower threshold below (current - 6) in a single cycle if recent BT WR < 58%
+ *   2. Cannot raise threshold above (current + 8) in a single cycle regardless of WR
+ *   3. After a degradation alert, thresholds may only increase, not decrease
+ */
+function isThresholdChangeSafe(db, instrument, strategyName, proposedThreshold) {
+  try {
+    const bounds = THRESHOLD_BOUNDS[strategyName];
+    if (!bounds) return true; // unknown strategy — allow
+
+    const current = getLearnedThresholds(db)[strategyName] ?? bounds.default;
+    const delta   = proposedThreshold - current;
+
+    // Rule 2: cap single-cycle increase
+    if (Math.abs(delta) > 8) return false;
+
+    // Rule 1: don't lower during poor BT performance
+    if (delta < -6) {
+      const btRow = db.prepare(`
+        SELECT win_rate FROM backtest_runs
+        WHERE  instrument = ? ORDER BY run_at DESC LIMIT 1
+      `).get(instrument);
+      if (btRow && btRow.win_rate < 0.58) return false;
+    }
+
+    // Rule 3: degradation lock — only allow increases
+    const degradation = detectEdgeDegradation(db, instrument);
+    if (degradation.alert && delta < 0) return false;
+
+    return true;
+  } catch {
+    return true; // never crash — allow on error
+  }
 }
 
 // ── Adaptive min-score (fixed to work on 0-100 confidence scale) ──────────────
@@ -452,9 +598,42 @@ function getPredictedWinRate(db, signal) {
 
   // ── Regime adjustment (live, re-computed every call) ──────────────────────
   let regimeNote = '';
-  if (regime === 'trending')  { predictedWR = Math.min(0.92, predictedWR * 1.06); regimeNote = 'trending+'; }
-  else if (regime === 'choppy') { predictedWR = Math.max(0.20, predictedWR * 0.88); regimeNote = 'choppy-'; }
-  else if (regime === 'volatile') { predictedWR = Math.max(0.22, predictedWR * 0.82); regimeNote = 'volatile--'; }
+  if (regime === 'trending') {
+    predictedWR = Math.min(0.92, predictedWR * 1.06);
+    regimeNote  = 'trending+6%';
+  } else if (regime === 'choppy') {
+    predictedWR = Math.max(0.20, predictedWR * 0.88);
+    regimeNote  = 'choppy-12%';
+  } else if (regime === 'volatile') {
+    predictedWR = Math.max(0.22, predictedWR * 0.82);
+    regimeNote  = 'volatile-18%';
+  }
+
+  // ── Instrument behavior profile adjustment ─────────────────────────────────
+  // Apply per-instrument session & direction bias from live signal history.
+  // Only adjusts if sufficient sample size to avoid noise contamination.
+  let profileNote = '';
+  try {
+    const profile = getInstrumentProfile(db, signal.instrument ?? 'MNQ');
+    if (profile) {
+      const sessWR = profile.bySession[signal.session];
+      const dirWR  = profile.byDirection[signal.direction];
+      if (sessWR && sessWR.n >= 5) {
+        const sessAdj = sessWR.wr - 0.55;
+        predictedWR = Math.max(0.15, Math.min(0.92, predictedWR + sessAdj * 0.3));
+        if (Math.abs(sessAdj) > 0.08) {
+          profileNote = `session=${signal.session} hist-WR=${(sessWR.wr*100).toFixed(0)}% adj${sessAdj > 0 ? '+' : ''}${(sessAdj*30).toFixed(1)}%`;
+        }
+      }
+      if (dirWR && dirWR.n >= 8) {
+        const dirAdj = dirWR.wr - 0.55;
+        predictedWR = Math.max(0.15, Math.min(0.92, predictedWR + dirAdj * 0.15));
+        if (Math.abs(dirAdj) > 0.08 && !profileNote) {
+          profileNote = `${signal.direction} hist-WR=${(dirWR.wr*100).toFixed(0)}%`;
+        }
+      }
+    }
+  } catch { /* never crash */ }
 
   // ── Real-time ATR-based volatility spike detection ────────────────────────
   // If current ATR is significantly above recent average → news/event spike
@@ -508,7 +687,8 @@ function getPredictedWinRate(db, signal) {
 
   // Build dynamic note explaining what influenced this estimate
   const dynamicParts = [];
-  if (regimeNote)     dynamicParts.push(`regime=${regime}`);
+  if (regimeNote)     dynamicParts.push(regimeNote);
+  if (profileNote)    dynamicParts.push(profileNote);
   if (volatilityNote) dynamicParts.push(volatilityNote);
   if (newsNote)       dynamicParts.push(newsNote);
   const dynamic_note = dynamicParts.length ? dynamicParts.join(' | ') : null;
@@ -821,4 +1001,8 @@ module.exports = {
   loadAdaptiveOverrides,
   saveAdaptiveOverrides,
   computeAdaptiveOverrides,
+  // New exports
+  getInstrumentProfile,
+  detectEdgeDegradation,
+  isThresholdChangeSafe,
 };

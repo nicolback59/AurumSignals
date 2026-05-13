@@ -3,9 +3,13 @@ const express  = require('express');
 const Database = require('better-sqlite3');
 const path     = require('path');
 const fs       = require('fs');
-const { getLearningStats } = require('./learning');
+const { getLearningStats, detectEdgeDegradation } = require('./learning');
 const { getParams }        = require('./strategy-params');
 const { Scanner }          = require('./scanner-core');
+const {
+  analyzeDivergence, generateMidWeekReport, generateWeeklyDeepReport,
+  getPerformanceIntelligence, getInstrumentBehaviorProfile, loadReport,
+} = require('./performance-reporter');
 
 // ── Global crash guards ───────────────────────────────────────────────────────
 // Prevent unhandled promise rejections or thrown errors from killing the server.
@@ -932,6 +936,71 @@ function _broadcastSSE(event, data) {
     try { client.write(payload); } catch { _sseClients.delete(client); }
   }
 }
+
+// ── PERFORMANCE INTELLIGENCE APIs ─────────────────────────────────────────────────────────
+
+// Live vs backtest divergence analysis
+app.get('/api/performance/divergence', (req, res) => {
+  try {
+    res.json(analyzeDivergence(db));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Mid-week intelligence report (auto-generated or forced via ?force=1)
+app.get('/api/performance/midweek-report', (req, res) => {
+  try {
+    const force = req.query.force === '1' || req.query.force === 'true';
+    if (!force) {
+      const weekStart = (() => {
+        const d = new Date(); const diff = d.getUTCDay() === 0 ? -6 : 1 - d.getUTCDay();
+        d.setUTCDate(d.getUTCDate() + diff); return d.toISOString().slice(0, 10);
+      })();
+      const cached = loadReport(db, 'MIDWEEK', weekStart);
+      if (cached) return res.json(cached);
+    }
+    res.json(generateMidWeekReport(db));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Weekly deep strategy intelligence report
+app.get('/api/performance/weekly-deep', (req, res) => {
+  try {
+    const weekStart = req.query.week || null;
+    const force     = req.query.force === '1' || req.query.force === 'true';
+    if (!force && weekStart) {
+      const cached = loadReport(db, 'WEEKLY', weekStart);
+      if (cached) return res.json(cached);
+    }
+    res.json(generateWeeklyDeepReport(db, weekStart));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Cumulative performance intelligence for one instrument
+app.get('/api/performance/intelligence/:instrument', (req, res) => {
+  try {
+    const instrument = (req.params.instrument || 'MNQ').toUpperCase();
+    res.json(getPerformanceIntelligence(db, instrument));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Instrument behavior profile (session/direction/hour biases)
+app.get('/api/performance/behavior/:instrument', (req, res) => {
+  try {
+    const instrument = (req.params.instrument || 'MNQ').toUpperCase();
+    res.json(getInstrumentBehaviorProfile(db, instrument));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Edge degradation status for both instruments
+app.get('/api/performance/edge-health', (req, res) => {
+  try {
+    res.json({
+      MNQ: detectEdgeDegradation(db, 'MNQ'),
+      MGC: detectEdgeDegradation(db, 'MGC'),
+      generated_at: new Date().toISOString(),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
 
 // ── STATIC ────────────────────────────────────────────────────────────────────────────────
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'home.html')));

@@ -27,8 +27,23 @@ const {
 
 // ── Market regime detection ───────────────────────────────────────────────────
 
+/**
+ * Multi-factor regime classifier.
+ *
+ * Factors:
+ *   1. ATR expansion ratio (recent vs previous window) — volatility state
+ *   2. Directional efficiency (net displacement / gross path) — trend strength
+ *   3. Higher-high / lower-low count — structural confirmation
+ *
+ * Regimes:
+ *   volatile  — ATR expansion ≥ 1.5×  (news, event, spike)
+ *   trending  — strong directional efficiency + structural HH/LL sequence
+ *   ranging   — low volatility, low directional efficiency
+ *   choppy    — moderate volatility, no clear direction
+ */
 function detectRegime(bars, i, period = 14) {
   if (i < period * 2) return 'unknown';
+
   const slice = bars.slice(Math.max(0, i - period * 2), i + 1);
   const tr = slice.map((b, j) =>
     j === 0 ? b.high - b.low :
@@ -44,13 +59,25 @@ function detectRegime(bars, i, period = 14) {
   const prevATR   = prev.reduce((a, b) => a + b, 0)   / period;
   const atrRatio  = prevATR > 0 ? recentATR / prevATR : 1;
 
-  const closes20  = bars.slice(Math.max(0, i - 19), i + 1).map(b => b.close);
-  const sma20     = closes20.reduce((a, b) => a + b, 0) / closes20.length;
-  const trendDisp = Math.abs(bars[i].close - sma20) / (recentATR * 3 + 0.001);
+  // Directional efficiency: |net move| / sum(|bar moves|)
+  const recentBars = bars.slice(Math.max(0, i - period + 1), i + 1);
+  const netMove    = Math.abs(recentBars[recentBars.length - 1].close - recentBars[0].close);
+  const grossMove  = recentBars.reduce((s, b, j) =>
+    j === 0 ? s : s + Math.abs(b.close - recentBars[j - 1].close), 0);
+  const dirEfficiency = grossMove > 0 ? netMove / grossMove : 0;
 
-  if (atrRatio > 1.5)                       return 'volatile';
-  if (atrRatio < 0.75 && trendDisp < 0.5)  return 'ranging';
-  return 'trending';
+  // Higher-highs / lower-lows count over recent window
+  let hhCount = 0, llCount = 0;
+  for (let k = 1; k < recentBars.length; k++) {
+    if (recentBars[k].high  > recentBars[k - 1].high)  hhCount++;
+    if (recentBars[k].low   < recentBars[k - 1].low)   llCount++;
+  }
+  const structuralTrend = (hhCount > period * 0.6) || (llCount > period * 0.6);
+
+  if (atrRatio > 1.5) return 'volatile';
+  if (dirEfficiency > 0.45 && structuralTrend) return 'trending';
+  if (atrRatio < 0.75 && dirEfficiency < 0.30) return 'ranging';
+  return 'choppy';
 }
 
 // ── Outcome resolution ────────────────────────────────────────────────────────
@@ -229,7 +256,9 @@ function _runBacktest(bars1m, instrument, opts = {}) {
   const warmup5m   = opts.warmup5m   ?? 80;
   const maxResolve = opts.maxResolve ?? 60;  // 5m bars to look forward (60 × 5m = 5h)
   const slippage   = opts.slippage   ?? 0;
-  const cooldown5m = opts.cooldown5m ?? 1;   // minimum 5m bars between signals
+  // Default cooldown matches live scanner default of 10 min (2 × 5m bars).
+  // Previously 1, which inflated backtest signal count vs live by up to 2×.
+  const cooldown5m = opts.cooldown5m ?? 2;
 
   // ── Pre-aggregate all timeframes once ───────────────────────────────────────
   const bars5m  = aggregate1mTo5m(bars1m);
@@ -301,8 +330,24 @@ function _runBacktest(bars1m, instrument, opts = {}) {
       const pnlPts  = outcome === 'WIN' ? +reward.toFixed(2) : outcome === 'LOSS' ? +(-risk).toFixed(2) : 0;
       const pnlR    = outcome === 'WIN' ? sig.rr ?? 1.5 : outcome === 'LOSS' ? -1 : 0;
 
-      // Estimate duration (bars to resolution — simplified)
-      const durationBars = maxResolve / 2; // placeholder; real duration tracked live
+      // Actual bars to resolution (scanned in resolveOutcome above)
+      const durationBars = (() => {
+        const startIdx = strat === 'MNQ_SWING' ? j1h : i;
+        const fwdBars  = strat === 'MNQ_SWING' ? bars1h : bars5m;
+        const cap      = strat === 'MNQ_SWING' ? 24 : maxResolve;
+        const tp1adj = sig.direction === 'LONG' ? sig.tp1 + slippage : sig.tp1 - slippage;
+        const slAdj  = sig.direction === 'LONG' ? sig.sl  - slippage : sig.sl  + slippage;
+        for (let d = 1; d <= cap; d++) {
+          const b = fwdBars[startIdx + d];
+          if (!b) break;
+          if (sig.direction === 'LONG') {
+            if (b.open >= tp1adj || b.high >= tp1adj || b.open <= slAdj || b.low <= slAdj) return d;
+          } else {
+            if (b.open <= tp1adj || b.low  <= tp1adj || b.open >= slAdj || b.high >= slAdj) return d;
+          }
+        }
+        return cap;
+      })();
 
       const regime  = detectRegime(bars5m, i);
 
@@ -410,7 +455,17 @@ function runBacktest(bars1m, params = {}, opts = {}) {
   });
 
   result.slippageUsed = slippage;
-  result.cooldownUsed = opts.cooldown5m ?? 1;
+  result.cooldownUsed = opts.cooldown5m ?? 2;
+  // Audit fields: surfaced in reports to explain live/backtest divergence
+  result.divergenceAudit = {
+    cooldown5mUsed: result.cooldownUsed,
+    slippageUsed:   slippage,
+    warmup5mUsed:   opts.warmup5m ?? 80,
+    maxResolve:     opts.maxResolve ?? 60,
+    note: result.cooldownUsed < 2
+      ? 'WARNING: cooldown < 2 bars — backtest may produce more signals than live (live default = 2 bars / 10 min)'
+      : 'Cooldown matches live default (2 bars = 10 min)',
+  };
 
   if (opts.walkForward) {
     result.walkForward = runWalkForward(bars1m, instrument, {
