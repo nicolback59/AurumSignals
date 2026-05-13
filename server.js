@@ -10,6 +10,8 @@ const {
   analyzeDivergence, generateMidWeekReport, generateWeeklyDeepReport,
   getPerformanceIntelligence, getInstrumentBehaviorProfile, loadReport,
 } = require('./performance-reporter');
+const { getDNAInsights, getDNAGuidance, loadDNA } = require('./strategy-dna');
+const { getEvolutionHistory, getVariantPoolStatus } = require('./strategy-evolution');
 
 // ── Global crash guards ───────────────────────────────────────────────────────
 // Prevent unhandled promise rejections or thrown errors from killing the server.
@@ -997,6 +999,82 @@ app.get('/api/performance/edge-health', (req, res) => {
     res.json({
       MNQ: detectEdgeDegradation(db, 'MNQ'),
       MGC: detectEdgeDegradation(db, 'MGC'),
+      generated_at: new Date().toISOString(),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── DNA ENDPOINTS ─────────────────────────────────────────────────────────────────────────
+
+// Plain-language DNA insights for an instrument
+app.get('/api/dna/insights/:instrument', (req, res) => {
+  try {
+    const instrument = req.params.instrument.toUpperCase();
+    res.json(getDNAInsights(db, instrument));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// DNA optimizer guidance (best sessions, regime hints, threshold hints)
+app.get('/api/dna/guidance/:instrument', (req, res) => {
+  try {
+    const instrument = req.params.instrument.toUpperCase();
+    const dna = loadDNA(db, instrument);
+    if (!dna) return res.json({ instrument, guidance: null, message: 'No DNA data yet — run a backtest cycle first' });
+    res.json({ instrument, guidance: getDNAGuidance(dna, instrument), dnaVersion: dna.version });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Raw DNA data snapshot for an instrument
+app.get('/api/dna/snapshot/:instrument', (req, res) => {
+  try {
+    const instrument = req.params.instrument.toUpperCase();
+    const dna = loadDNA(db, instrument);
+    if (!dna) return res.json({ instrument, dna: null, message: 'No DNA data yet' });
+    res.json({
+      instrument,
+      version:      dna.version,
+      totalTrades:  dna.totalTrades,
+      topCombos:    dna.topCombos?.slice(0, 10) ?? [],
+      weakCombos:   dna.weakCombos?.slice(0, 5) ?? [],
+      strongWindows: dna.strongWindows?.slice(0, 5) ?? [],
+      weakWindows:  dna.weakWindows?.slice(0, 5) ?? [],
+      lastUpdated:  dna.lastUpdated,
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── EVOLUTION ENDPOINTS ───────────────────────────────────────────────────────────────────
+
+// Evolution history for an instrument
+app.get('/api/evolution/history/:instrument', (req, res) => {
+  try {
+    const instrument = req.params.instrument.toUpperCase();
+    const limit      = parseInt(req.query.limit) || 50;
+    const type       = req.query.type || null;
+    res.json(getEvolutionHistory(db, instrument, limit, type));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Current variant pool status
+app.get('/api/evolution/variants/:instrument', (req, res) => {
+  try {
+    const instrument = req.params.instrument.toUpperCase();
+    res.json(getVariantPoolStatus(db, instrument));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Combined evolution + DNA status for both instruments
+app.get('/api/evolution/status', (req, res) => {
+  try {
+    res.json({
+      MNQ: {
+        variants: getVariantPoolStatus(db, 'MNQ'),
+        dna:      getDNAInsights(db, 'MNQ'),
+      },
+      MGC: {
+        variants: getVariantPoolStatus(db, 'MGC'),
+        dna:      getDNAInsights(db, 'MGC'),
+      },
       generated_at: new Date().toISOString(),
     });
   } catch (err) { res.status(500).json({ error: err.message }); }

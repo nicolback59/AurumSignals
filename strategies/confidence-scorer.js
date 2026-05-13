@@ -15,9 +15,9 @@ const THRESHOLDS = {
 };
 
 /**
- * Score a potential signal from 0–100.
+ * Score a potential signal from 0–108 (capped at 100).
  *
- * Factor breakdown (max 100 pts):
+ * Factor breakdown (max 108 pts, capped 100):
  *   1. HTF alignment        0–20
  *   2. VWAP alignment       0–15
  *   3. EMA stack quality    0–15
@@ -27,6 +27,7 @@ const THRESHOLDS = {
  *   7. Risk/reward ratio    0–10
  *   8. Distance to S/R      0–5
  *   9. Session quality      0–5
+ *  10. Strategy DNA match   0–8
  *
  * @param {object} p
  * @param {string}   p.direction        'LONG' | 'SHORT'
@@ -41,6 +42,7 @@ const THRESHOLDS = {
  * @param {number}   p.rr               risk/reward ratio to primary target
  * @param {number}   p.srDistanceAtr    distance to nearest S/R in ATR units
  * @param {string}   p.timestamp        current bar timestamp
+ * @param {number}   [p.dnaScore]       0–100 DNA pattern match score (50 = neutral)
  * @returns {number} confidence score 0–100
  */
 function scoreSignal(p) {
@@ -128,6 +130,14 @@ function scoreSignal(p) {
   if (p.timestamp) {
     const sess = getSessionInfo(p.timestamp);
     score += Math.round(sess.quality * 5);
+  }
+
+  // ── 10. Strategy DNA match (0–8) ────────────────────────────────────────────
+  // DNA score 50 = neutral (0 pts). Each 6.25 pts above 50 → +1 pt (max +8 at score 100).
+  // DNA score below 50 contributes 0 (negative bias is handled via gate adjustment elsewhere).
+  if (p.dnaScore != null) {
+    const dnaBoost = Math.round(Math.max(0, Math.min(8, (p.dnaScore - 50) / 6.25)));
+    score += dnaBoost;
   }
 
   return Math.min(100, Math.max(0, Math.round(score)));
