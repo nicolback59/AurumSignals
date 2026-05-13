@@ -12,6 +12,7 @@ const {
 } = require('./performance-reporter');
 const { getDNAInsights, getDNAGuidance, loadDNA } = require('./strategy-dna');
 const { getEvolutionHistory, getVariantPoolStatus } = require('./strategy-evolution');
+const { getOpeningCandleReport, getSessionOpenBias } = require('./opening-candle');
 
 // ── Global crash guards ───────────────────────────────────────────────────────
 // Prevent unhandled promise rejections or thrown errors from killing the server.
@@ -999,6 +1000,37 @@ app.get('/api/performance/edge-health', (req, res) => {
     res.json({
       MNQ: detectEdgeDegradation(db, 'MNQ'),
       MGC: detectEdgeDegradation(db, 'MGC'),
+      generated_at: new Date().toISOString(),
+    });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── OPENING CANDLE ENDPOINTS ──────────────────────────────────────────────────────────────
+
+// Full opening candle statistics (session accuracy, today's candles) per instrument
+app.get('/api/opening-candle/report/:instrument', (req, res) => {
+  try {
+    const instrument = req.params.instrument.toUpperCase();
+    res.json(getOpeningCandleReport(db, instrument));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Current session bias for an instrument (live signal filter context)
+app.get('/api/opening-candle/bias/:instrument', (req, res) => {
+  try {
+    const instrument = req.params.instrument.toUpperCase();
+    const ts         = req.query.ts ?? new Date().toISOString();
+    const bias       = getSessionOpenBias(db, instrument, ts);
+    res.json({ instrument, bias, generated_at: new Date().toISOString() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Combined opening candle overview for all instruments
+app.get('/api/opening-candle/status', (req, res) => {
+  try {
+    res.json({
+      MNQ: getOpeningCandleReport(db, 'MNQ'),
+      MGC: getOpeningCandleReport(db, 'MGC'),
       generated_at: new Date().toISOString(),
     });
   } catch (err) { res.status(500).json({ error: err.message }); }

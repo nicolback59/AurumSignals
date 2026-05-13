@@ -49,6 +49,11 @@ const {
   getDNAScore, getDNAGateAdjustment,
 } = require('./strategy-dna');
 const { runEvolutionCycle }        = require('./strategy-evolution');
+const {
+  recordOpeningCandle, getSessionOpenBias, getOpeningCandleAdjustment,
+  updateSessionBiasAccuracy, updateSessionBiasFromBacktest,
+  getOpeningCandleReport,
+} = require('./opening-candle');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function ts() { return new Date().toISOString(); }
@@ -635,6 +640,29 @@ class Scanner extends EventEmitter {
         if (recentLiveTrades.length > 0) updatePatternMemory(this.db, recentLiveTrades);
       } catch { /* never crash on pattern memory */ }
 
+      // Update opening candle bias accuracy from newly resolved outcomes
+      try {
+        const recentWithNotes = this.db.prepare(`
+          SELECT s.direction, s.session, s.notes, o.result AS outcome
+          FROM   signals s
+          JOIN   outcomes o ON o.signal_id = s.id
+          WHERE  s.instrument = ?
+            AND  o.exit_at >= datetime('now', '-1 hour')
+        `).all(instrument);
+        for (const t of recentWithNotes) {
+          if (!t.notes || !t.outcome || !t.direction) continue;
+          let sessionKey = null, bias = null;
+          try {
+            const meta = JSON.parse(t.notes);
+            sessionKey = meta._ocSessionKey ?? null;
+            bias       = meta._ocBias ?? null;
+          } catch {}
+          if (sessionKey && bias) {
+            updateSessionBiasAccuracy(this.db, instrument, sessionKey, bias, t.direction, t.outcome);
+          }
+        }
+      } catch { /* never crash */ }
+
       // Recompute adaptive overrides after new outcomes arrive
       try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
     }
@@ -654,6 +682,22 @@ class Scanner extends EventEmitter {
       }
       return;
     }
+
+    // ── Record opening candle for power-hour / session bias tracking ────────────
+    // Check the current (most-recent confirmed) bar. If it is the first bar of a
+    // named session or hourly block, persist it for bias calculations.
+    let currentSessionBias = null;
+    try {
+      const latestBar = bars5m[bars5m.length - 1];
+      if (latestBar) {
+        const ocEntry = recordOpeningCandle(this.db, instrument, latestBar);
+        if (ocEntry) {
+          this._log(`🕯️  ${instrument} opening candle recorded: ${ocEntry.sessionKey} ${ocEntry.bias} str=${ocEntry.strength.toFixed(2)}`);
+        }
+      }
+      // Always fetch current session bias (may be from a bar recorded earlier this session)
+      currentSessionBias = getSessionOpenBias(this.db, instrument, latestBar?.timestamp ?? new Date().toISOString());
+    } catch { /* never crash */ }
 
     const barSets = instrument === 'MGC'
       ? { bars5mMgc: bars5m, bars15mMgc: bars15m, bars30mMgc: bars30m, bars45mMgc: bars45m, bars1hMgc: bars1h }
@@ -785,10 +829,30 @@ class Scanner extends EventEmitter {
         }
       } catch { /* never crash */ }
 
+      // ── Opening candle / power-hour bias adjustment ────────────────────────────
+      // Boosts or penalises confidence when the session open candle gives a
+      // statistically validated directional bias (≥54% accuracy over ≥15 samples).
+      let ocAdj = 0;
+      try {
+        if (currentSessionBias) {
+          const ocResult = getOpeningCandleAdjustment(currentSessionBias, sig.direction);
+          ocAdj = ocResult.adjustment;
+          sig.openingCandleAdj = ocAdj; // passed into scoreSignal via _storeSignal
+          if (Math.abs(ocAdj) >= 2) {
+            this._log(
+              `🕯️  Opening bias [${currentSessionBias.sessionKey}]: ${currentSessionBias.bias} str=${currentSessionBias.strength.toFixed(2)} → ${sig.direction} adj ${ocAdj > 0 ? '+' : ''}${ocAdj}`
+            );
+          }
+          // Carry session key + bias for outcome accuracy update later
+          sig._ocSessionKey = currentSessionBias.sessionKey;
+          sig._ocBias       = currentSessionBias.bias;
+        }
+      } catch { /* never crash */ }
+
       // Learned confidence gate — threshold evolves based on backtest win rates.
-      // Pattern memory and DNA gate adjustment further tune the gate per context.
+      // Pattern memory, DNA gate, and opening candle bias all tune the effective gate.
       const learnedMin = getLearnedThreshold(this.db, sig.strategy_name, sig.confidence * 0.9);
-      const effectiveMin = Math.round(learnedMin + patternAdj + dnaGateAdj + minConfBonus);
+      const effectiveMin = Math.round(learnedMin + patternAdj + dnaGateAdj + ocAdj + minConfBonus);
       if (sig.confidence < effectiveMin) {
         const reason = `confidence ${sig.confidence} < learned threshold ${effectiveMin}` +
           (patternAdj !== 0 ? ` (pattern adj ${patternAdj > 0 ? '+' : ''}${patternAdj})` : '') +
@@ -1173,6 +1237,16 @@ class Scanner extends EventEmitter {
         }
       } catch (e) {
         this._log(`DNA UPDATE ERR: ${e.message}`);
+      }
+
+      // ── Opening candle: update session bias accuracy from backtest trades ─────
+      try {
+        if (allTrades.length > 0) {
+          updateSessionBiasFromBacktest(this.db, instrument, allTrades);
+          this._log(`🕯️  Opening candle bias stats updated from backtest (${instrument})`);
+        }
+      } catch (e) {
+        this._log(`OPENING CANDLE UPDATE ERR: ${e.message}`);
       }
 
       // ── Adaptive overrides: recompute after each backtest ─────────────────────

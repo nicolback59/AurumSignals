@@ -15,19 +15,20 @@ const THRESHOLDS = {
 };
 
 /**
- * Score a potential signal from 0–108 (capped at 100).
+ * Score a potential signal from 0–114 (capped at 100).
  *
- * Factor breakdown (max 108 pts, capped 100):
- *   1. HTF alignment        0–20
- *   2. VWAP alignment       0–15
- *   3. EMA stack quality    0–15
- *   4. ATR strength         0–10
- *   5. Momentum (RSI+MACD)  0–10
- *   6. Market structure     0–10
- *   7. Risk/reward ratio    0–10
- *   8. Distance to S/R      0–5
- *   9. Session quality      0–5
- *  10. Strategy DNA match   0–8
+ * Factor breakdown (max 114 pts, capped 100):
+ *   1. HTF alignment          0–20
+ *   2. VWAP alignment         0–15
+ *   3. EMA stack quality      0–15
+ *   4. ATR strength           0–10
+ *   5. Momentum (RSI+MACD)    0–10
+ *   6. Market structure       0–10
+ *   7. Risk/reward ratio      0–10
+ *   8. Distance to S/R        0–5
+ *   9. Session quality        0–5
+ *  10. Strategy DNA match     0–8
+ *  11. Opening candle bias    -4–+5  (net adjustment, not strictly bounded)
  *
  * @param {object} p
  * @param {string}   p.direction        'LONG' | 'SHORT'
@@ -43,6 +44,7 @@ const THRESHOLDS = {
  * @param {number}   p.srDistanceAtr    distance to nearest S/R in ATR units
  * @param {string}   p.timestamp        current bar timestamp
  * @param {number}   [p.dnaScore]       0–100 DNA pattern match score (50 = neutral)
+ * @param {number}   [p.openingCandleAdj] pre-computed opening candle adjustment (-4 to +5)
  * @returns {number} confidence score 0–100
  */
 function scoreSignal(p) {
@@ -138,6 +140,15 @@ function scoreSignal(p) {
   if (p.dnaScore != null) {
     const dnaBoost = Math.round(Math.max(0, Math.min(8, (p.dnaScore - 50) / 6.25)));
     score += dnaBoost;
+  }
+
+  // ── 11. Opening candle / power-hour bias (-4 to +5) ─────────────────────────
+  // Pre-computed by scanner/backtest using opening-candle.js getOpeningCandleAdjustment().
+  // Positive = signal aligns with session open direction (continuation bias).
+  // Negative = signal opposes session open direction (counter-trend / fakeout risk).
+  // Only applied when statistical accuracy ≥ 54% over ≥ 15 session opens.
+  if (p.openingCandleAdj != null && p.openingCandleAdj !== 0) {
+    score += p.openingCandleAdj;
   }
 
   return Math.min(100, Math.max(0, Math.round(score)));

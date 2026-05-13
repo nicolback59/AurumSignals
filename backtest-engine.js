@@ -24,6 +24,9 @@ const {
   aggregate1mTo5m, aggregate5mTo15m, aggregate5mTo30m, aggregate5mTo45m,
   aggregate5mTo1h, aggregate1hTo4h, aggregate1hToDaily,
 } = require('./strategies/shared-indicators');
+const {
+  extractOpeningCandlesFromBars, getBacktestSessionBias, getOpeningCandleAdjustment,
+} = require('./opening-candle');
 
 // ── Market regime detection ───────────────────────────────────────────────────
 
@@ -272,6 +275,10 @@ function _runBacktest(bars1m, instrument, opts = {}) {
   const n5m = bars5m.length;
   const signalLog = [];
 
+  // Pre-build the opening candle map for the full bar dataset (one pass, O(n))
+  // This lets each bar instantly look up the applicable session open bias.
+  const openingCandleMap = extractOpeningCandlesFromBars(bars5m);
+
   // Track last signal bar index per strategy to enforce per-strategy cooldowns
   const lastSigByStrategy = {};
 
@@ -361,6 +368,15 @@ function _runBacktest(bars1m, instrument, opts = {}) {
         hourEt = parseInt(etParts.find(p => p.type === 'hour').value);
       } catch {}
 
+      // Opening candle / power-hour bias for this bar
+      const ocBias = getBacktestSessionBias(bars5m, i, openingCandleMap);
+      const ocAdj  = ocBias
+        ? getOpeningCandleAdjustment(
+            { ...ocBias, applicable: true }, // in backtest, always apply (for data collection)
+            sig.direction
+          ).adjustment
+        : 0;
+
       signalLog.push({
         bar:       i,
         timestamp: tsBar,
@@ -378,7 +394,10 @@ function _runBacktest(bars1m, instrument, opts = {}) {
         session:     sig.session,
         trade_style: sig.trade_style,
         htf_bias:    sig.htf_bias,
-        hour_et:     hourEt,
+        hour_et:           hourEt,
+        opening_candle_bias: ocBias?.bias ?? null,
+        opening_candle_adj:  ocAdj,
+        opening_session_key: ocBias?.sessionKey ?? null,
         durationBars,
         // Legacy compat
         setup:      sig.setup,
