@@ -71,9 +71,8 @@ function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = 
 
   // ── Session filter: London open + NY sessions for gold scalping ───────────────
   const sess = getSessionInfo(last.timestamp);
-  if (!sess.isLondon && !sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay) return null;
-  // Skip extremely low-quality sessions
-  if (sess.quality < 0.55) return null;
+  if (!sess.isLondon && !sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay && !sess.isAftNoon) return null;
+  if (sess.quality < 0.45) return null;
 
   // ── Indicators ───────────────────────────────────────────────────────────────
   const closes = bars.map(b => b.close);
@@ -143,9 +142,13 @@ function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = 
     }
 
     const { histogram } = calcMacd(closes);
-    const hist = histogram[n];
-    const macdOk = isBull ? (hist != null && hist > 0) : (hist != null && hist < 0);
-    if (!macdOk) continue;
+    const hist     = histogram[n];
+    const histPrev = histogram[n - 1];
+    // Soft filter: only block if strongly counter-trend (accelerating against us)
+    if (hist != null && histPrev != null) {
+      const stronglyAgainst = isBull ? (hist < 0 && hist < histPrev) : (hist > 0 && hist > histPrev);
+      if (stronglyAgainst) continue;
+    }
 
     // ── Stop-loss (tight, structure-based + 0.3 ATR) ─────────────────────────
     const swLow  = recentSwingLow(bars, 8);
