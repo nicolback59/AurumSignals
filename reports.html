@@ -1,0 +1,640 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>NQ Signal Pro — Intelligence Reports</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    body { display: flex; flex-direction: column; min-height: 100dvh; background: var(--bg, #0a0a0f); }
+
+    .reports-layout {
+      flex: 1;
+      max-width: 1100px;
+      width: 100%;
+      margin: 0 auto;
+      padding: 24px 20px 48px;
+    }
+
+    /* ── Tab bar ── */
+    .tab-bar {
+      display: flex;
+      gap: 4px;
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      margin-bottom: 24px;
+      flex-wrap: wrap;
+    }
+    .tab-btn {
+      background: none;
+      border: none;
+      color: rgba(255,255,255,.45);
+      font: 600 13px/1 var(--font-mono, monospace);
+      letter-spacing: .04em;
+      padding: 10px 18px;
+      cursor: pointer;
+      border-bottom: 2px solid transparent;
+      margin-bottom: -1px;
+      transition: color .15s, border-color .15s;
+    }
+    .tab-btn:hover  { color: rgba(255,255,255,.75); }
+    .tab-btn.active { color: #fff; border-bottom-color: var(--accent, #6c63ff); }
+
+    .tab-panel { display: none; }
+    .tab-panel.active { display: block; }
+
+    /* ── Report block ── */
+    .report-card {
+      background: rgba(255,255,255,.03);
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 10px;
+      padding: 20px 24px;
+      margin-bottom: 20px;
+    }
+    .report-card h3 {
+      margin: 0 0 14px;
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--accent, #6c63ff);
+    }
+    .report-pre {
+      font: 12px/1.65 var(--font-mono, monospace);
+      color: rgba(255,255,255,.78);
+      white-space: pre-wrap;
+      word-break: break-word;
+      margin: 0;
+    }
+    .report-pre .hi-green  { color: #4ade80; }
+    .report-pre .hi-red    { color: #f87171; }
+    .report-pre .hi-yellow { color: #fbbf24; }
+    .report-pre .hi-blue   { color: #60a5fa; }
+    .report-pre .hi-purple { color: #a78bfa; }
+
+    /* ── Section grids ── */
+    .metrics-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 20px;
+    }
+    .metric-box {
+      background: rgba(255,255,255,.04);
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 8px;
+      padding: 12px 14px;
+    }
+    .metric-box .lbl {
+      font: 600 10px/1 var(--font-mono, monospace);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,.4);
+      margin-bottom: 6px;
+    }
+    .metric-box .val {
+      font: 700 20px/1 var(--font-sans, sans-serif);
+      color: #fff;
+    }
+    .metric-box .val.green  { color: #4ade80; }
+    .metric-box .val.red    { color: #f87171; }
+    .metric-box .val.yellow { color: #fbbf24; }
+
+    /* ── Session table ── */
+    .data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font: 12px/1.5 var(--font-mono, monospace);
+      color: rgba(255,255,255,.78);
+    }
+    .data-table th {
+      text-align: left;
+      font-size: 10px;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: rgba(255,255,255,.4);
+      border-bottom: 1px solid rgba(255,255,255,.08);
+      padding: 6px 10px;
+    }
+    .data-table td {
+      padding: 7px 10px;
+      border-bottom: 1px solid rgba(255,255,255,.04);
+    }
+    .data-table tr:last-child td { border-bottom: none; }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .05em;
+    }
+    .badge-green  { background: rgba(74,222,128,.15); color: #4ade80; }
+    .badge-red    { background: rgba(248,113,113,.15); color: #f87171; }
+    .badge-yellow { background: rgba(251,191,36,.15);  color: #fbbf24; }
+    .badge-gray   { background: rgba(255,255,255,.08); color: rgba(255,255,255,.5); }
+    .badge-purple { background: rgba(167,139,250,.15); color: #a78bfa; }
+
+    /* ── Controls ── */
+    .controls-row {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .week-picker {
+      background: rgba(255,255,255,.05);
+      border: 1px solid rgba(255,255,255,.12);
+      border-radius: 6px;
+      color: #fff;
+      font: 13px var(--font-mono, monospace);
+      padding: 7px 12px;
+    }
+    .btn-sm {
+      background: rgba(108,99,255,.18);
+      border: 1px solid rgba(108,99,255,.4);
+      border-radius: 6px;
+      color: #a78bfa;
+      font: 600 12px var(--font-mono, monospace);
+      padding: 7px 14px;
+      cursor: pointer;
+      transition: background .15s;
+    }
+    .btn-sm:hover { background: rgba(108,99,255,.32); }
+
+    .loading-msg { color: rgba(255,255,255,.35); font: 13px var(--font-mono, monospace); padding: 24px 0; }
+    .error-msg   { color: #f87171; font: 13px var(--font-mono, monospace); padding: 24px 0; }
+
+    .divider { border: none; border-top: 1px solid rgba(255,255,255,.07); margin: 20px 0; }
+
+    /* ── Opening candle viz ── */
+    .oc-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+    .oc-box {
+      background: rgba(255,255,255,.03);
+      border: 1px solid rgba(255,255,255,.07);
+      border-radius: 8px;
+      padding: 14px;
+    }
+    .oc-box .oc-session { font: 700 11px var(--font-mono, monospace); letter-spacing: .06em; text-transform: uppercase; color: rgba(255,255,255,.5); margin-bottom: 8px; }
+    .oc-box .oc-bias    { font: 700 15px var(--font-sans, sans-serif); margin-bottom: 6px; }
+    .oc-box .oc-stats   { font: 12px var(--font-mono, monospace); color: rgba(255,255,255,.5); }
+    .bull  { color: #4ade80; }
+    .bear  { color: #f87171; }
+    .neut  { color: rgba(255,255,255,.4); }
+  </style>
+</head>
+<body>
+
+<!-- ── TOP NAV ──────────────────────────────────────── -->
+<header class="top-nav">
+  <div class="top-nav-left">
+    <a href="/" class="logo">NQ <span class="logo-accent">SIGNAL PRO</span> V3</a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
+      <a href="/backtest" class="nav-link">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/reports"  class="nav-link active">Reports</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
+    </nav>
+  </div>
+  <div class="top-nav-right">
+    <span class="refresh-label" id="refreshLbl">—</span>
+  </div>
+</header>
+
+<!-- ── TICKER TAPE ───────────────────────────────────── -->
+<div class="ticker-wrap">
+  <div class="tradingview-widget-container" style="height:46px">
+    <div class="tradingview-widget-container__widget"></div>
+    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
+    {
+      "symbols":[
+        {"proName":"CME_MINI:NQ1!","title":"NQ Futures"},
+        {"proName":"COMEX:GC1!","title":"Gold GC"},
+        {"proName":"CME_MINI:MNQ1!","title":"MNQ"},
+        {"proName":"COMEX:MGC1!","title":"Micro Gold"}
+      ],
+      "showSymbolLogo":true,"isTransparent":true,"displayMode":"adaptive",
+      "colorTheme":"dark","locale":"en"
+    }
+    </script>
+  </div>
+</div>
+
+<!-- ── MAIN ──────────────────────────────────────────── -->
+<div class="reports-layout">
+
+  <div class="tab-bar">
+    <button class="tab-btn active" data-tab="midweek">Mid-Week Report</button>
+    <button class="tab-btn"        data-tab="weekly">Weekly Deep Dive</button>
+    <button class="tab-btn"        data-tab="opening">Opening Candle Bias</button>
+    <button class="tab-btn"        data-tab="edge">Edge Health</button>
+  </div>
+
+  <!-- ── MID-WEEK ─────────────────────────────────────── -->
+  <div class="tab-panel active" id="tab-midweek">
+    <div class="controls-row">
+      <button class="btn-sm" id="btnForceMidweek">⟳ Regenerate</button>
+      <span style="color:rgba(255,255,255,.3);font:12px monospace" id="midweekMeta">—</span>
+    </div>
+    <div id="midweekContent"><p class="loading-msg">Loading mid-week report…</p></div>
+  </div>
+
+  <!-- ── WEEKLY DEEP ────────────────────────────────────── -->
+  <div class="tab-panel" id="tab-weekly">
+    <div class="controls-row">
+      <label style="color:rgba(255,255,255,.4);font:12px monospace">Week of:</label>
+      <input type="date" class="week-picker" id="weekPicker">
+      <button class="btn-sm" id="btnLoadWeekly">Load</button>
+      <span style="color:rgba(255,255,255,.3);font:12px monospace" id="weeklyMeta">—</span>
+    </div>
+    <div id="weeklyContent"><p class="loading-msg">Select a week and click Load.</p></div>
+  </div>
+
+  <!-- ── OPENING CANDLE ─────────────────────────────────── -->
+  <div class="tab-panel" id="tab-opening">
+    <div class="controls-row">
+      <button class="btn-sm" id="btnRefreshOC">⟳ Refresh</button>
+      <span style="color:rgba(255,255,255,.3);font:12px monospace" id="ocMeta">—</span>
+    </div>
+    <div id="ocContent"><p class="loading-msg">Loading opening candle data…</p></div>
+  </div>
+
+  <!-- ── EDGE HEALTH ────────────────────────────────────── -->
+  <div class="tab-panel" id="tab-edge">
+    <div class="controls-row">
+      <button class="btn-sm" id="btnRefreshEdge">⟳ Refresh</button>
+      <span style="color:rgba(255,255,255,.3);font:12px monospace" id="edgeMeta">—</span>
+    </div>
+    <div id="edgeContent"><p class="loading-msg">Loading edge health…</p></div>
+  </div>
+
+</div><!-- /.reports-layout -->
+
+<script>
+'use strict';
+
+// ── Tab switching ─────────────────────────────────────
+document.querySelectorAll('.tab-btn').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+    btn.classList.add('active');
+    document.getElementById('tab-' + btn.dataset.tab).classList.add('active');
+  });
+});
+
+// ── Helpers ───────────────────────────────────────────
+const pct  = v => v != null ? (v * 100).toFixed(1) + '%' : '—';
+const fix2  = v => v != null ? (+v).toFixed(2) : '—';
+const fmtTs = ts => ts ? new Date(ts).toLocaleString() : '—';
+
+function colorWR(wr) {
+  if (wr == null) return 'inherit';
+  if (wr >= 0.65) return '#4ade80';
+  if (wr >= 0.55) return '#fbbf24';
+  return '#f87171';
+}
+function badgeWR(wr) {
+  if (wr == null) return `<span class="badge badge-gray">—</span>`;
+  const cls = wr >= 0.65 ? 'badge-green' : wr >= 0.55 ? 'badge-yellow' : 'badge-red';
+  return `<span class="badge ${cls}">${pct(wr)}</span>`;
+}
+function biasColor(bias) {
+  if (!bias) return 'neut';
+  if (bias.includes('BULL')) return 'bull';
+  if (bias.includes('BEAR')) return 'bear';
+  return 'neut';
+}
+
+// ── Mid-week report ───────────────────────────────────
+async function loadMidweek(force = false) {
+  document.getElementById('midweekContent').innerHTML = '<p class="loading-msg">Loading…</p>';
+  try {
+    const r = await fetch('/api/performance/midweek-report' + (force ? '?force=1' : ''));
+    const d = await r.json();
+    if (d.error) { document.getElementById('midweekContent').innerHTML = `<p class="error-msg">${d.error}</p>`; return; }
+    document.getElementById('midweekMeta').textContent =
+      `Generated: ${fmtTs(d.generatedAt ?? d.generated_at)} | Week: ${d.weekStart ?? '—'}`;
+    document.getElementById('midweekContent').innerHTML = renderMidweek(d);
+  } catch(e) {
+    document.getElementById('midweekContent').innerHTML = `<p class="error-msg">Error: ${e.message}</p>`;
+  }
+}
+
+function renderMidweek(d) {
+  const r = d.report ?? d;
+  const sections = [];
+
+  // Summary metrics
+  if (r.summary || r.winRate != null) {
+    const wr  = r.winRate ?? r.summary?.winRate;
+    const pf  = r.profitFactor ?? r.summary?.profitFactor;
+    const exp = r.expectancy ?? r.summary?.expectancy;
+    const n   = r.tradeCount ?? r.summary?.tradeCount;
+    sections.push(`
+      <div class="metrics-grid">
+        ${metric('Win Rate', pct(wr), wr >= .65 ? 'green' : wr >= .55 ? 'yellow' : 'red')}
+        ${metric('Profit Factor', fix2(pf), pf >= 1.5 ? 'green' : pf >= 1.0 ? 'yellow' : 'red')}
+        ${metric('Expectancy', fix2(exp) + 'R', exp >= 0.3 ? 'green' : exp >= 0 ? 'yellow' : 'red')}
+        ${metric('Trades', n ?? '—')}
+      </div>`);
+  }
+
+  // Render raw report text if present
+  if (r.reportText || typeof r.text === 'string') {
+    sections.push(`<div class="report-card"><pre class="report-pre">${highlightText(r.reportText ?? r.text)}</pre></div>`);
+  }
+
+  // Strategy breakdown
+  if (r.byStrategy) {
+    sections.push(renderStrategyTable(r.byStrategy));
+  }
+
+  // Session breakdown
+  if (r.bySession) {
+    sections.push(renderSessionTable(r.bySession));
+  }
+
+  // Warnings
+  if (r.warnings?.length) {
+    sections.push(`<div class="report-card">
+      <h3>⚠ Warnings</h3>
+      ${r.warnings.map(w => `<div style="color:#fbbf24;font:12px monospace;margin-bottom:6px">• ${w}</div>`).join('')}
+    </div>`);
+  }
+
+  // Recommendations
+  if (r.recommendations?.length) {
+    sections.push(`<div class="report-card">
+      <h3>✦ Recommendations</h3>
+      ${r.recommendations.map(w => `<div style="color:#a78bfa;font:12px monospace;margin-bottom:6px">→ ${w}</div>`).join('')}
+    </div>`);
+  }
+
+  // Fallback — render everything as JSON
+  if (!sections.length) {
+    sections.push(`<div class="report-card"><pre class="report-pre">${JSON.stringify(r, null, 2)}</pre></div>`);
+  }
+
+  return sections.join('');
+}
+
+// ── Weekly deep report ────────────────────────────────
+// Default picker to Monday of current week
+(function initWeekPicker() {
+  const d = new Date();
+  const day = d.getDay();
+  const diff = day === 0 ? -6 : 1 - day;
+  d.setDate(d.getDate() + diff);
+  document.getElementById('weekPicker').value = d.toISOString().slice(0, 10);
+})();
+
+async function loadWeekly() {
+  const week = document.getElementById('weekPicker').value;
+  if (!week) return;
+  document.getElementById('weeklyContent').innerHTML = '<p class="loading-msg">Loading…</p>';
+  try {
+    const r = await fetch(`/api/performance/weekly-deep?week=${week}`);
+    const d = await r.json();
+    if (d.error) { document.getElementById('weeklyContent').innerHTML = `<p class="error-msg">${d.error}</p>`; return; }
+    document.getElementById('weeklyMeta').textContent = `Week: ${d.weekStart ?? week} | Generated: ${fmtTs(d.generatedAt ?? d.generated_at)}`;
+    document.getElementById('weeklyContent').innerHTML = renderWeekly(d);
+  } catch(e) {
+    document.getElementById('weeklyContent').innerHTML = `<p class="error-msg">Error: ${e.message}</p>`;
+  }
+}
+
+function renderWeekly(d) {
+  const r = d.report ?? d;
+  const sections = [];
+
+  // Summary metrics
+  const wr = r.winRate ?? r.summary?.winRate;
+  const pf = r.profitFactor ?? r.summary?.profitFactor;
+  if (wr != null || pf != null) {
+    sections.push(`<div class="metrics-grid">
+      ${metric('Win Rate', pct(wr), wr >= .65 ? 'green' : wr >= .55 ? 'yellow' : 'red')}
+      ${metric('Profit Factor', fix2(pf), pf >= 1.5 ? 'green' : pf >= 1.0 ? 'yellow' : 'red')}
+      ${metric('Trades', r.tradeCount ?? r.summary?.tradeCount ?? '—')}
+      ${metric('WoW Delta', r.wowDelta != null ? (r.wowDelta > 0 ? '+' : '') + pct(r.wowDelta) : '—', r.wowDelta > 0 ? 'green' : r.wowDelta < 0 ? 'red' : '')}
+    </div>`);
+  }
+
+  if (r.reportText || typeof r.text === 'string') {
+    sections.push(`<div class="report-card"><pre class="report-pre">${highlightText(r.reportText ?? r.text)}</pre></div>`);
+  }
+  if (r.byStrategy) sections.push(renderStrategyTable(r.byStrategy));
+  if (r.bySession)  sections.push(renderSessionTable(r.bySession));
+
+  if (r.edgeStrengths?.length) {
+    sections.push(`<div class="report-card"><h3>✦ Edge Strengths</h3>
+      ${r.edgeStrengths.map(s => `<div style="color:#4ade80;font:12px monospace;margin-bottom:5px">✓ ${s}</div>`).join('')}
+    </div>`);
+  }
+  if (r.edgeWeaknesses?.length) {
+    sections.push(`<div class="report-card"><h3>⚠ Edge Weaknesses</h3>
+      ${r.edgeWeaknesses.map(s => `<div style="color:#f87171;font:12px monospace;margin-bottom:5px">✗ ${s}</div>`).join('')}
+    </div>`);
+  }
+  if (r.forwardHypotheses?.length) {
+    sections.push(`<div class="report-card"><h3>🔭 Forward Hypotheses</h3>
+      ${r.forwardHypotheses.map((s,i) => `<div style="color:#a78bfa;font:12px monospace;margin-bottom:5px">${i+1}. ${s}</div>`).join('')}
+    </div>`);
+  }
+  if (!sections.length) {
+    sections.push(`<div class="report-card"><pre class="report-pre">${JSON.stringify(r, null, 2)}</pre></div>`);
+  }
+  return sections.join('');
+}
+
+// ── Opening candle ────────────────────────────────────
+async function loadOpeningCandle() {
+  document.getElementById('ocContent').innerHTML = '<p class="loading-msg">Loading…</p>';
+  try {
+    const r = await fetch('/api/opening-candle/status');
+    const d = await r.json();
+    document.getElementById('ocMeta').textContent = `Generated: ${fmtTs(d.generated_at)}`;
+    document.getElementById('ocContent').innerHTML = renderOpeningCandle(d);
+  } catch(e) {
+    document.getElementById('ocContent').innerHTML = `<p class="error-msg">Error: ${e.message}</p>`;
+  }
+}
+
+function renderOpeningCandle(d) {
+  const sections = [];
+
+  for (const inst of ['MNQ', 'MGC']) {
+    const r = d[inst];
+    if (!r) continue;
+
+    // Today's candles
+    if (r.todayCandles?.length) {
+      const cards = r.todayCandles.map(c => {
+        const bc = biasColor(c.bias);
+        return `<div class="oc-box">
+          <div class="oc-session">${c.sessionKey ?? c.key}</div>
+          <div class="oc-bias ${bc}">${c.bias ?? '—'} <small style="opacity:.6">str=${(c.strength ?? 0).toFixed(2)}</small></div>
+          <div class="oc-stats">${fmtTs(c.timestamp)}</div>
+        </div>`;
+      }).join('');
+      sections.push(`<div class="report-card">
+        <h3>${inst} — Today's Session Opens</h3>
+        <div class="oc-grid">${cards}</div>
+      </div>`);
+    } else {
+      sections.push(`<div class="report-card"><h3>${inst} — Today's Session Opens</h3><p style="color:rgba(255,255,255,.3);font:12px monospace">No opening candles recorded yet today.</p></div>`);
+    }
+
+    // Historical accuracy table
+    if (r.sessionSummary?.length) {
+      const rows = r.sessionSummary.map(s => {
+        const acc = s.accuracy != null ? s.accuracy + '%' : '—';
+        const accColor = s.accuracy >= 60 ? '#4ade80' : s.accuracy >= 54 ? '#fbbf24' : '#f87171';
+        const statusBadge = s.active
+          ? `<span class="badge badge-green">ACTIVE</span>`
+          : s.total >= r.minSampleSize
+            ? `<span class="badge badge-yellow">LOW ACC</span>`
+            : `<span class="badge badge-gray">BUILDING</span>`;
+        return `<tr>
+          <td>${s.sessionKey}</td>
+          <td>${s.total}</td>
+          <td style="color:${accColor}">${acc}</td>
+          <td>${s.wins ?? 0} / ${s.losses ?? 0}</td>
+          <td>${statusBadge}</td>
+          <td style="color:rgba(255,255,255,.35)">${s.lastUpdated ? new Date(s.lastUpdated).toLocaleDateString() : '—'}</td>
+        </tr>`;
+      }).join('');
+      sections.push(`<div class="report-card">
+        <h3>${inst} — Session Bias Accuracy (min ${r.minSampleSize} samples, ${(r.minAccuracyThreshold * 100).toFixed(0)}% threshold)</h3>
+        <table class="data-table">
+          <thead><tr><th>Session</th><th>Samples</th><th>Accuracy</th><th>W/L</th><th>Status</th><th>Last Updated</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>`);
+    }
+  }
+
+  return sections.join('') || '<p class="loading-msg">No opening candle data yet. Data builds after the first live session.</p>';
+}
+
+// ── Edge health ───────────────────────────────────────
+async function loadEdgeHealth() {
+  document.getElementById('edgeContent').innerHTML = '<p class="loading-msg">Loading…</p>';
+  try {
+    const r = await fetch('/api/performance/edge-health');
+    const d = await r.json();
+    document.getElementById('edgeMeta').textContent = `Generated: ${fmtTs(d.generated_at)}`;
+    document.getElementById('edgeContent').innerHTML = renderEdgeHealth(d);
+  } catch(e) {
+    document.getElementById('edgeContent').innerHTML = `<p class="error-msg">Error: ${e.message}</p>`;
+  }
+}
+
+function renderEdgeHealth(d) {
+  const sections = [];
+  for (const inst of ['MNQ', 'MGC']) {
+    const r = d[inst];
+    if (!r) continue;
+    const alertColor = r.alert ? '#f87171' : '#4ade80';
+    const alertLabel = r.alert ? '⚠ DEGRADATION DETECTED' : '✓ EDGE HEALTHY';
+    sections.push(`<div class="report-card">
+      <h3>${inst} — Edge Status</h3>
+      <div style="color:${alertColor};font:700 14px monospace;margin-bottom:14px">${alertLabel}</div>
+      ${r.message ? `<div style="color:rgba(255,255,255,.6);font:12px monospace;margin-bottom:10px">${r.message}</div>` : ''}
+      <div class="metrics-grid">
+        ${metric('Last 3 Avg WR', pct(r.recentAvgWR), r.recentAvgWR >= .62 ? 'green' : r.recentAvgWR >= .52 ? 'yellow' : 'red')}
+        ${metric('Prior 3 Avg WR', pct(r.priorAvgWR))}
+        ${metric('Delta', r.delta != null ? (r.delta > 0 ? '+' : '') + pct(r.delta) : '—', r.delta > 0 ? 'green' : r.delta < -0.05 ? 'red' : 'yellow')}
+      </div>
+      ${r.details ? `<pre class="report-pre" style="font-size:11px">${JSON.stringify(r.details, null, 2)}</pre>` : ''}
+    </div>`);
+  }
+  return sections.join('') || '<p class="loading-msg">No edge health data available yet.</p>';
+}
+
+// ── Shared render helpers ─────────────────────────────
+function metric(label, value, colorClass = '') {
+  return `<div class="metric-box">
+    <div class="lbl">${label}</div>
+    <div class="val ${colorClass}">${value ?? '—'}</div>
+  </div>`;
+}
+
+function renderStrategyTable(byStrategy) {
+  if (!byStrategy || !Object.keys(byStrategy).length) return '';
+  const rows = Object.entries(byStrategy).map(([strat, m]) => {
+    if (!m) return '';
+    return `<tr>
+      <td style="color:#fff;font-weight:700">${strat}</td>
+      <td>${badgeWR(m.winRate)}</td>
+      <td>${fix2(m.profitFactor)}</td>
+      <td>${m.tradeCount ?? '—'}</td>
+      <td style="color:${(m.totalReturn ?? 0) >= 0 ? '#4ade80' : '#f87171'}">${m.totalReturn != null ? (m.totalReturn > 0 ? '+' : '') + fix2(m.totalReturn) + 'pts' : '—'}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="report-card">
+    <h3>Strategy Breakdown</h3>
+    <table class="data-table">
+      <thead><tr><th>Strategy</th><th>Win Rate</th><th>Profit Factor</th><th>Trades</th><th>Return</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderSessionTable(bySession) {
+  if (!bySession || !Object.keys(bySession).length) return '';
+  const rows = Object.entries(bySession).map(([sess, m]) => {
+    if (!m) return '';
+    return `<tr>
+      <td style="color:#fff">${sess}</td>
+      <td>${badgeWR(m.winRate)}</td>
+      <td>${m.tradeCount ?? '—'}</td>
+      <td style="color:${(m.totalReturn ?? 0) >= 0 ? '#4ade80' : '#f87171'}">${m.totalReturn != null ? (m.totalReturn > 0 ? '+' : '') + fix2(m.totalReturn) + 'pts' : '—'}</td>
+    </tr>`;
+  }).join('');
+  return `<div class="report-card">
+    <h3>Session Breakdown</h3>
+    <table class="data-table">
+      <thead><tr><th>Session</th><th>Win Rate</th><th>Trades</th><th>Return</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table>
+  </div>`;
+}
+
+function highlightText(text) {
+  if (!text) return '';
+  return text
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/(✓[^\n]*)/g, '<span class="hi-green">$1</span>')
+    .replace(/(⚠[^\n]*)/g, '<span class="hi-yellow">$1</span>')
+    .replace(/(✗[^\n]*)/g, '<span class="hi-red">$1</span>')
+    .replace(/(→[^\n]*)/g, '<span class="hi-purple">$1</span>')
+    .replace(/(\d+\.\d+%)/g, '<span class="hi-blue">$1</span>');
+}
+
+// ── Event bindings ────────────────────────────────────
+document.getElementById('btnForceMidweek').addEventListener('click', () => loadMidweek(true));
+document.getElementById('btnLoadWeekly').addEventListener('click', loadWeekly);
+document.getElementById('btnRefreshOC').addEventListener('click', loadOpeningCandle);
+document.getElementById('btnRefreshEdge').addEventListener('click', loadEdgeHealth);
+
+// ── Init ──────────────────────────────────────────────
+loadMidweek();
+loadOpeningCandle();
+loadEdgeHealth();
+
+document.getElementById('refreshLbl').textContent = new Date().toLocaleTimeString();
+</script>
+</body>
+</html>

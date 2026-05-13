@@ -1120,6 +1120,7 @@ app.get('/stats',    (req, res) => res.sendFile(path.join(__dirname, 'stats.html
 app.get('/calendar', (req, res) => res.sendFile(path.join(__dirname, 'calendar.html')));
 app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest-dashboard.html')));
 app.get('/journal',  (req, res) => res.sendFile(path.join(__dirname, 'journal.html')));
+app.get('/reports',  (req, res) => res.sendFile(path.join(__dirname, 'reports.html')));
 app.get('/news',     (req, res) => res.sendFile(path.join(__dirname, 'news.html')));
 app.get('/setup',    (req, res) => res.sendFile(path.join(__dirname, 'setup.html')));
 
