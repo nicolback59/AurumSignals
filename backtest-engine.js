@@ -310,9 +310,9 @@ function _runBacktest(bars1m, instrument, opts = {}) {
     for (const sig of signals) {
       const strat = sig.strategy_name;
 
-      // Enforce per-strategy cooldown
+      // Enforce per-strategy cooldown (swing uses 4 × 5m = 20 min; others use 1 bar)
       const lastIdx = lastSigByStrategy[strat] ?? -Infinity;
-      const stratCooldown = strat === 'MNQ_SWING' ? cooldown5m * 12 : cooldown5m;
+      const stratCooldown = strat === 'MNQ_SWING' ? cooldown5m * 4 : cooldown5m;
       if (i - lastIdx < stratCooldown) continue;
 
       // Resolve outcome from future 5m bars
