@@ -1,297 +1,627 @@
 'use strict';
 
 /**
- * STRATEGY 4 — MGC GOLD SCALPING
+ * STRATEGY 4 — MGC GOLD SCALPING (v2 — professional rebuild)
  *
- * Objective: Fast, high-probability gold scalp signals with tight risk.
- * Primary TF:  5-minute bars (or 1m aggregated to 5m) — bars
- * HTF:         15-minute bars — htfBars
- * HTF2:        1-hour bars   — htf2Bars
- * Session:     London/NY overlap (07:30–09:30 ET) and active NY (09:30–12:00 ET)
- * EMA stack:   9 / 21 on primary
- * Filters:     VWAP bias, ATR minimum, momentum
- * Entry:       VWAP/EMA pullback + rejection candle
- * SL:          tight structure-based + 0.3 ATR
- * TP:          1.0 ATR (partial at 0.5 ATR)
- * Min confidence: 72
+ * Objective: High-consistency MGC scalp signals across all active sessions.
+ *
+ * Architecture:
+ *   Execution TF : 3m (falls back to 5m if unavailable)
+ *   Context TFs  : 15m, 30m, 45m, 1h
+ *   Session scope: London, NY_PRE, NY open/continuation, Midday, AfterNoon, Asian
+ *
+ * Signal archetypes (regime-specific):
+ *   continuation_pullback  — trend intact, price pulls back to EMA/VWAP
+ *   vwap_reclaim           — price reclaims VWAP, continuation expected
+ *   vwap_rejection         — price fails VWAP, breakdown expected
+ *   sweep_reversal         — liquidity sweep below/above swing → reversal
+ *   compression_breakout   — tight range resolves with momentum
+ *   chop_mean_revert       — chop-specific: extreme RSI fade back to VWAP
+ *
+ * Regime gate:
+ *   TREND_BULL / TREND_BEAR → continuation + VWAP archetypes
+ *   COMPRESSION / NORMAL    → breakout archetype
+ *   RANGE_CHOP              → chop_mean_revert only
+ *   EXPANSION               → sweep_reversal + momentum continuation
+ *
+ * Quality layers:
+ *   - Volatility regime (LOW / NORMAL / HIGH)
+ *   - Chop score (0–1): penalises score, blocks pure chop
+ *   - Exhaustion detection: blocks overextended entries
+ *   - Prior day H/L proximity: avoids entering at major S/R
+ *   - Multi-TF confluence (15m / 30m / 45m / 1h): requires ≥2 agreeing
  */
 
 const {
   ema, calcAtr, calcVwap, calcRsi, calcMacd,
   calcHtfBias, emaStackScore,
   isBullishCandle, isBearishCandle,
-  hadPullbackToLevel, isChoppingAroundVwap,
+  hadPullbackToLevel,
   recentSwingLow, recentSwingHigh,
-  getSessionInfo, srDistanceAtr,
+  srDistanceAtr,
 } = require('./shared-indicators');
 
+const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-// Minimum ATR in MGC (micro gold) dollars per contract for scalp to make sense
-// MGC tick = $0.10, point = $1. Lowered to 1.5 to capture more setups.
 const ATR_MIN_PTS = 1.5;
-const MIN_BAR_GAP = 5; // 5 × 5m = 25 min cooldown for gold scalp
+const MIN_BAR_GAP = 4;          // bars between signals on execution TF
+const TP = [10, 14, 20, 25];    // fixed MGC take-profit levels in points
 
 let lastSignalBar = -999;
 
-/**
- * Evaluate MGC gold scalp setup.
- *
- * Multi-timeframe pyramid (all from aggregated 5m source):
- *   bars     — 5m  (entry timing)
- *   htfBars  — 15m (short-term direction)
- *   bars30m  — 30m (intermediate confirmation)
- *   bars45m  — 45m (bridge between 30m and 1h)
- *   htf2Bars — 1h  (macro trend context)
- *
- * Confluence rule: at least 2 of the 4 HTF layers [15m, 30m, 45m, 1h] must
- * agree with the trade direction. More agreement → higher confidence bonus.
- *
- * @param {object[]} bars     - 5m primary bars
- * @param {object[]} htfBars  - 15m bars
- * @param {object[]} htf2Bars - 1h bars
- * @param {object[]} bars30m  - 30m bars (optional but strongly recommended)
- * @param {object[]} bars45m  - 45m bars (optional)
- * @param {object}   cfg
- * @param {number}   barIdx
- */
-function evaluate(bars, htfBars, htf2Bars, bars30m, bars45m, cfg = {}, barIdx = null) {
-  // Handle legacy callers that don't pass 30m/45m
-  if (bars30m && !Array.isArray(bars30m) && typeof bars30m === 'object' && !bars30m.length) {
-    cfg = bars30m; barIdx = bars45m ?? null; bars30m = []; bars45m = [];
-  }
-  const MIN_BARS = 40;
-  if (bars.length < MIN_BARS || htfBars.length < 20) return null;
+// ── Regime & context analysis ─────────────────────────────────────────────────
 
-  const curIdx = barIdx ?? bars.length;
+function classifyRegime(bars5m, bars15m) {
+  if (bars5m.length < 20 || bars15m.length < 10) return 'UNKNOWN';
+
+  const n = bars5m.length - 1;
+  const closes5m  = bars5m.map(b => b.close);
+  const closes15m = bars15m.map(b => b.close);
+
+  // Directional efficiency over last 20 bars (net / gross movement)
+  const slice = bars5m.slice(-20);
+  let grossPath = 0;
+  for (let i = 1; i < slice.length; i++) grossPath += Math.abs(slice[i].close - slice[i-1].close);
+  const netMove    = Math.abs(slice[slice.length - 1].close - slice[0].close);
+  const efficiency = grossPath > 0 ? netMove / grossPath : 0;
+
+  // ATR compression vs recent average
+  const atrArr = calcAtr(bars5m, 14);
+  const curAtr = atrArr[n];
+  const histAtr = atrArr.slice(-20, -1).filter(Boolean);
+  const avgAtr  = histAtr.length ? histAtr.reduce((s, v) => s + v, 0) / histAtr.length : curAtr;
+  const atrRatio = avgAtr > 0 ? curAtr / avgAtr : 1;
+
+  // EMA slope on 15m
+  const ema21_15 = ema(closes15m, 21);
+  const m15n     = ema21_15.length - 1;
+  const emaSlope = (ema21_15[m15n] != null && ema21_15[m15n - 4] != null)
+    ? ema21_15[m15n] - ema21_15[m15n - 4]
+    : 0;
+
+  if (atrRatio < 0.60) return 'COMPRESSION';
+  if (atrRatio > 2.00) return 'EXPANSION';
+  if (efficiency > 0.45 && Math.abs(emaSlope) > curAtr * 0.25) {
+    return emaSlope > 0 ? 'TREND_BULL' : 'TREND_BEAR';
+  }
+  if (efficiency < 0.22) return 'RANGE_CHOP';
+  return 'NORMAL';
+}
+
+function getVolatilityRegime(bars, atr) {
+  if (bars.length < 20) return 'NORMAL';
+  const ranges = bars.slice(-20).map(b => b.high - b.low);
+  const avgRange = ranges.reduce((s, v) => s + v, 0) / ranges.length;
+  if (atr < avgRange * 0.60) return 'LOW';
+  if (atr > avgRange * 1.60) return 'HIGH';
+  return 'NORMAL';
+}
+
+function getChopScore(bars, vwapArr) {
+  const lookback = Math.min(12, bars.length - 1);
+  if (lookback < 4) return 0;
+
+  const slice  = bars.slice(-lookback);
+  const vSlice = vwapArr.slice(-lookback);
+
+  // VWAP cross frequency
+  let crosses = 0;
+  for (let i = 1; i < slice.length; i++) {
+    const prevAbove = slice[i-1].close > vSlice[i-1];
+    const nowAbove  = slice[i].close   > vSlice[i];
+    if (prevAbove !== nowAbove) crosses++;
+  }
+
+  // Body overlap ratio
+  let overlaps = 0;
+  for (let i = 1; i < slice.length; i++) {
+    const pLo = Math.min(slice[i-1].open, slice[i-1].close);
+    const pHi = Math.max(slice[i-1].open, slice[i-1].close);
+    const cLo = Math.min(slice[i].open,   slice[i].close);
+    const cHi = Math.max(slice[i].open,   slice[i].close);
+    if (cLo < pHi && cHi > pLo) overlaps++;
+  }
+
+  const crossScore   = Math.min(1, crosses   / 4);
+  const overlapScore = Math.min(1, overlaps  / (slice.length - 1));
+  return crossScore * 0.5 + overlapScore * 0.5;
+}
+
+function getVwapState(bars, vwapArr, lookback = 5) {
+  const n = bars.length - 1;
+  if (n < lookback) return 'UNKNOWN';
+
+  // Count VWAP crosses in lookback
+  let crosses = 0;
+  for (let i = Math.max(1, n - lookback); i <= n; i++) {
+    if (vwapArr[i] == null || vwapArr[i-1] == null) continue;
+    const prev = bars[i-1].close > vwapArr[i-1];
+    const cur  = bars[i].close   > vwapArr[i];
+    if (prev !== cur) crosses++;
+  }
+  if (crosses >= 3) return 'CHOPPING';
+
+  // Was above/below for majority of lookback
+  const prevBars = bars.slice(-lookback - 1, -1);
+  const prevVwap = vwapArr.slice(-lookback - 1, -1);
+  const aboveCnt = prevBars.filter((b, i) => b.close > (prevVwap[i] ?? b.close)).length;
+  const wasAbove = aboveCnt > prevBars.length / 2;
+  const nowAbove = bars[n].close > vwapArr[n];
+
+  if (!wasAbove && nowAbove) return 'RECLAIMING';
+  if (wasAbove  && !nowAbove) return 'REJECTING';
+  return nowAbove ? 'ABOVE' : 'BELOW';
+}
+
+function detectExhaustion(bars, atr, dir) {
+  const n = bars.length - 1;
+  const lookback = Math.min(8, n);
+  const slice = bars.slice(-lookback);
+
+  // Overextension: price moved > 3.5× ATR in direction without meaningful retracement
+  const ext = dir === 'LONG'
+    ? bars[n].close - Math.min(...slice.map(b => b.low))
+    : Math.max(...slice.map(b => b.high)) - bars[n].close;
+  if (ext > 3.5 * atr) return true;
+
+  // Climactic wide candle (blowoff move)
+  const last = bars[n];
+  if (Math.abs(last.close - last.open) > 2.5 * atr) return true;
+
+  return false;
+}
+
+function detectLiquiditySweep(bars, atr, dir) {
+  const n = bars.length - 1;
+  if (n < 4) return false;
+
+  if (dir === 'LONG') {
+    // Swept below prior swing low, then the current bar closed back above it
+    const priorLow  = recentSwingLow(bars.slice(0, -2), 10);
+    const sweepBar  = bars[n - 1];
+    const curClose  = bars[n].close;
+    return sweepBar.low < priorLow - 0.05 * atr && curClose > priorLow;
+  } else {
+    const priorHigh = recentSwingHigh(bars.slice(0, -2), 10);
+    const sweepBar  = bars[n - 1];
+    const curClose  = bars[n].close;
+    return sweepBar.high > priorHigh + 0.05 * atr && curClose < priorHigh;
+  }
+}
+
+function getPriorDayLevels(bars1h) {
+  if (!bars1h || bars1h.length < 6) return null;
+  // Use the oldest available 8-bar chunk as a proxy for prior day
+  const chunk = bars1h.slice(0, Math.min(8, Math.floor(bars1h.length / 2)));
+  if (!chunk.length) return null;
+  return {
+    high: Math.max(...chunk.map(b => b.high)),
+    low:  Math.min(...chunk.map(b => b.low)),
+  };
+}
+
+// ── Main evaluate ──────────────────────────────────────────────────────────────
+
+/**
+ * @param {object[]} bars3m    - 3m execution bars (may be empty → falls back to bars5m)
+ * @param {object[]} bars5m    - 5m bars (context + execution fallback)
+ * @param {object[]} bars15m   - 15m HTF bias
+ * @param {object[]} bars1h    - 1h macro trend
+ * @param {object[]} bars30m   - 30m MTF confluence
+ * @param {object[]} bars45m   - 45m MTF confluence
+ */
+function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, barIdx = null) {
+  // Backwards-compat: old callers pass (bars5m, bars15m, bars1h, bars30m, bars45m, cfg, barIdx)
+  if (!Array.isArray(bars3m)) {
+    [bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg, barIdx] =
+      [[], bars3m, bars5m, bars15m, bars1h, bars30m, bars45m ?? {}, bars45m ?? null];
+  }
+
+  // Pick execution TF: prefer 3m when sufficient history exists
+  const exec = bars3m.length >= 25 ? bars3m : bars5m;
+  const MIN_EXEC = exec === bars3m ? 30 : 40;
+
+  if (exec.length < MIN_EXEC || bars15m.length < 15 || bars5m.length < 30) return null;
+
+  const curIdx = barIdx ?? exec.length;
   if (curIdx - lastSignalBar < (cfg.cooldownBars ?? MIN_BAR_GAP)) return null;
 
-  const n    = bars.length - 1;
-  const last = bars[n];
+  const n    = exec.length - 1;
+  const last = exec[n];
 
-  // ── Session filter: London open + NY sessions for gold scalping ───────────────
-  const sess = getSessionInfo(last.timestamp);
-  if (!sess.isLondon && !sess.isLondonNY && !sess.isNYOpen && !sess.isMidDay && !sess.isAftNoon) return null;
-  if (sess.quality < 0.45) return null;
+  // ── Session gate ────────────────────────────────────────────────────────────
+  // Use market-clock so Asian + London are included (gold is active in both)
+  const sess = getSessionInfoCompat(last.timestamp);
+  if (sess.isBlackout || sess.quality < 0.35) return null;
 
-  // ── Indicators ───────────────────────────────────────────────────────────────
-  const closes = bars.map(b => b.close);
-  const atrArr = calcAtr(bars, 14);
-  const atr    = atrArr[n];
+  // ── Core indicators ─────────────────────────────────────────────────────────
+  const closes  = exec.map(b => b.close);
+  const atrArr  = calcAtr(exec, 14);
+  const atr     = atrArr[n];
   if (!atr || atr < ATR_MIN_PTS) return null;
 
-  const vwapArr = calcVwap(bars);
+  const vwapArr = calcVwap(exec);
   const vwap    = vwapArr[n];
+  const ema9Arr = ema(closes, 9);
+  const ema21Arr= ema(closes, 21);
+  const ema9    = ema9Arr[n];
+  const ema21   = ema21Arr[n];
+  if (!ema9 || !ema21 || !vwap) return null;
 
-  const ema9Arr  = ema(closes, 9);
-  const ema21Arr = ema(closes, 21);
-  const ema9  = ema9Arr[n];
-  const ema21 = ema21Arr[n];
+  const rsiArr  = calcRsi(closes, 14);
+  const rsi     = rsiArr[n];
+  const { histogram } = calcMacd(closes);
+  const hist     = histogram[n];
+  const histPrev = histogram[n - 1];
 
-  // ── No-trade: choppy VWAP ────────────────────────────────────────────────────
-  if (isChoppingAroundVwap(bars, vwapArr, 8, 3)) return null;
+  // ── Context analysis ────────────────────────────────────────────────────────
+  const regime    = classifyRegime(bars5m, bars15m);
+  const chopScore = getChopScore(exec, vwapArr);
+  const vwapState = getVwapState(exec, vwapArr);
+  const volRegime = getVolatilityRegime(exec, atr);
 
-  // ── HTF biases ───────────────────────────────────────────────────────────────
-  const htfBias  = calcHtfBias(htfBars, 9, 21);
-  const htf2Bias = htf2Bars && htf2Bars.length >= 21 ? calcHtfBias(htf2Bars, 9, 21) : 0;
+  // Reject pure chaos: high volatility + high chop = news/spike whipsaw
+  if (volRegime === 'HIGH' && chopScore > 0.55) return null;
 
-  // ── Direction candidates ──────────────────────────────────────────────────────
-  const directions = [];
+  // ── HTF biases ──────────────────────────────────────────────────────────────
+  const htfBias   = calcHtfBias(bars15m, 9, 21);
+  const htf1hBias = bars1h  && bars1h.length  >= 21 ? calcHtfBias(bars1h,  9, 21) : 0;
+  const htf30mBias= bars30m && bars30m.length >= 6  ? calcHtfBias(bars30m, 9, 21) : null;
+  const htf45mBias= bars45m && bars45m.length >= 5  ? calcHtfBias(bars45m, 9, 21) : null;
 
-  const aboveVwap = last.close > vwap;
-  const belowVwap = last.close < vwap;
+  const priorDay  = getPriorDayLevels(bars1h);
 
-  // LONG: price above VWAP or reclaiming, EMA9 > EMA21, 15m agrees
-  if ((aboveVwap || isReclaimingVwap(bars, vwapArr)) && ema9 > ema21 && htfBias >= 0) {
-    directions.push('LONG');
+  const isChop    = chopScore > 0.65;
+  const rsiOB     = rsi != null && rsi > 76;
+  const rsiOS     = rsi != null && rsi < 24;
+
+  // ── Evaluation context object ───────────────────────────────────────────────
+  const ctx = {
+    exec, bars5m, bars15m, bars1h, n, last, closes, atr, vwap, vwapArr,
+    ema9, ema21, ema9Arr, ema21Arr, rsi, rsiOB, rsiOS, hist, histPrev,
+    regime, chopScore, vwapState, volRegime, htfBias, htf1hBias,
+    htf30mBias, htf45mBias, priorDay, isChop, sess,
+  };
+
+  // ── Try each archetype ──────────────────────────────────────────────────────
+  const candidates = [];
+
+  if (!isChop) {
+    const cp = evalContinuationPullback(ctx);    if (cp) candidates.push(cp);
+    const vr = evalVwapReclaimReject(ctx);       if (vr) candidates.push(vr);
+    const sw = evalSweepReversal(ctx);           if (sw) candidates.push(sw);
+    const cb = evalCompressionBreakout(ctx);     if (cb) candidates.push(cb);
+  } else {
+    // Chop regime: only high-conviction mean-revert setups
+    const mr = evalChopMeanRevert(ctx);          if (mr) candidates.push(mr);
   }
-  // SHORT: price below VWAP or rejecting, EMA9 < EMA21, 15m agrees
-  if ((belowVwap || isRejectingVwap(bars, vwapArr)) && ema9 < ema21 && htfBias <= 0) {
-    directions.push('SHORT');
+
+  if (candidates.length === 0) return null;
+
+  // Pick highest raw score
+  const best = candidates.reduce((a, b) => a.score > b.score ? a : b);
+
+  // ── Multi-TF confluence gate ─────────────────────────────────────────────────
+  const htfLayers = [
+    { bias: htfBias,    present: true },
+    { bias: htf1hBias,  present: bars1h  && bars1h.length  >= 21 },
+    { bias: htf30mBias, present: htf30mBias !== null },
+    { bias: htf45mBias, present: htf45mBias !== null },
+  ];
+  const expectedBias   = best.dir === 'LONG' ? 1 : -1;
+  const presentLayers  = htfLayers.filter(l => l.present);
+  const agreedLayers   = presentLayers.filter(l => l.bias === expectedBias);
+  const conflictLayers = presentLayers.filter(l => l.bias !== 0 && l.bias !== expectedBias);
+  const minAgree = presentLayers.length >= 3 ? 2 : 1;
+  if (agreedLayers.length < minAgree) return null;
+  if (conflictLayers.length > agreedLayers.length) return null;
+
+  const confluenceBonus = (agreedLayers.length - minAgree) * 4;
+
+  // ── Final confidence score ────────────────────────────────────────────────────
+  const esScore = emaStackScore(closes, 9, 21, 21, best.dir);
+  const baseConf = scoreSignal({
+    direction: best.dir, bars: exec, htfBias, htf2Bias: htf1hBias,
+    hasHtf2:  bars1h && bars1h.length >= 21,
+    vwapVal:  vwap, emaStackVal: esScore,
+    atr, atrMin: ATR_MIN_PTS,
+    rr:       best.rr,
+    srDistanceAtr: best.srDist ?? 1,
+    timestamp: last.timestamp,
+  });
+
+  // Regime adjustment
+  let regimeAdj = 0;
+  if (regime === 'TREND_BULL' && best.dir === 'LONG')  regimeAdj = +6;
+  if (regime === 'TREND_BEAR' && best.dir === 'SHORT') regimeAdj = +6;
+  if (regime === 'RANGE_CHOP') regimeAdj = -8;
+  if (volRegime === 'HIGH')    regimeAdj -= 4;
+  if (volRegime === 'LOW')     regimeAdj -= 3;
+
+  const chopPenalty = Math.round(chopScore * 10);
+
+  // Exhaustion hard block (applied after archetype selection to avoid false pass)
+  if (detectExhaustion(exec, atr, best.dir)) return null;
+
+  const confidence = Math.min(100, Math.max(0,
+    baseConf + confluenceBonus + regimeAdj + (best.bonus ?? 0) - chopPenalty,
+  ));
+
+  if (confidence < THRESHOLDS.MGC_SCALP) return null;
+
+  // Block entry within 0.5 ATR of prior day H/L (major S/R)
+  if (priorDay) {
+    const e = last.close;
+    if (Math.abs(e - priorDay.high) < 0.5 * atr) return null;
+    if (Math.abs(e - priorDay.low)  < 0.5 * atr) return null;
   }
 
-  for (const dir of directions) {
+  lastSignalBar = curIdx;
+
+  const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4 } = deriveGradeAndProbs(confidence);
+  const isBull = best.dir === 'LONG';
+  const entry  = last.close;
+
+  return {
+    instrument:    'MGC',
+    strategy_name: 'MGC_SCALP',
+    trade_style:   'scalp',
+    timeframe:     exec === bars3m ? '3m' : '5m',
+    direction:     best.dir,
+    entry:         +entry.toFixed(2),
+    sl:            +best.sl.toFixed(2),
+    tp1:           +(isBull ? entry + TP[0] : entry - TP[0]).toFixed(2),
+    tp2:           +(isBull ? entry + TP[1] : entry - TP[1]).toFixed(2),
+    tp3:           +(isBull ? entry + TP[2] : entry - TP[2]).toFixed(2),
+    tp4:           +(isBull ? entry + TP[3] : entry - TP[3]).toFixed(2),
+    rr:            best.rr,
+    confidence,
+    grade,
+    win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4,
+    score:         Math.round(confidence / 4),
+    setup:         'MGC Scalp',
+    htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+    session:       sess.name,
+    trigger_reason: `${best.archetype} | regime:${regime} | vwap:${vwapState} | vol:${volRegime} | ${agreedLayers.length}/${presentLayers.length} TFs`,
+    indicators: {
+      atr:    +atr.toFixed(2),
+      vwap:   +vwap.toFixed(2),
+      ema9:   +ema9.toFixed(2),
+      ema21:  +ema21.toFixed(2),
+      rsi:    rsi != null ? +rsi.toFixed(1) : null,
+      htfBias, htf1hBias, htf30mBias, htf45mBias,
+      regime, vwapState, volRegime,
+      chopScore:      +chopScore.toFixed(2),
+      archetype:      best.archetype,
+      mtfAgreed:      agreedLayers.length,
+      confluenceBonus,
+    },
+    timestamp:    last.timestamp,
+    trade_status: 'PENDING',
+  };
+}
+
+// ── Archetype evaluators ───────────────────────────────────────────────────────
+
+function evalContinuationPullback(ctx) {
+  const { exec, n, last, atr, vwap, vwapArr, ema9, ema21,
+          regime, htfBias, rsiOB, rsiOS, hist, histPrev, chopScore } = ctx;
+
+  if (regime === 'RANGE_CHOP') return null;
+
+  const dirs = [];
+  if (ema9 > ema21 && htfBias >= 0 && last.close >= vwap * 0.9985) dirs.push('LONG');
+  if (ema9 < ema21 && htfBias <= 0 && last.close <= vwap * 1.0015) dirs.push('SHORT');
+
+  for (const dir of dirs) {
     const isBull = dir === 'LONG';
+    if (isBull && rsiOB) continue;
+    if (!isBull && rsiOS) continue;
 
-    // ── EMA stack on primary TF ─────────────────────────────────────────────
-    const esScore = emaStackScore(closes, 9, 21, 21, dir);
-    // Scalp allows partial stack (1) but prefers full
-    if (esScore < 1) continue;
+    // Must have pulled back to EMA or VWAP recently
+    const tol   = 0.45 * atr;
+    const pull9  = hadPullbackToLevel(exec, ema9,  tol, dir, 7);
+    const pull21 = hadPullbackToLevel(exec, ema21, tol, dir, 7);
+    const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 7);
+    if (!pull9 && !pull21 && !pullV) continue;
 
-    // ── Pullback to VWAP, EMA9, or EMA21 ────────────────────────────────────
-    const tolerance = 0.35 * atr;
-    const pullVwap  = hadPullbackToLevel(bars, vwap,  tolerance, dir, 5);
-    const pull9     = hadPullbackToLevel(bars, ema9,  tolerance, dir, 5);
-    const pull21    = hadPullbackToLevel(bars, ema21, tolerance, dir, 5);
-    if (!pullVwap && !pull9 && !pull21) continue;
+    // Retest holds (no close through EMA21)
+    const recent = exec.slice(-3, -1);
+    if (isBull  && recent.some(b => b.close < ema21 - 0.35 * atr)) continue;
+    if (!isBull && recent.some(b => b.close > ema21 + 0.35 * atr)) continue;
 
-    // ── Pullback held (didn't close through EMA21) ──────────────────────────
-    const recentSlice = bars.slice(-3, -1);
-    if (isBull && recentSlice.some(b => b.close < ema21 - 0.25 * atr)) continue;
-    if (!isBull && recentSlice.some(b => b.close > ema21 + 0.25 * atr)) continue;
+    // Confirmation candle
+    if (!(isBull ? isBullishCandle(last, 0.30) : isBearishCandle(last, 0.30))) continue;
 
-    // ── Rejection candle (confirmation) ─────────────────────────────────────
-    if (!(isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35))) continue;
-
-    // ── Momentum ─────────────────────────────────────────────────────────────
-    const rsiArr = calcRsi(closes, 14);
-    const rsi    = rsiArr[n];
-    if (rsi != null) {
-      if (isBull  && rsi >= 72) continue; // overbought
-      if (!isBull && rsi <= 28) continue; // oversold
-    }
-
-    const { histogram } = calcMacd(closes);
-    const hist     = histogram[n];
-    const histPrev = histogram[n - 1];
-    // Soft filter: only block if strongly counter-trend (accelerating against us)
+    // MACD soft filter
     if (hist != null && histPrev != null) {
-      const stronglyAgainst = isBull ? (hist < 0 && hist < histPrev) : (hist > 0 && hist > histPrev);
-      if (stronglyAgainst) continue;
+      const against = isBull ? (hist < 0 && hist < histPrev) : (hist > 0 && hist > histPrev);
+      if (against) continue;
     }
 
-    // ── Stop-loss (tight, structure-based + 0.3 ATR) ─────────────────────────
-    const swLow  = recentSwingLow(bars, 8);
-    const swHigh = recentSwingHigh(bars, 8);
-    const entry  = last.close;
-    let sl, rawRisk;
+    const swLow  = recentSwingLow(exec, 8);
+    const swHigh = recentSwingHigh(exec, 8);
+    const sl     = isBull ? Math.min(swLow, ema21) - 0.3 * atr : Math.max(swHigh, ema21) + 0.3 * atr;
+    const risk   = isBull ? last.close - sl : sl - last.close;
+    if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) continue;
 
-    if (isBull) {
-      sl      = Math.min(swLow, ema21) - 0.3 * atr;
-      rawRisk = entry - sl;
-    } else {
-      sl      = Math.max(swHigh, ema21) + 0.3 * atr;
-      rawRisk = sl - entry;
-    }
+    const rr     = +(14 / risk).toFixed(2);
+    if (rr < 0.8) continue;
 
-    // Scalp stop must be tight
-    if (rawRisk < ATR_MIN_PTS * 0.5 || rawRisk > 3 * atr) continue;
+    const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
+    if (srDist < 0.35) continue;
 
-    // ── Fixed MGC take-profit levels (pts from entry) ────────────────────────
-    // TP1=10, TP2=14, TP3=20, TP4=25
-    const tp1 = isBull ? entry + 10 : entry - 10;
-    const tp2 = isBull ? entry + 14 : entry - 14;
-    const tp3 = isBull ? entry + 20 : entry - 20;
-    const tp4 = isBull ? entry + 25 : entry - 25;
-
-    // RR based on TP2 (primary target)
-    const rr = +(rawRisk > 0 ? 14 / rawRisk : 0).toFixed(2);
-    if (rr < 0.9) continue;
-
-    // ── S/R distance check ───────────────────────────────────────────────────
-    const srDist = srDistanceAtr(tp2, bars, atr, 40);
-    if (srDist < 0.5) continue;
-
-    // ── 30m / 45m multi-timeframe confluence ─────────────────────────────────
-    // Count how many of the 4 HTF layers agree with direction.
-    // Require at least 2/4 agreement. Each aligned TF adds a confidence bonus.
-    const b30mBias = (bars30m && bars30m.length >= 6)  ? calcHtfBias(bars30m, 9, 21) : null;
-    const b45mBias = (bars45m && bars45m.length >= 5)  ? calcHtfBias(bars45m, 9, 21) : null;
-    const expectedBias = isBull ? 1 : -1;
-
-    const htfLayers = [
-      { name: '15m', bias: htfBias,   present: true },
-      { name: '30m', bias: b30mBias,  present: b30mBias !== null },
-      { name: '45m', bias: b45mBias,  present: b45mBias !== null },
-      { name: '1h',  bias: htf2Bias,  present: htf2Bars != null && htf2Bars.length >= 21 },
-    ];
-    const presentLayers = htfLayers.filter(l => l.present);
-    const agreedLayers  = presentLayers.filter(l => l.bias === expectedBias);
-    const conflictLayers = presentLayers.filter(l => l.bias !== 0 && l.bias !== expectedBias);
-
-    // Need at least 2 layers to agree (or 1 if only 1-2 are available)
-    const minAgree = presentLayers.length >= 3 ? 2 : 1;
-    if (agreedLayers.length < minAgree) continue;
-
-    // Block if majority of present layers are explicitly against us
-    if (conflictLayers.length > agreedLayers.length) continue;
-
-    // Confluence bonus: each extra agreeing layer adds to confidence
-    const confluenceBonus = (agreedLayers.length - minAgree) * 4; // +4 per extra aligned TF
-
-    // ── Confidence score ─────────────────────────────────────────────────────
-    const baseConfidence = scoreSignal({
-      direction: dir,
-      bars,
-      htfBias,
-      htf2Bias,
-      hasHtf2: htf2Bars != null && htf2Bars.length >= 21,
-      vwapVal: vwap,
-      emaStackVal: esScore,
-      atr, atrMin: ATR_MIN_PTS,
-      rr,
-      srDistanceAtr: srDist,
-      timestamp: last.timestamp,
-    });
-    const confidence = Math.min(100, baseConfidence + confluenceBonus);
-
-    if (confidence < THRESHOLDS.MGC_SCALP) continue;
-
-    lastSignalBar = curIdx;
-
-    const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4 } = deriveGradeAndProbs(confidence);
+    const trendBonus = (regime === 'TREND_BULL' || regime === 'TREND_BEAR') ? 5 : 0;
 
     return {
-      instrument:    'MGC',
-      strategy_name: 'MGC_SCALP',
-      trade_style:   'scalp',
-      timeframe:     '5m',
-      direction:     dir,
-      entry:         +entry.toFixed(2),
-      sl:            +sl.toFixed(2),
-      tp1:           +tp1.toFixed(2),
-      tp2:           +tp2.toFixed(2),
-      tp3:           +tp3.toFixed(2),
-      tp4:           +tp4.toFixed(2),
-      rr,
-      confidence,
-      grade,
-      win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4,
-      score:         Math.round(confidence / 4),
-      setup:         'MGC Scalp',
-      htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
-      session:       sess.name,
-      trigger_reason: `VWAP/EMA scalp ${dir}, ${agreedLayers.map(l=>l.name).join('+')} aligned (${agreedLayers.length}/${presentLayers.length} TFs), ${sess.name}, ATR=${atr.toFixed(2)}`,
-      indicators: {
-        atr:   +atr.toFixed(2),
-        vwap:  +vwap.toFixed(2),
-        ema9:  +ema9.toFixed(2),
-        ema21: +ema21.toFixed(2),
-        rsi:   rsi != null ? +rsi.toFixed(1) : null,
-        htfBias, htf2Bias,
-        bias30m:       b30mBias,
-        bias45m:       b45mBias,
-        mtfAgreed:     agreedLayers.length,
-        mtfPresent:    presentLayers.length,
-        confluenceBonus,
-      },
-      timestamp:    last.timestamp,
-      trade_status: 'PENDING',
+      dir, sl, rr, srDist,
+      archetype: 'continuation_pullback',
+      bonus: trendBonus,
+      score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus,
     };
   }
-
   return null;
 }
 
-// ── VWAP reclaim / rejection helpers ─────────────────────────────────────────
+function evalVwapReclaimReject(ctx) {
+  const { exec, n, last, atr, vwap, vwapArr, vwapState, htfBias, rsiOB, rsiOS } = ctx;
 
-function isReclaimingVwap(bars, vwapArr, lookback = 3) {
-  if (bars.length < lookback + 2) return false;
-  const slice     = bars.slice(-lookback - 1, -1);
-  const vwapSlice = vwapArr.slice(-lookback - 1, -1);
-  // Was below VWAP recently, now above — reclaiming
-  const wasBelow = slice.some((b, i) => b.close < vwapSlice[i]);
-  const nowAbove  = bars[bars.length - 1].close > vwapArr[vwapArr.length - 1];
-  return wasBelow && nowAbove;
+  if (vwapState === 'CHOPPING' || vwapState === 'ABOVE' || vwapState === 'BELOW' || vwapState === 'UNKNOWN') return null;
+
+  const dir    = vwapState === 'RECLAIMING' ? 'LONG' : 'SHORT';
+  const isBull = dir === 'LONG';
+
+  if (isBull && htfBias < 0) return null;
+  if (!isBull && htfBias > 0) return null;
+  if (isBull && rsiOB) return null;
+  if (!isBull && rsiOS) return null;
+
+  // Strong confirmation candle
+  if (!(isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35))) return null;
+
+  const swLow  = recentSwingLow(exec, 6);
+  const swHigh = recentSwingHigh(exec, 6);
+  const sl     = isBull ? Math.min(swLow, vwap) - 0.3 * atr : Math.max(swHigh, vwap) + 0.3 * atr;
+  const risk   = isBull ? last.close - sl : sl - last.close;
+  if (risk < ATR_MIN_PTS * 0.4 || risk > 2.5 * atr) return null;
+
+  const rr     = +(14 / risk).toFixed(2);
+  if (rr < 0.8) return null;
+
+  const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
+  if (srDist < 0.35) return null;
+
+  return {
+    dir, sl, rr, srDist,
+    archetype: isBull ? 'vwap_reclaim' : 'vwap_rejection',
+    bonus: 5,
+    score: rr * 12 + srDist * 4,
+  };
 }
 
-function isRejectingVwap(bars, vwapArr, lookback = 3) {
-  if (bars.length < lookback + 2) return false;
-  const slice     = bars.slice(-lookback - 1, -1);
-  const vwapSlice = vwapArr.slice(-lookback - 1, -1);
-  const wasAbove = slice.some((b, i) => b.close > vwapSlice[i]);
-  const nowBelow  = bars[bars.length - 1].close < vwapArr[vwapArr.length - 1];
-  return wasAbove && nowBelow;
+function evalSweepReversal(ctx) {
+  const { exec, n, last, atr, vwap, hist, histPrev } = ctx;
+
+  for (const dir of ['LONG', 'SHORT']) {
+    if (!detectLiquiditySweep(exec, atr, dir)) continue;
+
+    const isBull = dir === 'LONG';
+
+    // Strong reversal candle after the sweep
+    if (!(isBull ? isBullishCandle(last, 0.40) : isBearishCandle(last, 0.40))) continue;
+
+    // MACD turning in our direction
+    if (hist != null && histPrev != null) {
+      const turning = isBull ? hist > histPrev : hist < histPrev;
+      if (!turning) continue;
+    }
+
+    const sweepBar = exec[n - 1];
+    const sl = isBull
+      ? sweepBar.low  - 0.25 * atr
+      : sweepBar.high + 0.25 * atr;
+    const risk = isBull ? last.close - sl : sl - last.close;
+    if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) continue;
+
+    const rr     = +(14 / risk).toFixed(2);
+    if (rr < 0.7) continue;
+
+    const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
+
+    return {
+      dir, sl, rr, srDist,
+      archetype: 'sweep_reversal',
+      bonus: 7,
+      score: rr * 14 + (srDist ?? 1) * 3,
+    };
+  }
+  return null;
+}
+
+function evalCompressionBreakout(ctx) {
+  const { exec, n, last, atr, vwap, htfBias, hist, histPrev, regime } = ctx;
+
+  if (regime !== 'COMPRESSION' && regime !== 'NORMAL') return null;
+
+  const lookback = 8;
+  if (exec.length < lookback + 5) return null;
+
+  const priorBars = exec.slice(-lookback - 1, -1);
+  const rangeHigh = Math.max(...priorBars.map(b => b.high));
+  const rangeLow  = Math.min(...priorBars.map(b => b.low));
+  const rangePts  = rangeHigh - rangeLow;
+
+  // Needs to be a genuinely tight range
+  if (rangePts > atr * 2.0) return null;
+
+  const brkLong  = last.close > rangeHigh;
+  const brkShort = last.close < rangeLow;
+  if (!brkLong && !brkShort) return null;
+
+  const dir    = brkLong ? 'LONG' : 'SHORT';
+  const isBull = dir === 'LONG';
+
+  if (isBull && htfBias < 0) return null;
+  if (!isBull && htfBias > 0) return null;
+
+  // MACD must be expanding in breakout direction
+  if (hist != null && histPrev != null) {
+    const expanding = isBull ? (hist > 0 && hist > histPrev) : (hist < 0 && hist < histPrev);
+    if (!expanding) return null;
+  }
+
+  if (!(isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35))) return null;
+
+  const sl   = isBull ? rangeLow - 0.2 * atr : rangeHigh + 0.2 * atr;
+  const risk = isBull ? last.close - sl : sl - last.close;
+  if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) return null;
+
+  const rr     = +(14 / risk).toFixed(2);
+  if (rr < 0.7) return null;
+
+  const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
+
+  return {
+    dir, sl, rr, srDist,
+    archetype: 'compression_breakout',
+    bonus: regime === 'COMPRESSION' ? 6 : 2,
+    score: rr * 10 + (2.0 - rangePts / atr) * 4,
+  };
+}
+
+function evalChopMeanRevert(ctx) {
+  const { exec, n, last, atr, vwap, rsi, rsiOB, rsiOS } = ctx;
+
+  // Only fade extremes back toward VWAP
+  const isBull = last.close < vwap && rsiOS;
+  const isBear = last.close > vwap && rsiOB;
+  if (!isBull && !isBear) return null;
+
+  const dir = isBull ? 'LONG' : 'SHORT';
+
+  // Rejection candle (wick spike + body close in reversal direction)
+  if (!(isBull ? isBullishCandle(last, 0.40) : isBearishCandle(last, 0.40))) return null;
+
+  // Prior bar was a spike
+  const prevBar = exec[n - 1];
+  const spikeLen = isBull ? prevBar.open - prevBar.low : prevBar.high - prevBar.open;
+  if (spikeLen < 0.7 * atr) return null;
+
+  const sl   = isBull ? exec[n-1].low  - 0.2 * atr : exec[n-1].high + 0.2 * atr;
+  const risk = isBull ? last.close - sl : sl - last.close;
+  if (risk < ATR_MIN_PTS * 0.3 || risk > 2 * atr) return null;
+
+  // Smaller target in chop (aim for VWAP, ~TP1)
+  const rr = +(10 / risk).toFixed(2);
+  if (rr < 0.6) return null;
+
+  return {
+    dir, sl, rr, srDist: 1,
+    archetype: 'chop_mean_revert',
+    bonus: -6,  // penalise chop setups — used only when nothing else fires
+    score: rr * 7 + (rsiOS || rsiOB ? 8 : 0),
+  };
 }
 
 function reset() { lastSignalBar = -999; }

@@ -51,13 +51,13 @@ class BarWatcher {
 
     // Yahoo / pull path: fires after each full snapshot load
     const onReady = (payload) => {
-      const { instrument, bars5m = [], bars15m = [], bars30m = [],
+      const { instrument, bars3m = [], bars5m = [], bars15m = [], bars30m = [],
               bars45m = [], bars1h = [], bars4h = [], bars1d = [] } = payload;
       const lastBar = bars5m[bars5m.length - 1];
       if (!lastBar) return;
       // Use the bar's timestamp as the bucket key
       const bucket = this._snapBucket(lastBar.timestamp);
-      this._maybeFire(instrument, bucket, { bars5m, bars15m, bars30m, bars45m, bars1h, bars4h, bars1d });
+      this._maybeFire(instrument, bucket, { bars3m, bars5m, bars15m, bars30m, bars45m, bars1h, bars4h, bars1d });
     };
     this._bus.on('bars:ready', onReady);
     this._listeners.push(['bars:ready', onReady]);

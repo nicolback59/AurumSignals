@@ -78,7 +78,7 @@ const SESSIONS = [
     startH: 18, startM: 0, endH: 22, endM: 59,
     confidenceModifier: 0.80,
     sessionWeight: 3,
-    minTier: 'S',
+    minTier: 'B',  // was 'S' — max adjusted confidence is 100×0.80=80 (tier A), so S is unreachable
   },
   {
     name: 'OVERNIGHT',

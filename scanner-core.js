@@ -106,8 +106,9 @@ class Scanner extends EventEmitter {
 
     // Runtime state
     this._lastSignalTimes   = {}; // keyed by `${instrument}_${strategy_name}`
-    this._lastDiagSave      = { MNQ: 0, MGC: 0 };
-    this._lastRejectionSave = { MNQ: 0, MGC: 0 };
+    this._lastDiagSave          = { MNQ: 0, MGC: 0 };
+    this._lastRejectionSave     = { MNQ: 0, MGC: 0 };
+    this._lastEdgeDegradNtfy    = { MNQ: 0, MGC: 0 };  // throttle: 2h between alerts
     this._scanCount         = 0;
     this._consecutiveErrors = 0;
     this._fetchBackoffUntil = 0;   // circuit breaker: epoch ms when backoff expires
@@ -693,7 +694,7 @@ class Scanner extends EventEmitter {
 
   // ── Per-instrument scan ───────────────────────────────────────────────────────
 
-  async _scanInstrument(instrument, bars5m, bars15m, bars1h, bars4h, barsDly, bars30m = [], bars45m = []) {
+  async _scanInstrument(instrument, bars5m, bars15m, bars1h, bars4h, barsDly, bars30m = [], bars45m = [], bars3m = []) {
     const cooldownMs = this.cfg.cooldown * 60_000;
 
     // Daily cap
@@ -722,7 +723,7 @@ class Scanner extends EventEmitter {
     } catch { /* never crash */ }
 
     const barSets = instrument === 'MGC'
-      ? { bars5mMgc: bars5m, bars15mMgc: bars15m, bars30mMgc: bars30m, bars45mMgc: bars45m, bars1hMgc: bars1h }
+      ? { bars3mMgc: bars3m, bars5mMgc: bars5m, bars15mMgc: bars15m, bars30mMgc: bars30m, bars45mMgc: bars45m, bars1hMgc: bars1h }
       : { bars5m, bars15m, bars1h, bars4h, barsDly };
 
     const signals         = evaluateAll(barSets, { instrument });
@@ -1103,7 +1104,7 @@ class Scanner extends EventEmitter {
       // Signal evaluation uses confirmed bars; outcome resolution uses full bars (including forming)
       await Promise.all([
         mnqReady ? this._scanInstrument('MNQ', mnq5mConf, mnq15m, mnq1hConf, mnq4h, mnqDly) : null,
-        mgcReady ? this._scanInstrument('MGC', mgc5mConf, mgc15m, mgc1hConf, [], [], mgc30m, mgc45m) : null,
+        mgcReady ? this._scanInstrument('MGC', mgc5mConf, mgc15m, mgc1hConf, [], [], mgc30m, mgc45m, []) : null,
       ].filter(Boolean));
 
       if (mnqReady) this._autoResolveOutcomes(mnq5m, 'MNQ');
@@ -1516,7 +1517,11 @@ class Scanner extends EventEmitter {
         const result = detectEdgeDegradation(this.db, instrument);
         if (result.alert) {
           this._log(`🚨 EDGE DEGRADATION [${instrument}]: ${result.explanation}`);
-          if (this.cfg.ntfyTopic) {
+          // Throttle ntfy to once per 2 hours — backtest runs every few minutes
+          const _now = Date.now();
+          const _throttleMs = 2 * 60 * 60_000;
+          if (this.cfg.ntfyTopic && (_now - (this._lastEdgeDegradNtfy[instrument] ?? 0)) > _throttleMs) {
+            this._lastEdgeDegradNtfy[instrument] = _now;
             const headers = {
               'Content-Type': 'text/plain',
               'Title':    `Edge Degradation - ${instrument}`,
@@ -1740,7 +1745,8 @@ class Scanner extends EventEmitter {
     if (!this._running) return;
 
     try {
-      // 5m-derived bars from the snapshot (BarAggregator output)
+      // bars from the snapshot (BarAggregator output)
+      const bars3m  = (snapshot.bars3m  || []);
       const bars5m  = (snapshot.bars5m  || []).slice(-500);
       const bars15m = (snapshot.bars15m || []);
       const bars30m = (snapshot.bars30m || []);
@@ -1762,6 +1768,7 @@ class Scanner extends EventEmitter {
       }
 
       // Confirmed-bar slices (exclude the still-forming last bar)
+      const c3m  = bars3m.length  > 1 ? bars3m.slice(0, -1)  : bars3m;
       const c5m  = bars5m.length  > 1 ? bars5m.slice(0, -1)  : bars5m;
       const c1h  = bars1h.length  > 1 ? bars1h.slice(0, -1)  : bars1h;
 
@@ -1777,7 +1784,7 @@ class Scanner extends EventEmitter {
         await this._scanInstrument('MNQ', c5m, c15m, c1h, c4h, cDly);
         this._autoResolveOutcomes(bars5m, 'MNQ');
       } else {
-        await this._scanInstrument('MGC', c5m, c15m, c1h, [], [], c30m, c45m);
+        await this._scanInstrument('MGC', c5m, c15m, c1h, [], [], c30m, c45m, c3m);
         this._autoResolveOutcomes(bars5m, 'MGC');
       }
 
