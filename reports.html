@@ -412,7 +412,11 @@ async function loadWeekly() {
     const ws = await summaryRes.json();
     weeklySummaries = Array.isArray(ws) ? ws : [];
 
-    if (d.error) { document.getElementById('weeklyContent').innerHTML = `<p class="error-msg">${d.error}</p>`; return; }
+    if (d.error) {
+      document.getElementById('weeklyContent').innerHTML =
+        `<p class="error-msg">${d.error}</p><p style="color:rgba(255,255,255,.4);font:12px monospace;margin-top:8px">Click <b>Generate Learning</b> to build data for this week.</p>`;
+      return;
+    }
     document.getElementById('weeklyMeta').textContent = `Week: ${d.week_start ?? week} | Generated: ${fmtTs(d.generated_at)}`;
     document.getElementById('weeklyContent').innerHTML = renderWeekly(d, week);
   } catch(e) {
@@ -422,8 +426,12 @@ async function loadWeekly() {
 
 async function generateWeeklySummary() {
   const week = document.getElementById('weekPicker').value || getWeekMonday();
-  const btn  = document.getElementById('btnGenWeekly');
-  if (btn) { btn.textContent = 'Generating…'; btn.disabled = true; }
+  // Collect all generate buttons (top + inline) so all show loading state
+  const btns = ['btnGenWeeklyTop','btnGenWeekly','btnGenWeeklyInline']
+    .map(id => document.getElementById(id)).filter(Boolean);
+  const meta = document.getElementById('weeklyMeta');
+  btns.forEach(b => { b.textContent = 'Generating…'; b.disabled = true; });
+  if (meta) meta.textContent = 'Generating learning data…';
   try {
     const res = await fetch('/api/weekly-summary/generate', {
       method: 'POST',
@@ -431,10 +439,18 @@ async function generateWeeklySummary() {
       body: JSON.stringify({ week_start: week }),
     });
     const d = await res.json();
-    if (d.ok) await loadWeekly();
-  } catch(e) { console.error('generate weekly:', e); }
-  finally {
-    if (btn) { btn.textContent = 'Generate This Week'; btn.disabled = false; }
+    if (d.error) {
+      if (meta) meta.textContent = `Error: ${d.error}`;
+      document.getElementById('weeklyContent').innerHTML = `<p class="error-msg">Generate failed: ${d.error}</p>`;
+    } else {
+      if (meta) meta.textContent = `Generated ${d.count ?? ''} strategies for ${week}`;
+      await loadWeekly();
+    }
+  } catch(e) {
+    console.error('generate weekly:', e);
+    if (meta) meta.textContent = `Error: ${e.message}`;
+  } finally {
+    btns.forEach(b => { b.textContent = 'Generate Learning'; b.disabled = false; });
   }
 }
 
