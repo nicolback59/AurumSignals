@@ -30,6 +30,7 @@ const {
 const { isBlackout, classifyNow } = require('./clock/market-clock');
 const BarAggregator = require('./feed/bar-aggregator');
 const { createFeed } = require('./feed/feed-selector');
+const BarWatcher    = require('./feed/bar-watcher');
 const { rankSignal }        = require('./signals/signal-ranker');
 const { checkAndRegister }  = require('./signals/signal-fingerprint');
 const {
@@ -1743,6 +1744,67 @@ class Scanner extends EventEmitter {
     }
   }
 
+  // ── Event-driven scan trigger ─────────────────────────────────────────────────
+
+  /**
+   * Called by BarWatcher when a 5m bar closes (Tradovate) or after each Yahoo poll.
+   * Merges snapshot bars with cached 1h bars then runs signal evaluation.
+   */
+  async _onBarReady(instrument, snapshot) {
+    if (!this._isMarketOpen()) return;
+    if (!this._running) return;
+
+    try {
+      // 5m-derived bars from the snapshot (BarAggregator output)
+      const bars5m  = (snapshot.bars5m  || []).slice(-500);
+      const bars15m = (snapshot.bars15m || []);
+      const bars30m = (snapshot.bars30m || []);
+      const bars45m = (snapshot.bars45m || []);
+
+      // 1h bars: prefer native Yahoo 1h fetch (richer history than 5m aggregation)
+      // Fall back to aggregator's 1h if cache is empty
+      let bars1h, bars4h, barsDly;
+      if (instrument === 'MNQ') {
+        bars1h  = (this._lastGoodBars.mnq1h.length >= 30
+          ? this._lastGoodBars.mnq1h : snapshot.bars1h || []).slice(-500);
+        bars4h  = aggregate1hTo4h(bars1h);
+        barsDly = aggregate1hToDaily(bars1h);
+      } else {
+        bars1h  = (this._lastGoodBars.mgc1h.length >= 20
+          ? this._lastGoodBars.mgc1h : snapshot.bars1h || []).slice(-500);
+        bars4h  = [];
+        barsDly = [];
+      }
+
+      // Confirmed-bar slices (exclude the still-forming last bar)
+      const c5m  = bars5m.length  > 1 ? bars5m.slice(0, -1)  : bars5m;
+      const c1h  = bars1h.length  > 1 ? bars1h.slice(0, -1)  : bars1h;
+
+      const c15m = bars15m.length > 1 ? bars15m.slice(0, -1) : bars15m;
+      const c30m = bars30m.length > 1 ? bars30m.slice(0, -1) : bars30m;
+      const c45m = bars45m.length > 1 ? bars45m.slice(0, -1) : bars45m;
+      const c4h  = bars4h.length  > 1 ? bars4h.slice(0, -1)  : bars4h;
+      const cDly = barsDly.length > 1 ? barsDly.slice(0, -1) : barsDly;
+
+      if (c5m.length < 40) return; // not enough bars yet
+
+      if (instrument === 'MNQ') {
+        await this._scanInstrument('MNQ', c5m, c15m, c1h, c4h, cDly);
+        this._autoResolveOutcomes(bars5m, 'MNQ');
+      } else {
+        await this._scanInstrument('MGC', c5m, c15m, c1h, [], [], c30m, c45m);
+        this._autoResolveOutcomes(bars5m, 'MGC');
+      }
+
+      if (bars5m.length >= 2) {
+        const sym = instrument === 'MNQ' ? this.cfg.symbol : this.cfg.symbolMgc;
+        this._savePrice(sym, bars5m);
+      }
+    } catch (err) {
+      this._err(`_onBarReady error (${instrument})`, err);
+    }
+  }
+
   // ── Start / stop ──────────────────────────────────────────────────────────────
 
   start() {
@@ -1751,9 +1813,25 @@ class Scanner extends EventEmitter {
 
     const cfg = this.cfg;
 
-    // Immediate first scan
+    // ── Feed + event-driven watcher ─────────────────────────────────────────────
+    // Start the feed adapter (Tradovate WS or Yahoo poll).
+    // BarWatcher fires _onBarReady on each 5m bar close or Yahoo poll completion.
+    this._feed.start().catch(err => this._err('Feed start error', err));
+
+    this._barWatcher = new BarWatcher((instrument, snapshot) => {
+      this._onBarReady(instrument, snapshot);
+    });
+
+    // ── Timer fallback ───────────────────────────────────────────────────────────
+    // For Yahoo mode: the feed already polls on scanInterval; the timer-based
+    // scan() below acts as a safety net and handles the 1h bar refresh cycle.
+    // For Tradovate mode: widen the safety interval to 5 min (events handle the rest).
+    const isTradovate = this.feedType === 'TradovateFeed';
+    const fallbackMs  = isTradovate ? 5 * 60_000 : cfg.scanInterval;
+
+    // Immediate first scan (before first feed event arrives)
     this.scan();
-    this._intervals.push(setInterval(() => this.scan(), cfg.scanInterval));
+    this._intervals.push(setInterval(() => this.scan(), fallbackMs));
 
     // Startup backtests — delayed so the service stabilises and scan traffic settles
     // before the memory-heavy backtest runs. Staggered 6 min apart to avoid
@@ -1802,8 +1880,8 @@ class Scanner extends EventEmitter {
     setTimeout(() => this._checkEdgeDegradation(), 35 * 60_000);
 
     this._log(
-      `Scanner started — symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +
-      `interval=${cfg.scanInterval / 1000}s cooldown=${cfg.cooldown}min ` +
+      `Scanner started — feed=${this.feedType} symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +
+      `fallback=${Math.round(fallbackMs / 1000)}s cooldown=${cfg.cooldown}min ` +
       `cap=${cfg.dailySignalCap} minDaily=${cfg.dailyMinSignals} ` +
       `strategies=MNQ_INTRADAY,MNQ_SWING,MNQ_50PT,MGC_SCALP,MGC_INTRADAY`
     );
@@ -1831,6 +1909,8 @@ class Scanner extends EventEmitter {
     this._running = false;
     for (const iv of this._intervals) clearInterval(iv);
     this._intervals = [];
+    this._barWatcher?.destroy();
+    this._feed?.stop().catch(() => {});
     this._log('Scanner stopped.');
     return this;
   }
