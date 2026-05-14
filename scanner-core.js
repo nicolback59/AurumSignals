@@ -27,6 +27,8 @@ const {
   aggregate1hTo4h,
   aggregate1hToDaily,
 } = require('./strategies/shared-indicators');
+const { isBlackout, classifyNow } = require('./clock/market-clock');
+const BarAggregator = require('./feed/bar-aggregator');
 const {
   getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
   updateLearnedThresholds, updateLearningFromLiveSignals,
@@ -918,39 +920,16 @@ class Scanner extends EventEmitter {
   }
 
   // ── Market hours check ────────────────────────────────────────────────────────
-  // CME NQ (MNQ) and COMEX Gold (MGC) futures trade nearly 24h on weekdays.
-  // Schedule: Sunday 6:00 PM ET open → Friday 5:00 PM ET close.
-  // Daily maintenance break: 5:00–6:00 PM ET (Mon–Thu).
-  // Returns true when the market is open and scanning should proceed.
+  // Delegated to clock/market-clock.js (America/Los_Angeles timezone).
+  // Blackout: Fri 13:00 PT → Sun 15:00 PT + Mon–Fri 13:00–14:59 PT maintenance.
 
   _isMarketOpen() {
-    const now = new Date();
-    const etParts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      weekday: 'short',
-      hour:    'numeric',
-      minute:  'numeric',
-      hour12:  false,
-    }).formatToParts(now);
+    return !isBlackout();
+  }
 
-    const weekday = etParts.find(p => p.type === 'weekday').value; // Mon,Tue,…,Sun
-    const hour    = parseInt(etParts.find(p => p.type === 'hour').value, 10);
-    const minute  = parseInt(etParts.find(p => p.type === 'minute').value, 10);
-    const t = hour * 60 + minute; // minutes since midnight ET
-
-    // Saturday — fully closed
-    if (weekday === 'Sat') return false;
-
-    // Sunday — only open from 6:00 PM ET onward (t >= 1080)
-    if (weekday === 'Sun') return t >= 1080;
-
-    // Friday — closes at 5:00 PM ET (t >= 1020)
-    if (weekday === 'Fri' && t >= 1020) return false;
-
-    // Mon–Thu daily maintenance break: 5:00–6:00 PM ET (1020–1080)
-    if (t >= 1020 && t < 1080) return false;
-
-    return true;
+  /** Returns the current session name for logging (e.g. 'NY_OPEN', 'MIDDAY'). */
+  _sessionName() {
+    return classifyNow().session;
   }
 
   // ── Main scan cycle ───────────────────────────────────────────────────────────
@@ -1050,13 +1029,23 @@ class Scanner extends EventEmitter {
       const mgc5mConf = mgc5m.length > 1 ? mgc5m.slice(0, -1) : mgc5m;
       const mgc1hConf = mgc1h.length > 1 ? mgc1h.slice(0, -1) : mgc1h;
 
-      // Build multi-TF sets from confirmed bars only
-      const mnq15m = aggregate5mTo15m(mnq5mConf);
+      // Build multi-TF sets via BarAggregator (feeds from confirmed 5m bars)
+      const _mnqAgg = new BarAggregator('MNQ');
+      _mnqAgg.loadHistory(mnq5mConf);
+      const _mnqSnap = _mnqAgg.snapshot();
+
+      const _mgcAgg = new BarAggregator('MGC');
+      _mgcAgg.loadHistory(mgc5mConf);
+      const _mgcSnap = _mgcAgg.snapshot();
+
+      const mnq15m = _mnqSnap.bars15m.length >= 4 ? _mnqSnap.bars15m : aggregate5mTo15m(mnq5mConf);
+      const mgc15m = _mgcSnap.bars15m.length >= 4 ? _mgcSnap.bars15m : aggregate5mTo15m(mgc5mConf);
+      const mgc30m = _mgcSnap.bars30m.length >= 3 ? _mgcSnap.bars30m : aggregate5mTo30m(mgc5mConf);
+      const mgc45m = _mgcSnap.bars45m.length >= 3 ? _mgcSnap.bars45m : aggregate5mTo45m(mgc5mConf);
+
+      // 1h-derived TFs still come from the 1h feed (not 5m aggregation)
       const mnq4h  = aggregate1hTo4h(mnq1hConf);
       const mnqDly = aggregate1hToDaily(mnq1hConf);
-      const mgc15m = aggregate5mTo15m(mgc5mConf);
-      const mgc30m = aggregate5mTo30m(mgc5mConf);  // 30m confluence layer for MGC scalp
-      const mgc45m = aggregate5mTo45m(mgc5mConf);  // 45m confluence layer for MGC scalp
 
       if (mnq5m.length >= 2) this._savePrice(this.cfg.symbol,    mnq5m);
       if (mgc5m.length >= 2) this._savePrice(this.cfg.symbolMgc, mgc5m);
