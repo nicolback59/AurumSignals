@@ -110,15 +110,18 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     if (esScore < 1) continue;
 
     // ── Pullback into value ──────────────────────────────────────────────────
-    const tolerance = 0.8 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 12);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 12);
+    // Wide tolerance (1.5 ATR) + 24-bar lookback so we catch pullbacks from
+    // the past day that are now holding as support/resistance.
+    const tolerance = 1.5 * atr;
+    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 24);
+    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 24);
     if (!pulledToVwap && !pulledTo21) continue;
 
     // ── Retest holds ─────────────────────────────────────────────────────────
+    // Allow up to 0.8 ATR wick through EMA21 — a tight retest, not a full breakdown.
     const recentSlice = bars.slice(-3, -1);
-    if (isBull && recentSlice.some(b => b.close < ema21 - 0.3 * atr)) continue;
-    if (!isBull && recentSlice.some(b => b.close > ema21 + 0.3 * atr)) continue;
+    if (isBull && recentSlice.some(b => b.close < ema21 - 0.8 * atr)) continue;
+    if (!isBull && recentSlice.some(b => b.close > ema21 + 0.8 * atr)) continue;
 
     // ── Confirmation candle ──────────────────────────────────────────────────
     if (!(isBull ? isBullishCandle(last, 0.30) : isBearishCandle(last, 0.30))) continue;
