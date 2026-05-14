@@ -28,7 +28,7 @@ const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-s
 const TARGET_PTS  = 50;   // fixed primary target
 const PARTIAL_PTS = 25;   // partial exit
 const ATR_MIN_PTS = 10;   // minimum 5m ATR for move to be plausible
-const MIN_BAR_GAP = 6;    // 6 × 5m = 30 min cooldown
+const MIN_BAR_GAP = 4;    // 4 × 5m = 20 min cooldown
 
 let lastSignalBar = -999;
 
@@ -82,7 +82,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // ── ATR expansion ─────────────────────────────────────────────────────────────
   // Current ATR must be at least as large as consolidation ATR (breakout starting)
   const consolAtrRatio = consolAtr ? atr / consolAtr : 1;
-  if (consolAtrRatio < 0.85) return null; // still inside consolidation range
+  if (consolAtrRatio < 0.70) return null; // still inside consolidation range
 
   // ── Volume spike (bonus but not required) ─────────────────────────────────────
   const volSpike = hasVolumeSpike(bars, 20, 1.3);
