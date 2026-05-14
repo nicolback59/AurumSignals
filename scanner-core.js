@@ -29,6 +29,8 @@ const {
 } = require('./strategies/shared-indicators');
 const { isBlackout, classifyNow } = require('./clock/market-clock');
 const BarAggregator = require('./feed/bar-aggregator');
+const { rankSignal }        = require('./signals/signal-ranker');
+const { checkAndRegister }  = require('./signals/signal-fingerprint');
 const {
   getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
   updateLearnedThresholds, updateLearningFromLiveSignals,
@@ -870,6 +872,27 @@ class Scanner extends EventEmitter {
           sig.confidence, effectiveMin, reason);
         continue;
       }
+
+      // ── Signal fingerprint deduplication ─────────────────────────────────────
+      const { isDuplicate, fp } = checkAndRegister(sig);
+      if (isDuplicate) {
+        this._log(`🔁 Duplicate fingerprint suppressed: ${sig.strategy_name} ${instrument} ${sig.direction} @ ${sig.entry}`);
+        this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+          sig.confidence, null, 'duplicate fingerprint (same setup within 2h)');
+        continue;
+      }
+
+      // ── Institutional tier gate ───────────────────────────────────────────────
+      const rank = rankSignal(sig);
+      if (!rank.accepted) {
+        this._log(`🏷️  ${sig.strategy_name} ${instrument} rejected by tier gate: ${rank.rejectReason}`);
+        this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+          sig.confidence, null, rank.rejectReason);
+        continue;
+      }
+      sig.tier              = rank.tier;
+      sig.adjusted_confidence = rank.adjustedConfidence;
+      this._log(`🏷️  ${sig.strategy_name} ${instrument} — tier ${rank.tier} (adj conf ${rank.adjustedConfidence}, session ${rank.session}×${rank.sessionModifier})`);
 
       this._lastSignalTimes[stratKey] = Date.now();
       this._storeSignal({ ...sig, ticker: `${instrument}1!` });
