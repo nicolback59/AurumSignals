@@ -51,6 +51,7 @@ function evaluateAll(barSets, cfg = {}) {
   const {
     bars5m = [], bars15m = [], bars1h = [], bars4h = [], barsDly = [],
     bars5mMgc = [], bars15mMgc = [], bars30mMgc = [], bars45mMgc = [], bars1hMgc = [],
+    bars3mMgc = [],
   } = barSets;
 
   const instrument = cfg.instrument ?? null;
