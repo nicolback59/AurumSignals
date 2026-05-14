@@ -427,6 +427,11 @@ body {
 .badge-shadow { background: var(--orange-glow);       color: var(--orange); border-color: var(--orange-border); }
 .badge-muted  { background: rgba(255,255,255,.04);    color: var(--text-muted); border-color: var(--border-default); }
 
+/* Institutional tier badges */
+.badge-tier-s { background: rgba(245,197,66,.18);   color: #ffd700; border-color: rgba(245,197,66,.4);  font-weight: 700; letter-spacing: .08em; }
+.badge-tier-a { background: rgba(94,234,212,.12);   color: var(--teal);   border-color: rgba(94,234,212,.3);  font-weight: 700; letter-spacing: .08em; }
+.badge-tier-b { background: var(--blue-glow);       color: var(--blue);   border-color: var(--blue-border);   font-weight: 600; letter-spacing: .06em; }
+
 .score-chip {
   font-family: var(--font-mono);
   font-size: 10px;

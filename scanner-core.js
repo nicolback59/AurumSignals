@@ -122,11 +122,11 @@ class Scanner extends EventEmitter {
       insertSignal: db.prepare(`
         INSERT INTO signals
           (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
-           score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
+           score, confidence, tier, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
            trade_style, instrument, rr, raw_payload)
         VALUES
           (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
-           @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
+           @score, @confidence, @tier, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
            @trade_style, @instrument, @rr, @raw_payload)
       `),
 
@@ -526,12 +526,14 @@ class Scanner extends EventEmitter {
       tp2:           signal.tp2,
       tp3:           signal.tp3,
       score:         signal.score,
+      confidence:    signal.confidence   ?? null,
+      tier:          signal.tier         ?? null,
       win_prob_tp1:  signal.win_prob_tp1,
       win_prob_tp2:  signal.win_prob_tp2,
       win_prob_tp3:  signal.win_prob_tp3,
-      htf_bias:      signal.htf_bias   ?? null,
+      htf_bias:      signal.htf_bias     ?? null,
       session:       signal.session,
-      trade_style:   signal.trade_style ?? null,
+      trade_style:   signal.trade_style  ?? null,
       instrument:    signal.instrument,
       rr:            signal.rr,
       raw_payload:   JSON.stringify(signal),

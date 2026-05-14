@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS signals (
   tp2            REAL,
   tp3            REAL,
   score          INTEGER,
+  confidence     INTEGER,       -- 0–100 raw confidence from strategy scorer
+  tier           TEXT,          -- 'S' | 'A' | 'B' | 'IGNORE' (institutional tier from signal-ranker)
   win_prob_tp1   INTEGER,
   win_prob_tp2   INTEGER,
   win_prob_tp3   INTEGER,

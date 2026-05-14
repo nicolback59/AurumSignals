@@ -53,6 +53,14 @@ function applyMigrations() {
       db.exec("ALTER TABLE signals ADD COLUMN strategy_name TEXT");
       console.log('[migration] Added strategy_name to signals');
     }
+    if (!cols.includes('confidence')) {
+      db.exec("ALTER TABLE signals ADD COLUMN confidence INTEGER");
+      console.log('[migration] Added confidence to signals');
+    }
+    if (!cols.includes('tier')) {
+      db.exec("ALTER TABLE signals ADD COLUMN tier TEXT");
+      console.log('[migration] Added tier to signals');
+    }
   }
   const hasBtTrades = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_trades'").get();
   if (hasBtTrades) {
@@ -74,11 +82,11 @@ db.exec(schema);
 const insertSignal = db.prepare(`
   INSERT INTO signals
     (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
-     score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
+     score, confidence, tier, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
      trade_style, instrument, rr, raw_payload)
   VALUES
     (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
-     @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
+     @score, @confidence, @tier, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
      @trade_style, @instrument, @rr, @raw_payload)
 `);
 
@@ -163,6 +171,8 @@ app.post('/webhook', (req, res) => {
       tp2:           num(b.tp2),
       tp3:           num(b.tp3),
       score:         num(b.score),
+      confidence:    num(b.confidence) ?? null,
+      tier:          b.tier           || null,
       win_prob_tp1:  num(b.win_prob_tp1),
       win_prob_tp2:  num(b.win_prob_tp2),
       win_prob_tp3:  num(b.win_prob_tp3),
