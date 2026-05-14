@@ -70,10 +70,12 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const htfBias = calcHtfBias(htfBars, 9, 21);
 
   // ── Consolidation detection ───────────────────────────────────────────────────
-  // Look for tight range in last 12 bars before current
+  // Look for tight range in last 12 bars before current.
+  // Accept atrRatio < 0.8 (was the built-in 0.5) — active NQ sessions easily
+  // span 3–5× ATR over 60 min, so the strict default rarely triggers.
   const priorBars = bars.slice(0, -1); // exclude current bar
   const consol = detectConsolidation(priorBars, 12, 14);
-  if (!consol.isConsolidating) return null;
+  if (consol.atrRatio >= 0.8) return null;
 
   const { rangeHigh, rangeLow, curAtr: consolAtr } = consol;
 
@@ -86,8 +88,11 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const volSpike = hasVolumeSpike(bars, 20, 1.3);
 
   // ── Breakout check ────────────────────────────────────────────────────────────
-  const breakoutLong  = last.close > rangeHigh && last.close > vwap;
-  const breakoutShort = last.close < rangeLow  && last.close < vwap;
+  // VWAP removed from primary breakout — consolidation below VWAP in a downtrend
+  // is still a valid breakout setup. VWAP direction is captured in the HTF bias score.
+  const breakoutLong  = last.close > rangeHigh;
+  const breakoutShort = last.close < rangeLow;
+  const vwapAligned   = (breakoutLong && last.close > vwap) || (breakoutShort && last.close < vwap);
 
   // Also accept: retest of breakout level
   const retestLong  = !breakoutLong  && hadRetestAbove(bars, rangeHigh, atr);
@@ -153,7 +158,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       htf2Bias: 0,
       hasHtf2: false,
       vwapVal: vwap,
-      emaStackVal: isBull && last.close > vwap ? 1 : (!isBull && last.close < vwap ? 1 : 0),
+      emaStackVal: vwapAligned ? 1 : 0,  // VWAP alignment is a scoring bonus, not a gate
       atr, atrMin: ATR_MIN_PTS,
       rr: rrToTarget,
       srDistanceAtr: srDist,
