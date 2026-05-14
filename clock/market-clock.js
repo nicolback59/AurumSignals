@@ -92,8 +92,10 @@ const SESSIONS = [
 /**
  * Determine if a given DateTime (PT) falls in a hard blackout.
  * Blackout = weekly (Fri 13:00 → Sun 15:00) or daily maintenance (Mon–Fri 13:00–14:59).
+ * If called with no argument, defaults to the current PT time.
  */
 function isBlackout(dt) {
+  if (!dt) dt = DateTime.now().setZone(TZ);
   const dow  = dt.weekday; // 1=Mon … 7=Sun
   const hour = dt.hour;
   const min  = dt.minute;
