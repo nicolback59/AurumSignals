@@ -1566,13 +1566,31 @@ class Scanner extends EventEmitter {
     const MIN_ALERT_GAP_MS  = 4 * 60 * 60_000;  // 4h minimum between same-severity alerts
     const WORSEN_THRESHOLD  = 5;                  // re-alert only if delta worsens by ≥5pts
 
-    // Load persisted state (survives restarts)
-    let persistedState = {};
-    try {
-      const row = this.db.prepare(`SELECT params_json FROM strategy_params WHERE instrument = ?`)
-        .get(DEGRADE_STATE_KEY);
-      if (row) persistedState = JSON.parse(row.params_json);
-    } catch { /* use empty */ }
+    // ── Per-instrument in-memory state initialization (runs once per process) ──
+    // On first call, bootstrap from DB. If DB says 'degrading', bump lastAlertAt
+    // to now so the 4h throttle suppresses immediate re-alerts after restart.
+    if (!this._edgeDegradInitDone) {
+      this._edgeDegradInitDone = true;
+      let saved = {};
+      try {
+        const row = this.db.prepare(`SELECT params_json FROM strategy_params WHERE instrument = ?`)
+          .get(DEGRADE_STATE_KEY);
+        if (row) saved = JSON.parse(row.params_json);
+      } catch (e) {
+        console.error('[edge-degrade] state load error:', e.message);
+      }
+      for (const inst of ['MNQ', 'MGC']) {
+        const s = saved[inst] ?? { status: 'stable', lastAlertAt: 0, lastDelta: 0 };
+        this._edgeDegradState[inst] = {
+          status:      s.status    ?? 'stable',
+          lastDelta:   s.lastDelta ?? 0,
+          // If was degrading: treat lastAlertAt as now — this silences both
+          // statusChanged and worsenedMore checks after a restart.
+          lastAlertAt: s.status === 'degrading' ? Date.now() : (s.lastAlertAt ?? 0),
+        };
+        this._log(`📈 Edge [${inst}] startup state: ${this._edgeDegradState[inst].status}`);
+      }
+    }
 
     for (const instrument of ['MNQ', 'MGC']) {
       try {
@@ -1580,9 +1598,9 @@ class Scanner extends EventEmitter {
 
         if (result.status === 'insufficient_data' || result.status === 'error') continue;
 
-        const prev    = persistedState[instrument] ?? { status: 'stable', lastAlertAt: 0, lastDelta: 0 };
+        const mem       = this._edgeDegradState[instrument];
         const newStatus = result.status; // 'degrading' | 'stable' | 'improving'
-        const now     = Date.now();
+        const now       = Date.now();
 
         this._log(
           `📈 Edge [${instrument}]: ${newStatus} | ` +
@@ -1595,9 +1613,10 @@ class Scanner extends EventEmitter {
         let alertTags   = '';
 
         if (newStatus === 'degrading') {
-          const statusChanged  = prev.status !== 'degrading';
-          const worsenedMore   = (result.delta - prev.lastDelta) < -WORSEN_THRESHOLD;
-          const throttleElapsed = (now - prev.lastAlertAt) > MIN_ALERT_GAP_MS;
+          // Use in-memory status as source of truth — survives DB write failures
+          const statusChanged   = mem.status !== 'degrading';
+          const worsenedMore    = (result.delta - mem.lastDelta) < -WORSEN_THRESHOLD;
+          const throttleElapsed = (now - mem.lastAlertAt) > MIN_ALERT_GAP_MS;
 
           if (statusChanged) {
             shouldAlert = true;
@@ -1608,13 +1627,13 @@ class Scanner extends EventEmitter {
           } else if (worsenedMore && throttleElapsed) {
             shouldAlert = true;
             alertTitle  = `Edge Worsening - ${instrument}`;
-            alertBody   = `⚠️ DEGRADATION WORSENING: ${result.message} (was ${prev.lastDelta}% → now ${result.delta}%)`;
+            alertBody   = `⚠️ DEGRADATION WORSENING: ${result.message} (was ${mem.lastDelta}% → now ${result.delta}%)`;
             alertTags   = 'chart_decreasing,warning';
-            this._log(`🚨 EDGE WORSENING [${instrument}]: delta ${prev.lastDelta}% → ${result.delta}%`);
+            this._log(`🚨 EDGE WORSENING [${instrument}]: delta ${mem.lastDelta}% → ${result.delta}%`);
           } else {
-            this._log(`🔕 Edge alert suppressed [${instrument}]: already in degrading state (last alert ${Math.round((now - prev.lastAlertAt) / 60_000)}min ago)`);
+            this._log(`🔕 Edge alert suppressed [${instrument}]: already degrading (last alert ${Math.round((now - mem.lastAlertAt) / 60_000)}min ago)`);
           }
-        } else if (newStatus !== 'degrading' && prev.status === 'degrading') {
+        } else if (newStatus !== 'degrading' && mem.status === 'degrading') {
           shouldAlert = true;
           alertTitle  = `Edge Recovered - ${instrument}`;
           alertBody   = `✅ EDGE RECOVERED: ${result.message}`;
@@ -1622,13 +1641,10 @@ class Scanner extends EventEmitter {
           this._log(`✅ EDGE RECOVERED [${instrument}]: degrading→${newStatus} | ${result.message}`);
         }
 
-        // Update persisted state
-        persistedState[instrument] = {
-          status:      newStatus,
-          lastAlertAt: shouldAlert ? now : prev.lastAlertAt,
-          lastDelta:   result.delta ?? prev.lastDelta,
-          updatedAt:   now,
-        };
+        // Update in-memory state (primary source of truth within this process)
+        mem.status    = newStatus;
+        mem.lastDelta = result.delta ?? mem.lastDelta;
+        if (shouldAlert) mem.lastAlertAt = now;
 
         // Send ntfy only when truly actionable
         if (shouldAlert && this.cfg.ntfyTopic) {
@@ -1643,18 +1659,26 @@ class Scanner extends EventEmitter {
             method: 'POST', headers, body: alertBody,
           }).catch(() => {});
         }
-      } catch { /* never crash */ }
+      } catch (e) {
+        console.error(`[edge-degrade] processing error for ${instrument}:`, e.message);
+      }
     }
 
-    // Persist state to DB so restarts don't retrigger alerts
+    // Persist in-memory state to DB for cross-restart continuity
     try {
+      const toSave = {};
+      for (const inst of ['MNQ', 'MGC']) {
+        if (this._edgeDegradState[inst]) toSave[inst] = { ...this._edgeDegradState[inst], updatedAt: Date.now() };
+      }
       this.db.prepare(`
         INSERT INTO strategy_params (instrument, params_json, updated_at, version)
         VALUES (?, ?, datetime('now'), 1)
         ON CONFLICT(instrument) DO UPDATE SET
           params_json = excluded.params_json, updated_at = excluded.updated_at, version = version + 1
-      `).run(DEGRADE_STATE_KEY, JSON.stringify(persistedState));
-    } catch { /* never crash */ }
+      `).run(DEGRADE_STATE_KEY, JSON.stringify(toSave));
+    } catch (e) {
+      console.error('[edge-degrade] DB save failed:', e.message);
+    }
   }
 
   // ── Weekly learning summary generation ───────────────────────────────────────
