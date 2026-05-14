@@ -50,9 +50,9 @@ services:
       - key: BACKTEST_INTERVAL_H
         value: 4         # hours between scheduled backtests
       - key: BACKTEST_BARS
-        value: 2000      # 1m bars to fetch (~1.4 days); 10000 OOMs on 512MB Starter
+        value: 5000      # 1m bars (~3.5 days); gives 4+ daily bars so MNQ_SWING fires; 10000 OOMs on 512MB
       - key: BT_TARGET_TRADES
-        value: 250       # stop backtest early once this many trades are found
+        value: 400       # stop backtest early once this many trades are found (raised for multi-strategy coverage)
       - key: BT_SLIPPAGE
         value: 0.5       # execution slippage in price points
       - key: OPTIMIZER_INTERVAL_H
