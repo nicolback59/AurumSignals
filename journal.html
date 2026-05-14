@@ -395,7 +395,22 @@ function renderRunTrades(runId) {
     <span style="margin-left:auto;font-family:var(--font-mono)">Entry / SL / TP1</span>
   </div>`;
 
-  return header + trades.map(t => {
+  // Per-strategy breakdown
+  const byStrat = {};
+  for (const t of trades) {
+    const sn = t.setup || t.strategy_name || 'Unknown';
+    if (!byStrat[sn]) byStrat[sn] = { wins: 0, losses: 0 };
+    if (t.outcome === 'WIN') byStrat[sn].wins++;
+    else byStrat[sn].losses++;
+  }
+  const stratBreakdown = Object.entries(byStrat).map(([name, s]) => {
+    const tot = s.wins + s.losses;
+    const wr  = tot > 0 ? (s.wins / tot * 100).toFixed(0) + '%' : '–';
+    return `<span style="white-space:nowrap">${escH(name)}: <span style="color:var(--green)">${s.wins}W</span>/<em>${s.losses}L</em> <span style="color:var(--text-muted)">(${wr})</span></span>`;
+  }).join('<span style="color:rgba(255,255,255,.2);margin:0 6px">|</span>');
+  const stratHeader = `<div style="font-size:10px;padding:4px 12px 6px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;flex-wrap:wrap;gap:6px;color:rgba(255,255,255,.55)"><span style="opacity:.5;margin-right:4px">strategies:</span>${stratBreakdown}</div>`;
+
+  return stratHeader + header + trades.map(t => {
     const timeStr = t.timestamp ? hhmm(t.timestamp) : (t.bar_idx != null ? '#' + t.bar_idx : '—');
     const entryStr = t.entry != null ? t.entry.toFixed(2) : '—';
     const slStr    = t.sl    != null ? t.sl.toFixed(2)    : '—';
@@ -407,7 +422,7 @@ function renderRunTrades(runId) {
     return `<div class="bt-trade-row ${isWin ? 'bt-trade-win' : ''}" id="bt-${t.id}">
       <span class="bt-t-time">${timeStr}</span>
       <span class="bt-t-dir ${t.direction === 'LONG' ? 'long' : 'short'}">${t.direction === 'LONG' ? '▲' : '▼'}</span>
-      <span class="bt-t-setup">${escH(t.setup || '—')}</span>
+      <span class="bt-t-setup">${escH(t.setup || t.strategy_name || '—')}</span>
       <span class="bt-t-regime">${t.regime || ''}</span>
       <span class="bt-t-score">${t.score != null ? t.score : '—'}</span>
       <span class="bt-t-outcome ${t.outcome}">${t.outcome}</span>
