@@ -27,7 +27,7 @@ const {
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
 const ATR_MIN_PTS = 1.5;  // slightly lower than scalp — still needs real movement
-const MIN_BAR_GAP = 6;    // 6 × 5m = 30 min cooldown
+const MIN_BAR_GAP = 2;    // 2 × 5m = 10 min spam guard — adaptive-cooldown.js handles strategy timing
 
 let lastSignalBar = -999;
 

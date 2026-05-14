@@ -28,7 +28,7 @@ const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-s
 const TARGET_PTS  = 50;   // fixed primary target
 const PARTIAL_PTS = 25;   // partial exit
 const ATR_MIN_PTS = 10;   // minimum 5m ATR for move to be plausible
-const MIN_BAR_GAP = 4;    // 4 × 5m = 20 min cooldown
+const MIN_BAR_GAP = 2;    // 2 × 5m = 10 min spam guard — adaptive-cooldown.js handles strategy timing
 
 let lastSignalBar = -999;
 

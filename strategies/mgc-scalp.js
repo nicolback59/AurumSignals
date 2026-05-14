@@ -45,7 +45,7 @@ const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
 const ATR_MIN_PTS = 1.5;
-const MIN_BAR_GAP = 4;          // bars between signals on execution TF
+const MIN_BAR_GAP = 1;          // 1-bar spam guard — adaptive-cooldown.js handles strategy timing
 const TP = [10, 14, 20, 25];    // fixed MGC take-profit levels in points
 
 let lastSignalBar = -999;

@@ -29,7 +29,7 @@ const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-s
 // Minimum ATR in MNQ points for intraday to be worth trading
 const ATR_MIN_PTS = 5;  // lowered from 8 — capture moves in moderate-volatility sessions
 // Cooldown: minimum bars between signals on this strategy
-const MIN_BAR_GAP = 8;  // 8 × 5m = 40 min (was 12)
+const MIN_BAR_GAP = 2;  // 2 × 5m = 10 min spam guard — adaptive-cooldown.js handles strategy timing
 
 let lastSignalBar = -999;
 

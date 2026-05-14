@@ -28,7 +28,7 @@ const {
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
 const ATR_MIN_PTS = 15; // minimum 1h ATR in MNQ points
-const MIN_BAR_GAP = 2;  // 2 × 1h = 2 hours minimum between signals
+const MIN_BAR_GAP = 1;  // 1 × 1h = 1h spam guard — adaptive-cooldown.js handles strategy timing
 const MIN_RR      = 2.0;
 
 let lastSignalBar = -999;
