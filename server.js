@@ -53,6 +53,18 @@ function applyMigrations() {
       db.exec("ALTER TABLE signals ADD COLUMN strategy_name TEXT");
       console.log('[migration] Added strategy_name to signals');
     }
+    if (!cols.includes('confidence')) {
+      db.exec("ALTER TABLE signals ADD COLUMN confidence INTEGER");
+      console.log('[migration] Added confidence to signals');
+    }
+    if (!cols.includes('tier')) {
+      db.exec("ALTER TABLE signals ADD COLUMN tier TEXT");
+      console.log('[migration] Added tier to signals');
+    }
+    if (!cols.includes('trade_status')) {
+      db.exec("ALTER TABLE signals ADD COLUMN trade_status TEXT NOT NULL DEFAULT 'ACTIVE'");
+      console.log('[migration] Added trade_status to signals');
+    }
   }
   const hasBtTrades = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_trades'").get();
   if (hasBtTrades) {
@@ -74,12 +86,12 @@ db.exec(schema);
 const insertSignal = db.prepare(`
   INSERT INTO signals
     (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
-     score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
-     trade_style, instrument, rr, raw_payload)
+     score, confidence, tier, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
+     trade_style, instrument, rr, trade_status, raw_payload)
   VALUES
     (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
-     @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
-     @trade_style, @instrument, @rr, @raw_payload)
+     @score, @confidence, @tier, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
+     @trade_style, @instrument, @rr, 'ACTIVE', @raw_payload)
 `);
 
 const upsertOutcome = db.prepare(`
@@ -163,6 +175,8 @@ app.post('/webhook', (req, res) => {
       tp2:           num(b.tp2),
       tp3:           num(b.tp3),
       score:         num(b.score),
+      confidence:    num(b.confidence) ?? null,
+      tier:          b.tier           || null,
       win_prob_tp1:  num(b.win_prob_tp1),
       win_prob_tp2:  num(b.win_prob_tp2),
       win_prob_tp3:  num(b.win_prob_tp3),
@@ -201,6 +215,22 @@ app.get('/api/signals', (req, res) => {
     LIMIT  ?
   `).all(limit);
   res.json(rows);
+});
+
+app.get('/api/status', (req, res) => {
+  const scanner = global._scanner;
+  res.json({
+    feedType:      scanner?.feedType      ?? 'unknown',
+    feedConnected: scanner?._feed?.isConnected() ?? false,
+    tradovateConfigured: !!(
+      process.env.TRADOVATE_USERNAME &&
+      process.env.TRADOVATE_CID &&
+      process.env.TRADOVATE_SECRET
+    ),
+    env:           process.env.TRADOVATE_ENV || 'live',
+    scanCount:     scanner?._scanCount ?? 0,
+    uptime:        Math.floor(process.uptime()),
+  });
 });
 
 app.get('/api/stats', (req, res) => {
@@ -1162,6 +1192,7 @@ app.listen(PORT, '0.0.0.0', () => {
   // Start scanner in-process so the scanner is ALWAYS running when the server is running.
   // This eliminates the separate worker service and the "scanner not responding" issue.
   const scanner = new Scanner(db);
+  global._scanner = scanner;  // expose to /api/status
 
   scanner.on('signal',    data => _broadcastSSE('signal',    data));
   scanner.on('scan',      data => _broadcastSSE('scan',      data));

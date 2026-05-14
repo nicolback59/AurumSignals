@@ -107,6 +107,12 @@ function outcomeBadge(result, pnlPts) {
   return `<span class="badge badge-${result.toLowerCase()}">${result}${pts}</span>`;
 }
 
+function tierBadge(tier) {
+  if (!tier || tier === 'IGNORE') return '';
+  const cls = tier === 'S' ? 'badge-tier-s' : tier === 'A' ? 'badge-tier-a' : 'badge-tier-b';
+  return `<span class="badge ${cls}">${tier}</span>`;
+}
+
 function statusBadge(status) {
   if (status === 'active')     return '<span class="badge badge-active">ACTIVE</span>';
   if (status === 'shadow')     return '<span class="badge badge-shadow">SHADOW</span>';
@@ -136,7 +142,7 @@ function probBar(label, val, cls) {
 /* ── Outcome section ─────────────────────────────────── */
 function outcomeSection(sig) {
   if (sig.result) {
-    const pts = sig.pnl_pts != null
+    const pts = sig.pnl_pts != null && sig.result !== 'EXPIRED'
       ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts</span>`
       : '';
     const exitTs = sig.exit_at
@@ -144,7 +150,24 @@ function outcomeSection(sig) {
       : '';
     return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">${outcomeBadge(sig.result)}${pts}${exitTs}</div>`;
   }
-  return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);letter-spacing:.05em">PENDING — auto-resolving</span>`;
+  // Show the live trade_status when no outcome recorded yet
+  const status = sig.trade_status || 'ACTIVE';
+  if (status === 'ACTIVE') {
+    return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--green);letter-spacing:.05em">ACTIVE — watching</span>`;
+  }
+  return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);letter-spacing:.05em">${status}</span>`;
+}
+
+/* ── Strategy label (human-readable) ─────────────────── */
+function strategyLabel(sig) {
+  const map = {
+    MNQ_INTRADAY: 'MNQ Intraday',
+    MNQ_SWING:    'MNQ Swing',
+    MNQ_50PT:     'MNQ 50-Point',
+    MGC_SCALP:    'MGC Scalp',
+    MGC_INTRADAY: 'MGC Intraday',
+  };
+  return map[sig.strategy_name] || sig.setup || sig.strategy_name || '—';
 }
 
 /* ── Signal Card ─────────────────────────────────────── */
@@ -154,24 +177,38 @@ function buildSignalCard(sig) {
     ? (sig.htf_bias.includes('BULL') ? 'bull' : sig.htf_bias.includes('BEAR') ? 'bear' : '')
     : '';
 
+  // Confidence display — prefer raw confidence, fall back to score×4
+  const confVal = sig.confidence ?? (sig.score != null ? sig.score * 4 : null);
+  const confChip = confVal != null
+    ? `<span class="score-chip" title="Strategy confidence">${confVal}/100</span>`
+    : '';
+
+  // TP labels vary by strategy
+  const isMgc = (sig.instrument === 'MGC');
+  const tp1Label = isMgc ? 'TP1 +10pts' : 'TP1 +25pts';
+  const tp2Label = isMgc ? 'TP2 +14pts' : 'TP2 +50pts';
+  const tp3Label = isMgc ? 'TP3 +20pts' : 'TP3 +75pts';
+
   return `<div class="signal-card ${isLong ? 'long' : 'short'}" data-id="${sig.id}">
     <div class="signal-card-header">
       ${directionBadge(sig.direction)}
+      ${tierBadge(sig.tier)}
       ${gradeBadge(sig.grade)}
-      ${setupBadge(sig.setup)}
-      ${sig.score != null ? `<span class="score-chip">${sig.score}/35</span>` : ''}
+      ${confChip}
       <span class="signal-card-time" title="${fmtDatetime(sig.received_at)}">${timeAgo(sig.received_at)}</span>
     </div>
-    <div style="font-family:var(--font-mono);font-size:10px;color:rgba(255,255,255,.35);padding:2px 0 4px;letter-spacing:.03em">
-      Initiated: ${fmtDatetime(sig.received_at)}
+    <div style="font-family:var(--font-mono);font-size:10px;color:rgba(255,255,255,.5);padding:2px 0 6px;letter-spacing:.03em;display:flex;gap:8px;align-items:center">
+      <span style="color:rgba(255,255,255,.7);font-weight:600">${escH(strategyLabel(sig))}</span>
+      <span style="color:rgba(255,255,255,.25)">·</span>
+      <span>${fmtDatetime(sig.received_at)}</span>
     </div>
     <div class="signal-card-body">
       <div class="signal-card-levels">
         <div class="level-row"><span class="level-label">ENTRY</span><span class="level-value entry">${fmt(sig.entry)}</span></div>
         <div class="level-row"><span class="level-label">STOP</span><span class="level-value sl">${fmt(sig.sl)}</span></div>
-        <div class="level-row"><span class="level-label">TP1 +25pts</span><span class="level-value tp1">${fmt(sig.tp1)}</span></div>
-        <div class="level-row"><span class="level-label">TP2 +50pts</span><span class="level-value tp2">${fmt(sig.tp2)}</span></div>
-        <div class="level-row"><span class="level-label">TP3 +75pts</span><span class="level-value tp3">${fmt(sig.tp3)}</span></div>
+        <div class="level-row"><span class="level-label">${tp1Label}</span><span class="level-value tp1">${fmt(sig.tp1)}</span></div>
+        <div class="level-row"><span class="level-label">${tp2Label}</span><span class="level-value tp2">${fmt(sig.tp2)}</span></div>
+        <div class="level-row"><span class="level-label">${tp3Label}</span><span class="level-value tp3">${fmt(sig.tp3)}</span></div>
       </div>
       <div class="signal-card-probs">
         ${probBar('TP1 Win Prob', sig.win_prob_tp1, 'tp1')}
@@ -181,10 +218,10 @@ function buildSignalCard(sig) {
     </div>
     <div class="signal-card-footer">
       <div class="tag-list">
-        ${sig.htf_bias  ? `<span class="tag ${htfCls}">HTF: ${escH(sig.htf_bias)}</span>` : ''}
-        ${sig.session   ? `<span class="tag sess">${escH(sig.session)}</span>` : ''}
-        ${sig.ticker    ? `<span class="tag">${escH(sig.ticker)}</span>` : ''}
-        ${sig.timeframe ? `<span class="tag">${sig.timeframe}m</span>` : ''}
+        ${sig.htf_bias    ? `<span class="tag ${htfCls}">HTF: ${escH(sig.htf_bias)}</span>` : ''}
+        ${sig.session     ? `<span class="tag sess">${escH(sig.session)}</span>` : ''}
+        ${sig.trade_style ? `<span class="tag">${escH(sig.trade_style)}</span>` : ''}
+        ${sig.rr          ? `<span class="tag">RR ${fmt(sig.rr, 1)}</span>` : ''}
       </div>
       ${outcomeSection(sig)}
     </div>

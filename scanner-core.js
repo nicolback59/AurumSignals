@@ -27,6 +27,18 @@ const {
   aggregate1hTo4h,
   aggregate1hToDaily,
 } = require('./strategies/shared-indicators');
+const { isBlackout, classifyNow } = require('./clock/market-clock');
+const BarAggregator = require('./feed/bar-aggregator');
+const { createFeed } = require('./feed/feed-selector');
+const BarWatcher    = require('./feed/bar-watcher');
+const { rankSignal }        = require('./signals/signal-ranker');
+const { checkAndRegister }  = require('./signals/signal-fingerprint');
+const {
+  STATES, resolveBar, shouldExpire, stateToResult,
+} = require('./signals/signal-state-machine');
+const {
+  buildAlertPayload, flattenPayload, buildNtfyBody, buildNtfyHeaders,
+} = require('./signals/alert-payload');
 const {
   getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
   updateLearnedThresholds, updateLearningFromLiveSignals,
@@ -107,6 +119,17 @@ class Scanner extends EventEmitter {
       mnq5m: [], mnq1h: [], mgc5m: [], mgc1h: [],
     };
 
+    // Feed adapter — Tradovate WebSocket if credentials present, Yahoo otherwise
+    this._feed = createFeed({
+      instruments: ['MNQ', 'MGC'],
+      symbolMap:   {
+        MNQ: process.env.TRADOVATE_SYMBOL_MNQ || '',
+        MGC: process.env.TRADOVATE_SYMBOL_MGC || '',
+      },
+      pollMs: this.cfg.scanInterval,  // Yahoo poll interval matches scan interval
+    });
+    this.feedType = this._feed.constructor.name;  // 'TradovateFeed' | 'YahooFeed'
+
     this._prepareStatements();
   }
 
@@ -118,12 +141,12 @@ class Scanner extends EventEmitter {
       insertSignal: db.prepare(`
         INSERT INTO signals
           (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
-           score, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
-           trade_style, instrument, rr, raw_payload)
+           score, confidence, tier, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
+           trade_style, instrument, rr, trade_status, raw_payload)
         VALUES
           (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
-           @score, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
-           @trade_style, @instrument, @rr, @raw_payload)
+           @score, @confidence, @tier, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
+           @trade_style, @instrument, @rr, @trade_status, @raw_payload)
       `),
 
       upsertPrice: db.prepare(`
@@ -144,15 +167,19 @@ class Scanner extends EventEmitter {
       `),
 
       getPendingSignals: db.prepare(`
-        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument
+        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument, s.trade_style
         FROM   signals s
         LEFT JOIN outcomes o ON o.signal_id = s.id
         WHERE  o.id IS NULL
           AND  s.entry IS NOT NULL AND s.sl IS NOT NULL AND s.tp1 IS NOT NULL
           AND  s.received_at <= datetime('now', '-3 minutes')
-          AND  s.received_at >= datetime('now', '-4 hours')
+          AND  (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
           AND  s.instrument = ?
         ORDER BY s.received_at ASC
+      `),
+
+      updateTradeStatus: db.prepare(`
+        UPDATE signals SET trade_status = ? WHERE id = ?
       `),
 
       insertRejection: db.prepare(`
@@ -434,39 +461,10 @@ class Scanner extends EventEmitter {
 
   // ── ntfy push ────────────────────────────────────────────────────────────────
 
-  _sendNtfy(s) {
+  _sendNtfyPayload(payload) {
     if (!this.cfg.ntfyTopic) return;
-    // HTTP headers must be ASCII only — no emoji. Emoji go in the body only.
-    const arrow    = s.direction === 'LONG' ? '[LONG]' : '[SHORT]';
-    const priority = s.grade === 'A+' ? 'urgent' : 'high';
-    const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
-    const stratTag = s.strategy_name ? `[${s.strategy_name}] ` : '';
-    const predWR = s.predicted_wr_pct != null
-      ? `WinRate: ${s.predicted_wr_pct}%+/-${s.predicted_wr_band ?? 9}% (${s.predicted_wr_source ?? '?'})${s.predicted_wr_atr_spike ? ' [NEWS/SPIKE]' : ''}`
-      : null;
-    const dirEmoji = s.direction === 'LONG' ? '▲ LONG' : '▼ SHORT';
-    const body = [
-      `${dirEmoji} ${s.grade}  |  ${s.ticker ?? s.instrument}`,
-      s.setup        ? `Setup:   ${stratTag}${s.setup}`   : null,
-      s.trade_style  ? `Style:   ${s.trade_style}`         : null,
-      s.entry != null? `Entry:   ${s.entry}`               : null,
-      s.sl    != null? `SL:      ${s.sl}`                  : null,
-      s.tp1   != null? `TP1:     ${s.tp1}`                 : null,
-      s.tp2   != null? `TP2:     ${s.tp2}`                 : null,
-      s.tp3   != null? `TP3:     ${s.tp3}`                 : null,
-      s.tp4   != null? `TP4:     ${s.tp4}`                 : null,
-      s.rr    != null? `RR:      ${s.rr}`                  : null,
-      s.confidence != null ? `Conf:    ${s.confidence}/100` : null,
-      predWR,
-      s.session      ? `Session: ${s.session}`             : null,
-    ].filter(Boolean).join('\n');
-    const headers = {
-      'Content-Type': 'text/plain',
-      'Title':    `${arrow} ${s.grade} - ${s.ticker ?? s.instrument}`,
-      'Priority': priority,
-      'Tags':     tags,
-    };
-    if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+    const body    = buildNtfyBody(payload);
+    const headers = buildNtfyHeaders(payload, { ntfyToken: this.cfg.ntfyToken });
     fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
       .catch(err => this._err('[ntfy] send failed', err));
   }
@@ -509,6 +507,11 @@ class Scanner extends EventEmitter {
       signal.predicted_wr_dynamic_note = pred.dynamic_note;
     } catch { /* never crash signal storage */ }
 
+    const received_at = new Date().toISOString();
+    const rank        = signal._rank ?? null;
+    // Build canonical payload; id is null until after insert
+    const prePayload  = buildAlertPayload(signal, { id: null, received_at, rank });
+
     const info = this._stmts.insertSignal.run({
       ticker:        signal.ticker ?? `${signal.instrument}1!`,
       timeframe:     signal.timeframe ?? '5m',
@@ -522,26 +525,30 @@ class Scanner extends EventEmitter {
       tp2:           signal.tp2,
       tp3:           signal.tp3,
       score:         signal.score,
+      confidence:    signal.confidence   ?? null,
+      tier:          signal.tier         ?? null,
       win_prob_tp1:  signal.win_prob_tp1,
       win_prob_tp2:  signal.win_prob_tp2,
       win_prob_tp3:  signal.win_prob_tp3,
-      htf_bias:      signal.htf_bias   ?? null,
+      htf_bias:      signal.htf_bias     ?? null,
       session:       signal.session,
-      trade_style:   signal.trade_style ?? null,
+      trade_style:   signal.trade_style  ?? null,
       instrument:    signal.instrument,
       rr:            signal.rr,
-      raw_payload:   JSON.stringify(signal),
+      trade_status:  STATES.ACTIVE,
+      raw_payload:   JSON.stringify(prePayload),
     });
 
-    const id          = info.lastInsertRowid;
-    const stratLabel  = signal.strategy_name ?? signal.setup ?? 'unknown';
+    const id         = info.lastInsertRowid;
+    const stratLabel = signal.strategy_name ?? signal.setup ?? 'unknown';
     const logMsg = `✅ SIGNAL #${id} | ${signal.instrument} ${signal.direction} ${signal.grade} | ` +
       `${stratLabel} | confidence=${signal.confidence ?? signal.score}/100 | entry=${signal.entry} | rr=${signal.rr}`;
     this._log(logMsg, 'signal');
 
-    const enriched = { ...signal, id, received_at: new Date().toISOString() };
-    this.emit('signal', enriched);
-    this._sendNtfy(enriched);
+    // Rebuild with id for emit + ntfy
+    const payload = buildAlertPayload(signal, { id, received_at, rank });
+    this.emit('signal', { ...flattenPayload(payload), raw_payload: JSON.stringify(payload) });
+    this._sendNtfyPayload(payload);
     return id;
   }
 
@@ -585,42 +592,53 @@ class Scanner extends EventEmitter {
 
   // ── Auto-resolve pending outcomes ─────────────────────────────────────────────
 
-  _autoResolveOutcomes(bars1m, instrument) {
+  _autoResolveOutcomes(bars5m, instrument) {
     const pending = this._stmts.getPendingSignals.all(instrument);
     if (!pending.length) return;
     let resolvedCount = 0;
+    const now = new Date();
 
     for (const sig of pending) {
       const sigTime    = new Date(sig.received_at).getTime();
-      const futureBars = bars1m.filter(b => new Date(b.timestamp).getTime() > sigTime);
-      if (futureBars.length < 2) continue;
+      const futureBars = bars5m.filter(b => new Date(b.timestamp).getTime() > sigTime);
 
-      let resolved = null, exitBar = null;
+      let resolution = null, exitBar = null;
+
+      // Walk forward bars looking for TP1 or SL hit
       for (const bar of futureBars) {
-        if (sig.direction === 'LONG') {
-          if (bar.high >= sig.tp1) { resolved = { result: 'WIN',  exitPrice: sig.tp1 }; exitBar = bar; break; }
-          if (bar.low  <= sig.sl)  { resolved = { result: 'LOSS', exitPrice: sig.sl  }; exitBar = bar; break; }
-        } else {
-          if (bar.low  <= sig.tp1) { resolved = { result: 'WIN',  exitPrice: sig.tp1 }; exitBar = bar; break; }
-          if (bar.high >= sig.sl)  { resolved = { result: 'LOSS', exitPrice: sig.sl  }; exitBar = bar; break; }
-        }
+        resolution = resolveBar(sig, bar);
+        if (resolution) { exitBar = bar; break; }
       }
 
-      if (resolved) {
-        const pnlPts = sig.direction === 'LONG'
-          ? resolved.exitPrice - sig.entry
-          : sig.entry - resolved.exitPrice;
-        this._stmts.insertOutcome.run(
-          sig.id, resolved.result, resolved.exitPrice,
-          exitBar?.timestamp ?? new Date().toISOString(),
-          +pnlPts.toFixed(2)
-        );
-        const pts = +pnlPts.toFixed(2);
-        this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolved.result} (${pts} pts)`, 'signal');
-        this.emit('outcome', { signalId: sig.id, instrument, result: resolved.result, pnlPts: pts });
-        this._sendNtfyOutcome(sig.id, instrument, sig.direction, resolved.result, pts);
-        resolvedCount++;
+      // No TP1/SL hit yet — check expiry
+      if (!resolution && shouldExpire(sig, now)) {
+        const lastBar = futureBars[futureBars.length - 1];
+        resolution = {
+          toState:   STATES.EXPIRED,
+          exitPrice: lastBar?.close ?? sig.entry,
+          pnlPts:    0,
+        };
+        exitBar = lastBar ?? null;
       }
+
+      if (!resolution) continue;
+
+      const result = stateToResult(resolution.toState);
+      if (!result) continue;
+
+      const pnlPts = result === 'EXPIRED' ? 0 : +resolution.pnlPts.toFixed(2);
+
+      this._stmts.insertOutcome.run(
+        sig.id, result, resolution.exitPrice,
+        exitBar?.timestamp ?? now.toISOString(),
+        pnlPts
+      );
+      this._stmts.updateTradeStatus.run(resolution.toState, sig.id);
+
+      this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolution.toState}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
+      this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
+      if (result !== 'EXPIRED') this._sendNtfyOutcome(sig.id, instrument, sig.direction, result, pnlPts);
+      resolvedCount++;
     }
 
     // After resolving outcomes, feed live results back into all learning systems
@@ -869,8 +887,29 @@ class Scanner extends EventEmitter {
         continue;
       }
 
+      // ── Signal fingerprint deduplication ─────────────────────────────────────
+      const { isDuplicate, fp } = checkAndRegister(sig);
+      if (isDuplicate) {
+        this._log(`🔁 Duplicate fingerprint suppressed: ${sig.strategy_name} ${instrument} ${sig.direction} @ ${sig.entry}`);
+        this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+          sig.confidence, null, 'duplicate fingerprint (same setup within 2h)');
+        continue;
+      }
+
+      // ── Institutional tier gate ───────────────────────────────────────────────
+      const rank = rankSignal(sig);
+      if (!rank.accepted) {
+        this._log(`🏷️  ${sig.strategy_name} ${instrument} rejected by tier gate: ${rank.rejectReason}`);
+        this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+          sig.confidence, null, rank.rejectReason);
+        continue;
+      }
+      sig.tier              = rank.tier;
+      sig.adjusted_confidence = rank.adjustedConfidence;
+      this._log(`🏷️  ${sig.strategy_name} ${instrument} — tier ${rank.tier} (adj conf ${rank.adjustedConfidence}, session ${rank.session}×${rank.sessionModifier})`);
+
       this._lastSignalTimes[stratKey] = Date.now();
-      this._storeSignal({ ...sig, ticker: `${instrument}1!` });
+      this._storeSignal({ ...sig, ticker: `${instrument}1!`, _rank: rank });
       anyFired = true;
     }
 
@@ -918,39 +957,16 @@ class Scanner extends EventEmitter {
   }
 
   // ── Market hours check ────────────────────────────────────────────────────────
-  // CME NQ (MNQ) and COMEX Gold (MGC) futures trade nearly 24h on weekdays.
-  // Schedule: Sunday 6:00 PM ET open → Friday 5:00 PM ET close.
-  // Daily maintenance break: 5:00–6:00 PM ET (Mon–Thu).
-  // Returns true when the market is open and scanning should proceed.
+  // Delegated to clock/market-clock.js (America/Los_Angeles timezone).
+  // Blackout: Fri 13:00 PT → Sun 15:00 PT + Mon–Fri 13:00–14:59 PT maintenance.
 
   _isMarketOpen() {
-    const now = new Date();
-    const etParts = new Intl.DateTimeFormat('en-US', {
-      timeZone: 'America/New_York',
-      weekday: 'short',
-      hour:    'numeric',
-      minute:  'numeric',
-      hour12:  false,
-    }).formatToParts(now);
+    return !isBlackout();
+  }
 
-    const weekday = etParts.find(p => p.type === 'weekday').value; // Mon,Tue,…,Sun
-    const hour    = parseInt(etParts.find(p => p.type === 'hour').value, 10);
-    const minute  = parseInt(etParts.find(p => p.type === 'minute').value, 10);
-    const t = hour * 60 + minute; // minutes since midnight ET
-
-    // Saturday — fully closed
-    if (weekday === 'Sat') return false;
-
-    // Sunday — only open from 6:00 PM ET onward (t >= 1080)
-    if (weekday === 'Sun') return t >= 1080;
-
-    // Friday — closes at 5:00 PM ET (t >= 1020)
-    if (weekday === 'Fri' && t >= 1020) return false;
-
-    // Mon–Thu daily maintenance break: 5:00–6:00 PM ET (1020–1080)
-    if (t >= 1020 && t < 1080) return false;
-
-    return true;
+  /** Returns the current session name for logging (e.g. 'NY_OPEN', 'MIDDAY'). */
+  _sessionName() {
+    return classifyNow().session;
   }
 
   // ── Main scan cycle ───────────────────────────────────────────────────────────
@@ -965,7 +981,7 @@ class Scanner extends EventEmitter {
         this._log('⏸️  Market closed — scanner paused until next session opens');
       }
       try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash */ }
-      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true });
+      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true, feedType: this.feedType, feedConnected: this._feed.isConnected() });
       return;
     }
 
@@ -1004,12 +1020,17 @@ class Scanner extends EventEmitter {
             this._fetchBackoffUntil = Date.now() + backoffMin * 60_000;
             this._log(`🔴 Rate-limit circuit breaker: ${backoffMin}min backoff (${this._consecutiveErrors} consecutive errors)`);
             if (this._consecutiveErrors >= 10 && this.cfg.ntfyTopic) {
-              this._sendNtfy({
-                direction: 'SHORT', grade: '!', instrument: 'SYS',
-                setup: `Rate-limit backoff ${backoffMin}min`, session: 'system',
-                ticker: 'NQ Signal Pro',
-                trade_style: `${this._consecutiveErrors} consecutive 429s — check Yahoo Finance access`,
-              });
+              const headers = {
+                'Content-Type': 'text/plain',
+                'Title':    `[SYS] Rate-limit backoff ${backoffMin}min`,
+                'Priority': 'urgent',
+                'Tags':     'warning',
+              };
+              if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+              fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
+                method: 'POST', headers,
+                body: `${this._consecutiveErrors} consecutive 429s — check Yahoo Finance access`,
+              }).catch(() => {});
             }
           }
 
@@ -1050,13 +1071,23 @@ class Scanner extends EventEmitter {
       const mgc5mConf = mgc5m.length > 1 ? mgc5m.slice(0, -1) : mgc5m;
       const mgc1hConf = mgc1h.length > 1 ? mgc1h.slice(0, -1) : mgc1h;
 
-      // Build multi-TF sets from confirmed bars only
-      const mnq15m = aggregate5mTo15m(mnq5mConf);
+      // Build multi-TF sets via BarAggregator (feeds from confirmed 5m bars)
+      const _mnqAgg = new BarAggregator('MNQ');
+      _mnqAgg.loadHistory(mnq5mConf);
+      const _mnqSnap = _mnqAgg.snapshot();
+
+      const _mgcAgg = new BarAggregator('MGC');
+      _mgcAgg.loadHistory(mgc5mConf);
+      const _mgcSnap = _mgcAgg.snapshot();
+
+      const mnq15m = _mnqSnap.bars15m.length >= 4 ? _mnqSnap.bars15m : aggregate5mTo15m(mnq5mConf);
+      const mgc15m = _mgcSnap.bars15m.length >= 4 ? _mgcSnap.bars15m : aggregate5mTo15m(mgc5mConf);
+      const mgc30m = _mgcSnap.bars30m.length >= 3 ? _mgcSnap.bars30m : aggregate5mTo30m(mgc5mConf);
+      const mgc45m = _mgcSnap.bars45m.length >= 3 ? _mgcSnap.bars45m : aggregate5mTo45m(mgc5mConf);
+
+      // 1h-derived TFs still come from the 1h feed (not 5m aggregation)
       const mnq4h  = aggregate1hTo4h(mnq1hConf);
       const mnqDly = aggregate1hToDaily(mnq1hConf);
-      const mgc15m = aggregate5mTo15m(mgc5mConf);
-      const mgc30m = aggregate5mTo30m(mgc5mConf);  // 30m confluence layer for MGC scalp
-      const mgc45m = aggregate5mTo45m(mgc5mConf);  // 45m confluence layer for MGC scalp
 
       if (mnq5m.length >= 2) this._savePrice(this.cfg.symbol,    mnq5m);
       if (mgc5m.length >= 2) this._savePrice(this.cfg.symbolMgc, mgc5m);
@@ -1082,7 +1113,7 @@ class Scanner extends EventEmitter {
       this._err('Scan cycle error', err);
     } finally {
       try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash on heartbeat */ }
-      this.emit('heartbeat', { scanCount: this._scanCount, at: ts() });
+      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), feedType: this.feedType, feedConnected: this._feed.isConnected() });
     }
   }
 
@@ -1698,6 +1729,67 @@ class Scanner extends EventEmitter {
     }
   }
 
+  // ── Event-driven scan trigger ─────────────────────────────────────────────────
+
+  /**
+   * Called by BarWatcher when a 5m bar closes (Tradovate) or after each Yahoo poll.
+   * Merges snapshot bars with cached 1h bars then runs signal evaluation.
+   */
+  async _onBarReady(instrument, snapshot) {
+    if (!this._isMarketOpen()) return;
+    if (!this._running) return;
+
+    try {
+      // 5m-derived bars from the snapshot (BarAggregator output)
+      const bars5m  = (snapshot.bars5m  || []).slice(-500);
+      const bars15m = (snapshot.bars15m || []);
+      const bars30m = (snapshot.bars30m || []);
+      const bars45m = (snapshot.bars45m || []);
+
+      // 1h bars: prefer native Yahoo 1h fetch (richer history than 5m aggregation)
+      // Fall back to aggregator's 1h if cache is empty
+      let bars1h, bars4h, barsDly;
+      if (instrument === 'MNQ') {
+        bars1h  = (this._lastGoodBars.mnq1h.length >= 30
+          ? this._lastGoodBars.mnq1h : snapshot.bars1h || []).slice(-500);
+        bars4h  = aggregate1hTo4h(bars1h);
+        barsDly = aggregate1hToDaily(bars1h);
+      } else {
+        bars1h  = (this._lastGoodBars.mgc1h.length >= 20
+          ? this._lastGoodBars.mgc1h : snapshot.bars1h || []).slice(-500);
+        bars4h  = [];
+        barsDly = [];
+      }
+
+      // Confirmed-bar slices (exclude the still-forming last bar)
+      const c5m  = bars5m.length  > 1 ? bars5m.slice(0, -1)  : bars5m;
+      const c1h  = bars1h.length  > 1 ? bars1h.slice(0, -1)  : bars1h;
+
+      const c15m = bars15m.length > 1 ? bars15m.slice(0, -1) : bars15m;
+      const c30m = bars30m.length > 1 ? bars30m.slice(0, -1) : bars30m;
+      const c45m = bars45m.length > 1 ? bars45m.slice(0, -1) : bars45m;
+      const c4h  = bars4h.length  > 1 ? bars4h.slice(0, -1)  : bars4h;
+      const cDly = barsDly.length > 1 ? barsDly.slice(0, -1) : barsDly;
+
+      if (c5m.length < 40) return; // not enough bars yet
+
+      if (instrument === 'MNQ') {
+        await this._scanInstrument('MNQ', c5m, c15m, c1h, c4h, cDly);
+        this._autoResolveOutcomes(bars5m, 'MNQ');
+      } else {
+        await this._scanInstrument('MGC', c5m, c15m, c1h, [], [], c30m, c45m);
+        this._autoResolveOutcomes(bars5m, 'MGC');
+      }
+
+      if (bars5m.length >= 2) {
+        const sym = instrument === 'MNQ' ? this.cfg.symbol : this.cfg.symbolMgc;
+        this._savePrice(sym, bars5m);
+      }
+    } catch (err) {
+      this._err(`_onBarReady error (${instrument})`, err);
+    }
+  }
+
   // ── Start / stop ──────────────────────────────────────────────────────────────
 
   start() {
@@ -1706,9 +1798,25 @@ class Scanner extends EventEmitter {
 
     const cfg = this.cfg;
 
-    // Immediate first scan
+    // ── Feed + event-driven watcher ─────────────────────────────────────────────
+    // Start the feed adapter (Tradovate WS or Yahoo poll).
+    // BarWatcher fires _onBarReady on each 5m bar close or Yahoo poll completion.
+    this._feed.start().catch(err => this._err('Feed start error', err));
+
+    this._barWatcher = new BarWatcher((instrument, snapshot) => {
+      this._onBarReady(instrument, snapshot);
+    });
+
+    // ── Timer fallback ───────────────────────────────────────────────────────────
+    // For Yahoo mode: the feed already polls on scanInterval; the timer-based
+    // scan() below acts as a safety net and handles the 1h bar refresh cycle.
+    // For Tradovate mode: widen the safety interval to 5 min (events handle the rest).
+    const isTradovate = this.feedType === 'TradovateFeed';
+    const fallbackMs  = isTradovate ? 5 * 60_000 : cfg.scanInterval;
+
+    // Immediate first scan (before first feed event arrives)
     this.scan();
-    this._intervals.push(setInterval(() => this.scan(), cfg.scanInterval));
+    this._intervals.push(setInterval(() => this.scan(), fallbackMs));
 
     // Startup backtests — delayed so the service stabilises and scan traffic settles
     // before the memory-heavy backtest runs. Staggered 6 min apart to avoid
@@ -1757,8 +1865,8 @@ class Scanner extends EventEmitter {
     setTimeout(() => this._checkEdgeDegradation(), 35 * 60_000);
 
     this._log(
-      `Scanner started — symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +
-      `interval=${cfg.scanInterval / 1000}s cooldown=${cfg.cooldown}min ` +
+      `Scanner started — feed=${this.feedType} symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +
+      `fallback=${Math.round(fallbackMs / 1000)}s cooldown=${cfg.cooldown}min ` +
       `cap=${cfg.dailySignalCap} minDaily=${cfg.dailyMinSignals} ` +
       `strategies=MNQ_INTRADAY,MNQ_SWING,MNQ_50PT,MGC_SCALP,MGC_INTRADAY`
     );
@@ -1786,6 +1894,8 @@ class Scanner extends EventEmitter {
     this._running = false;
     for (const iv of this._intervals) clearInterval(iv);
     this._intervals = [];
+    this._barWatcher?.destroy();
+    this._feed?.stop().catch(() => {});
     this._log('Scanner stopped.');
     return this;
   }

@@ -14,6 +14,8 @@ CREATE TABLE IF NOT EXISTS signals (
   tp2            REAL,
   tp3            REAL,
   score          INTEGER,
+  confidence     INTEGER,       -- 0–100 raw confidence from strategy scorer
+  tier           TEXT,          -- 'S' | 'A' | 'B' | 'IGNORE' (institutional tier from signal-ranker)
   win_prob_tp1   INTEGER,
   win_prob_tp2   INTEGER,
   win_prob_tp3   INTEGER,
@@ -22,6 +24,7 @@ CREATE TABLE IF NOT EXISTS signals (
   trade_style    TEXT,          -- 'scalp' | 'intraday' | 'swing'
   instrument     TEXT,          -- 'MNQ' | 'MGC' | 'NQ'
   rr             REAL,          -- risk:reward ratio
+  trade_status   TEXT    NOT NULL DEFAULT 'ACTIVE', -- ACTIVE | WIN | LOSS | BE | EXPIRED | INVALIDATED
   raw_payload    TEXT,
   received_at    TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -32,7 +35,7 @@ CREATE INDEX IF NOT EXISTS idx_signals_strategy ON signals(strategy_name);
 CREATE TABLE IF NOT EXISTS outcomes (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   signal_id   INTEGER NOT NULL REFERENCES signals(id),
-  result      TEXT    CHECK(result IN ('WIN','LOSS','BE')),
+  result      TEXT    CHECK(result IN ('WIN','LOSS','BE','EXPIRED')),
   exit_price  REAL,
   exit_at     TEXT,
   pnl_pts     REAL,
