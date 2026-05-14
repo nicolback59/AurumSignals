@@ -45,7 +45,7 @@ let lastSignalBar = -999;
 function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const MIN_BARS = 60;
   if (bars.length < MIN_BARS) return null;
-  if (!htf2Bars || htf2Bars.length < 30) return null;
+  if (!htf2Bars || htf2Bars.length < 3) return null;
 
   const curIdx = barIdx ?? bars.length;
   if (curIdx - lastSignalBar < (cfg.cooldownBars ?? MIN_BAR_GAP)) return null;
