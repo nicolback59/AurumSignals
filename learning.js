@@ -1,7 +1,7 @@
 'use strict';
 
 const WINDOW     = 300;  // last N resolved trades to analyse
-const MIN_SAMPLE = 5;    // minimum trades before adjusting
+const MIN_SAMPLE = 3;    // minimum trades before adjusting
 
 // ── Per-strategy learned threshold bounds ─────────────────────────────────────
 // Thresholds evolve after every backtest cycle.
@@ -1001,6 +1001,40 @@ function computeAdaptiveOverrides(db) {
   return result;
 }
 
+/**
+ * Return per-strategy trade counts from the last N backtest runs for an instrument.
+ * Useful for diagnosing which strategies are being backtested vs. silently skipped.
+ *
+ * @returns {{ [strategy_name]: { tradeCount, lastRunAt } }}
+ */
+function getStrategyFreshness(db, instrument, lastNRuns = 5) {
+  try {
+    const rows = db.prepare(`
+      SELECT t.strategy_name,
+             COUNT(*)  AS tradeCount,
+             MAX(r.run_at) AS lastRunAt
+      FROM   backtest_trades t
+      JOIN   backtest_runs   r ON r.id = t.run_id
+      WHERE  t.instrument = ?
+        AND  t.run_id IN (
+          SELECT id FROM backtest_runs
+          WHERE  instrument = ?
+          ORDER  BY run_at DESC
+          LIMIT  ?
+        )
+      GROUP  BY t.strategy_name
+    `).all(instrument, instrument, lastNRuns);
+
+    const result = {};
+    for (const r of rows) {
+      result[r.strategy_name] = { tradeCount: r.tradeCount, lastRunAt: r.lastRunAt };
+    }
+    return result;
+  } catch {
+    return {};
+  }
+}
+
 module.exports = {
   getAdaptiveMinScore,
   getLearnedThreshold,
@@ -1026,4 +1060,5 @@ module.exports = {
   getInstrumentProfile,
   detectEdgeDegradation,
   isThresholdChangeSafe,
+  getStrategyFreshness,
 };

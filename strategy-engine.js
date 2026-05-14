@@ -74,7 +74,7 @@ function evaluateAll(barSets, cfg = {}) {
 
   // ── MNQ SWING ────────────────────────────────────────────────────────────────
   if (instrument === 'MNQ' || instrument == null) {
-    if (bars1h.length >= 60 && barsDly.length >= 30) {
+    if (bars1h.length >= 20 && barsDly.length >= 3) {
       const sig = mnqSwing.evaluate(bars1h, bars4h, barsDly, cfg, barIdx);
       if (sig) signals.push(sig);
     }

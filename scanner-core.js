@@ -42,7 +42,7 @@ const {
 const {
   getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
   updateLearnedThresholds, updateLearningFromLiveSignals,
-  getPredictedWinRate, getBacktestWinRates,
+  getPredictedWinRate, getBacktestWinRates, getStrategyFreshness,
   getPatternAdjustment, updatePatternMemory, computeAdaptiveOverrides,
   loadAdaptiveOverrides, detectEdgeDegradation,
 } = require('./learning');
@@ -94,7 +94,7 @@ class Scanner extends EventEmitter {
       ntfyTopic:       config.ntfyTopic       || process.env.NTFY_TOPIC || '',
       ntfyToken:       config.ntfyToken       || process.env.NTFY_TOKEN || '',
       btIntervalH:     config.btIntervalH     || parseFloat(process.env.BACKTEST_INTERVAL_H  || '0.167'),  // 10 min default
-      btBars:          config.btBars          || parseInt(process.env.BACKTEST_BARS           || '2000'),
+      btBars:          config.btBars          || parseInt(process.env.BACKTEST_BARS           || '5000'),
       btSlippage:      config.btSlippage      || parseFloat(process.env.BT_SLIPPAGE          || '0.5'),
       btTargetTrades:  config.btTargetTrades  || parseInt(process.env.BT_TARGET_TRADES        || '120'),
       optIntervalH:    config.optIntervalH    || parseFloat(process.env.OPTIMIZER_INTERVAL_H  || '12'),
@@ -1245,6 +1245,17 @@ class Scanner extends EventEmitter {
           const dir = delta > 0 ? '↑' : '↓';
           this._log(`📚 LEARNED [${strat}]: threshold ${from} ${dir} ${to} (WR=${wr}%, ${trades} trades)`);
         }
+
+        // Per-strategy trade count report — identifies strategies silently skipped in backtests
+        const freshness = getStrategyFreshness(this.db, instrument, 5);
+        const ALL_STRATS = instrument === 'MNQ'
+          ? ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT']
+          : ['MGC_SCALP', 'MGC_INTRADAY'];
+        const freshnessReport = ALL_STRATS.map(s => {
+          const f = freshness[s];
+          return f ? `${s}=${f.tradeCount}` : `${s}=0(stale)`;
+        }).join(' | ');
+        this._log(`📊 BT COVERAGE [${instrument}]: ${freshnessReport}`);
       } catch (e) {
         this._log(`LEARN ERR: ${e.message}`);
       }
