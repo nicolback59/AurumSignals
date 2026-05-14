@@ -142,7 +142,7 @@ function probBar(label, val, cls) {
 /* ── Outcome section ─────────────────────────────────── */
 function outcomeSection(sig) {
   if (sig.result) {
-    const pts = sig.pnl_pts != null
+    const pts = sig.pnl_pts != null && sig.result !== 'EXPIRED'
       ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts</span>`
       : '';
     const exitTs = sig.exit_at
@@ -150,7 +150,12 @@ function outcomeSection(sig) {
       : '';
     return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">${outcomeBadge(sig.result)}${pts}${exitTs}</div>`;
   }
-  return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);letter-spacing:.05em">PENDING — auto-resolving</span>`;
+  // Show the live trade_status when no outcome recorded yet
+  const status = sig.trade_status || 'ACTIVE';
+  if (status === 'ACTIVE') {
+    return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--green);letter-spacing:.05em">ACTIVE — watching</span>`;
+  }
+  return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);letter-spacing:.05em">${status}</span>`;
 }
 
 /* ── Strategy label (human-readable) ─────────────────── */

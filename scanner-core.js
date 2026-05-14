@@ -32,6 +32,9 @@ const BarAggregator = require('./feed/bar-aggregator');
 const { rankSignal }        = require('./signals/signal-ranker');
 const { checkAndRegister }  = require('./signals/signal-fingerprint');
 const {
+  STATES, resolveBar, shouldExpire, stateToResult,
+} = require('./signals/signal-state-machine');
+const {
   getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
   updateLearnedThresholds, updateLearningFromLiveSignals,
   getPredictedWinRate, getBacktestWinRates,
@@ -123,11 +126,11 @@ class Scanner extends EventEmitter {
         INSERT INTO signals
           (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
            score, confidence, tier, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
-           trade_style, instrument, rr, raw_payload)
+           trade_style, instrument, rr, trade_status, raw_payload)
         VALUES
           (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
            @score, @confidence, @tier, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
-           @trade_style, @instrument, @rr, @raw_payload)
+           @trade_style, @instrument, @rr, @trade_status, @raw_payload)
       `),
 
       upsertPrice: db.prepare(`
@@ -148,15 +151,19 @@ class Scanner extends EventEmitter {
       `),
 
       getPendingSignals: db.prepare(`
-        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument
+        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument, s.trade_style
         FROM   signals s
         LEFT JOIN outcomes o ON o.signal_id = s.id
         WHERE  o.id IS NULL
           AND  s.entry IS NOT NULL AND s.sl IS NOT NULL AND s.tp1 IS NOT NULL
           AND  s.received_at <= datetime('now', '-3 minutes')
-          AND  s.received_at >= datetime('now', '-4 hours')
+          AND  (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
           AND  s.instrument = ?
         ORDER BY s.received_at ASC
+      `),
+
+      updateTradeStatus: db.prepare(`
+        UPDATE signals SET trade_status = ? WHERE id = ?
       `),
 
       insertRejection: db.prepare(`
@@ -536,6 +543,7 @@ class Scanner extends EventEmitter {
       trade_style:   signal.trade_style  ?? null,
       instrument:    signal.instrument,
       rr:            signal.rr,
+      trade_status:  STATES.ACTIVE,
       raw_payload:   JSON.stringify(signal),
     });
 
@@ -591,42 +599,53 @@ class Scanner extends EventEmitter {
 
   // ── Auto-resolve pending outcomes ─────────────────────────────────────────────
 
-  _autoResolveOutcomes(bars1m, instrument) {
+  _autoResolveOutcomes(bars5m, instrument) {
     const pending = this._stmts.getPendingSignals.all(instrument);
     if (!pending.length) return;
     let resolvedCount = 0;
+    const now = new Date();
 
     for (const sig of pending) {
       const sigTime    = new Date(sig.received_at).getTime();
-      const futureBars = bars1m.filter(b => new Date(b.timestamp).getTime() > sigTime);
-      if (futureBars.length < 2) continue;
+      const futureBars = bars5m.filter(b => new Date(b.timestamp).getTime() > sigTime);
 
-      let resolved = null, exitBar = null;
+      let resolution = null, exitBar = null;
+
+      // Walk forward bars looking for TP1 or SL hit
       for (const bar of futureBars) {
-        if (sig.direction === 'LONG') {
-          if (bar.high >= sig.tp1) { resolved = { result: 'WIN',  exitPrice: sig.tp1 }; exitBar = bar; break; }
-          if (bar.low  <= sig.sl)  { resolved = { result: 'LOSS', exitPrice: sig.sl  }; exitBar = bar; break; }
-        } else {
-          if (bar.low  <= sig.tp1) { resolved = { result: 'WIN',  exitPrice: sig.tp1 }; exitBar = bar; break; }
-          if (bar.high >= sig.sl)  { resolved = { result: 'LOSS', exitPrice: sig.sl  }; exitBar = bar; break; }
-        }
+        resolution = resolveBar(sig, bar);
+        if (resolution) { exitBar = bar; break; }
       }
 
-      if (resolved) {
-        const pnlPts = sig.direction === 'LONG'
-          ? resolved.exitPrice - sig.entry
-          : sig.entry - resolved.exitPrice;
-        this._stmts.insertOutcome.run(
-          sig.id, resolved.result, resolved.exitPrice,
-          exitBar?.timestamp ?? new Date().toISOString(),
-          +pnlPts.toFixed(2)
-        );
-        const pts = +pnlPts.toFixed(2);
-        this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolved.result} (${pts} pts)`, 'signal');
-        this.emit('outcome', { signalId: sig.id, instrument, result: resolved.result, pnlPts: pts });
-        this._sendNtfyOutcome(sig.id, instrument, sig.direction, resolved.result, pts);
-        resolvedCount++;
+      // No TP1/SL hit yet — check expiry
+      if (!resolution && shouldExpire(sig, now)) {
+        const lastBar = futureBars[futureBars.length - 1];
+        resolution = {
+          toState:   STATES.EXPIRED,
+          exitPrice: lastBar?.close ?? sig.entry,
+          pnlPts:    0,
+        };
+        exitBar = lastBar ?? null;
       }
+
+      if (!resolution) continue;
+
+      const result = stateToResult(resolution.toState);
+      if (!result) continue;
+
+      const pnlPts = result === 'EXPIRED' ? 0 : +resolution.pnlPts.toFixed(2);
+
+      this._stmts.insertOutcome.run(
+        sig.id, result, resolution.exitPrice,
+        exitBar?.timestamp ?? now.toISOString(),
+        pnlPts
+      );
+      this._stmts.updateTradeStatus.run(resolution.toState, sig.id);
+
+      this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolution.toState}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
+      this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
+      if (result !== 'EXPIRED') this._sendNtfyOutcome(sig.id, instrument, sig.direction, result, pnlPts);
+      resolvedCount++;
     }
 
     // After resolving outcomes, feed live results back into all learning systems

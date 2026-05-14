@@ -61,6 +61,10 @@ function applyMigrations() {
       db.exec("ALTER TABLE signals ADD COLUMN tier TEXT");
       console.log('[migration] Added tier to signals');
     }
+    if (!cols.includes('trade_status')) {
+      db.exec("ALTER TABLE signals ADD COLUMN trade_status TEXT NOT NULL DEFAULT 'ACTIVE'");
+      console.log('[migration] Added trade_status to signals');
+    }
   }
   const hasBtTrades = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_trades'").get();
   if (hasBtTrades) {
@@ -83,11 +87,11 @@ const insertSignal = db.prepare(`
   INSERT INTO signals
     (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
      score, confidence, tier, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
-     trade_style, instrument, rr, raw_payload)
+     trade_style, instrument, rr, trade_status, raw_payload)
   VALUES
     (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
      @score, @confidence, @tier, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
-     @trade_style, @instrument, @rr, @raw_payload)
+     @trade_style, @instrument, @rr, 'ACTIVE', @raw_payload)
 `);
 
 const upsertOutcome = db.prepare(`
