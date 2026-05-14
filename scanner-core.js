@@ -70,7 +70,7 @@ const {
 const {
   recordOpeningCandle, getSessionOpenBias, getOpeningCandleAdjustment,
   updateSessionBiasAccuracy, updateSessionBiasFromBacktest,
-  getOpeningCandleReport,
+  getOpeningCandleReport, getEtDateKey,
 } = require('./opening-candle');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -714,18 +714,20 @@ class Scanner extends EventEmitter {
     }
 
     // ── Record opening candle for power-hour / session bias tracking ────────────
-    // Check the current (most-recent confirmed) bar. If it is the first bar of a
-    // named session or hourly block, persist it for bias calculations.
+    // Scan ALL of today's 5m bars so that session opens recorded before this
+    // scan cycle (e.g. 9:30 NY Open when scanner started at noon) are backfilled.
+    // recordOpeningCandle is idempotent — it skips already-stored sessions.
     let currentSessionBias = null;
     try {
-      const latestBar = bars5m[bars5m.length - 1];
-      if (latestBar) {
-        const ocEntry = recordOpeningCandle(this.db, instrument, latestBar);
+      const todayKey  = getEtDateKey(new Date().toISOString());
+      const todayBars = bars5m.filter(b => getEtDateKey(b.timestamp) === todayKey);
+      for (const bar of todayBars) {
+        const ocEntry = recordOpeningCandle(this.db, instrument, bar);
         if (ocEntry) {
-          this._log(`🕯️  ${instrument} opening candle recorded: ${ocEntry.sessionKey} ${ocEntry.bias} str=${ocEntry.strength.toFixed(2)}`);
+          this._log(`🕯️  ${instrument} opening candle: ${ocEntry.sessionKey} ${ocEntry.bias} str=${ocEntry.strength.toFixed(2)}`);
         }
       }
-      // Always fetch current session bias (may be from a bar recorded earlier this session)
+      const latestBar = bars5m[bars5m.length - 1];
       currentSessionBias = getSessionOpenBias(this.db, instrument, latestBar?.timestamp ?? new Date().toISOString());
     } catch { /* never crash */ }
 
