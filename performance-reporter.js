@@ -407,6 +407,7 @@ function _buildMidWeekNarrative(d) {
 // ── Weekly Deep Strategy Intelligence Report ──────────────────────────────────
 
 function generateWeeklyDeepReport(db, weekStart = null) {
+  if (!db) throw new ReferenceError('generateWeeklyDeepReport: db argument is required (received ' + typeof db + ')');
   const ws  = weekStart ?? _currentWeekStart();
   const we  = _addDays(ws, 7);
   const pws = _addDays(ws, -7);  // prior week start

@@ -669,9 +669,9 @@ function renderEdgeHealth(d) {
       <div style="color:${alertColor};font:700 14px monospace;margin-bottom:14px">${alertLabel}</div>
       ${r.message ? `<div style="color:rgba(255,255,255,.6);font:12px monospace;margin-bottom:10px">${r.message}</div>` : ''}
       <div class="metrics-grid">
-        ${metric('Last 3 Avg WR', pct(r.recentAvgWR), r.recentAvgWR >= .62 ? 'green' : r.recentAvgWR >= .52 ? 'yellow' : 'red')}
-        ${metric('Prior 3 Avg WR', pct(r.priorAvgWR))}
-        ${metric('Delta', r.delta != null ? (r.delta > 0 ? '+' : '') + pct(r.delta) : '—', r.delta > 0 ? 'green' : r.delta < -0.05 ? 'red' : 'yellow')}
+        ${metric('Last 3 Avg WR', r.recentAvgWR != null ? r.recentAvgWR.toFixed(1) + '%' : '—', r.recentAvgWR >= 62 ? 'green' : r.recentAvgWR >= 52 ? 'yellow' : 'red')}
+        ${metric('Prior 3 Avg WR', r.priorAvgWR != null ? r.priorAvgWR.toFixed(1) + '%' : '—')}
+        ${metric('Delta', r.delta != null ? (r.delta > 0 ? '+' : '') + r.delta.toFixed(1) + '%' : '—', r.delta > 0 ? 'green' : r.delta < -5 ? 'red' : 'yellow')}
       </div>
       ${r.details ? `<pre class="report-pre" style="font-size:11px">${JSON.stringify(r.details, null, 2)}</pre>` : ''}
     </div>`);

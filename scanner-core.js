@@ -112,9 +112,10 @@ class Scanner extends EventEmitter {
 
     // Runtime state
     this._lastSignalTimes   = {}; // keyed by `${instrument}_${strategy_name}`
+    this._edgeDegradState   = {};  // keyed by instrument — persisted to DB on change
     this._lastDiagSave          = { MNQ: 0, MGC: 0 };
     this._lastRejectionSave     = { MNQ: 0, MGC: 0 };
-    this._lastEdgeDegradNtfy    = { MNQ: 0, MGC: 0 };  // throttle: 2h between alerts
+    // _lastEdgeDegradNtfy removed — edge degradation state is now DB-persisted (see _checkEdgeDegradation)
     this._scanCount         = 0;
     this._consecutiveErrors = 0;
     this._fetchBackoffUntil = 0;   // circuit breaker: epoch ms when backoff expires
@@ -1398,7 +1399,12 @@ class Scanner extends EventEmitter {
 
       this._log(report.summary);
       this._log(
-        `OPTIMIZER DONE: ${instrument} | live=${(report.liveWinRate * 100).toFixed(1)}% | promoted=${report.globalPromoted}`
+        `OPTIMIZER DONE: ${instrument} | ` +
+        `live=${(report.liveWinRate * 100).toFixed(1)}% | ` +
+        `baseline=${report.baselineWinRate != null ? (report.baselineWinRate * 100).toFixed(1) + '%' : 'n/a'} | ` +
+        `global_promoted=${report.globalPromoted} | ` +
+        `style_promoted=${report.stylePromotions ?? 0} | ` +
+        `candidates=${report.candidatesTested ?? 'n/a'}`
       );
 
       // ── Evolution cycle: A/B test variants against the champion ──────────────
@@ -1556,32 +1562,99 @@ class Scanner extends EventEmitter {
   }
 
   _checkEdgeDegradation() {
+    const DEGRADE_STATE_KEY = 'EDGE_DEGRADE_STATE';
+    const MIN_ALERT_GAP_MS  = 4 * 60 * 60_000;  // 4h minimum between same-severity alerts
+    const WORSEN_THRESHOLD  = 5;                  // re-alert only if delta worsens by ≥5pts
+
+    // Load persisted state (survives restarts)
+    let persistedState = {};
+    try {
+      const row = this.db.prepare(`SELECT params_json FROM strategy_params WHERE instrument = ?`)
+        .get(DEGRADE_STATE_KEY);
+      if (row) persistedState = JSON.parse(row.params_json);
+    } catch { /* use empty */ }
+
     for (const instrument of ['MNQ', 'MGC']) {
       try {
         const result = detectEdgeDegradation(this.db, instrument);
-        if (result.alert) {
-          this._log(`🚨 EDGE DEGRADATION [${instrument}]: ${result.explanation}`);
-          // Throttle ntfy to once per 2 hours — backtest runs every few minutes
-          const _now = Date.now();
-          const _throttleMs = 2 * 60 * 60_000;
-          if (this.cfg.ntfyTopic && (_now - (this._lastEdgeDegradNtfy[instrument] ?? 0)) > _throttleMs) {
-            this._lastEdgeDegradNtfy[instrument] = _now;
-            const headers = {
-              'Content-Type': 'text/plain',
-              'Title':    `Edge Degradation - ${instrument}`,
-              'Priority': 'high', 'Tags': 'chart_decreasing,red_circle',
-            };
-            if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
-            fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
-              method: 'POST', headers,
-              body: `⚠️ ${result.message ?? result.explanation}`,
-            }).catch(() => {});
+
+        if (result.status === 'insufficient_data' || result.status === 'error') continue;
+
+        const prev    = persistedState[instrument] ?? { status: 'stable', lastAlertAt: 0, lastDelta: 0 };
+        const newStatus = result.status; // 'degrading' | 'stable' | 'improving'
+        const now     = Date.now();
+
+        this._log(
+          `📈 Edge [${instrument}]: ${newStatus} | ` +
+          `recent=${result.recentAvgWR}% prior=${result.priorAvgWR}% delta=${result.delta > 0 ? '+' : ''}${result.delta}%`
+        );
+
+        let shouldAlert = false;
+        let alertTitle  = '';
+        let alertBody   = '';
+        let alertTags   = '';
+
+        if (newStatus === 'degrading') {
+          const statusChanged  = prev.status !== 'degrading';
+          const worsenedMore   = (result.delta - prev.lastDelta) < -WORSEN_THRESHOLD;
+          const throttleElapsed = (now - prev.lastAlertAt) > MIN_ALERT_GAP_MS;
+
+          if (statusChanged) {
+            shouldAlert = true;
+            alertTitle  = `Edge Degradation - ${instrument}`;
+            alertBody   = `🔴 NEW DEGRADATION: ${result.message}`;
+            alertTags   = 'chart_decreasing,red_circle';
+            this._log(`🚨 EDGE DEGRADATION [${instrument}] STATE CHANGE: stable→degrading | ${result.message}`);
+          } else if (worsenedMore && throttleElapsed) {
+            shouldAlert = true;
+            alertTitle  = `Edge Worsening - ${instrument}`;
+            alertBody   = `⚠️ DEGRADATION WORSENING: ${result.message} (was ${prev.lastDelta}% → now ${result.delta}%)`;
+            alertTags   = 'chart_decreasing,warning';
+            this._log(`🚨 EDGE WORSENING [${instrument}]: delta ${prev.lastDelta}% → ${result.delta}%`);
+          } else {
+            this._log(`🔕 Edge alert suppressed [${instrument}]: already in degrading state (last alert ${Math.round((now - prev.lastAlertAt) / 60_000)}min ago)`);
           }
-        } else if (result.status !== 'insufficient_data' && result.status !== 'error') {
-          this._log(`📈 Edge stability [${instrument}]: ${result.status} (recent ${result.recent_avg_wr_pct}% vs prior ${result.prior_avg_wr_pct}%)`);
+        } else if (newStatus !== 'degrading' && prev.status === 'degrading') {
+          shouldAlert = true;
+          alertTitle  = `Edge Recovered - ${instrument}`;
+          alertBody   = `✅ EDGE RECOVERED: ${result.message}`;
+          alertTags   = 'chart_with_upwards_trend,green_circle';
+          this._log(`✅ EDGE RECOVERED [${instrument}]: degrading→${newStatus} | ${result.message}`);
+        }
+
+        // Update persisted state
+        persistedState[instrument] = {
+          status:      newStatus,
+          lastAlertAt: shouldAlert ? now : prev.lastAlertAt,
+          lastDelta:   result.delta ?? prev.lastDelta,
+          updatedAt:   now,
+        };
+
+        // Send ntfy only when truly actionable
+        if (shouldAlert && this.cfg.ntfyTopic) {
+          const headers = {
+            'Content-Type': 'text/plain',
+            'Title':    alertTitle,
+            'Priority': newStatus === 'degrading' ? 'high' : 'default',
+            'Tags':     alertTags,
+          };
+          if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+          fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
+            method: 'POST', headers, body: alertBody,
+          }).catch(() => {});
         }
       } catch { /* never crash */ }
     }
+
+    // Persist state to DB so restarts don't retrigger alerts
+    try {
+      this.db.prepare(`
+        INSERT INTO strategy_params (instrument, params_json, updated_at, version)
+        VALUES (?, ?, datetime('now'), 1)
+        ON CONFLICT(instrument) DO UPDATE SET
+          params_json = excluded.params_json, updated_at = excluded.updated_at, version = version + 1
+      `).run(DEGRADE_STATE_KEY, JSON.stringify(persistedState));
+    } catch { /* never crash */ }
   }
 
   // ── Weekly learning summary generation ───────────────────────────────────────
@@ -1743,9 +1816,21 @@ class Scanner extends EventEmitter {
         }
       })();
 
-      this._log(`📋 Weekly summary generated for week of ${weekStart}`);
+      // Log per-strategy outcome for verification
+      try {
+        const rows = this.db.prepare(
+          `SELECT strategy_key, wins, losses, win_rate FROM weekly_summaries WHERE week_start = ?`
+        ).all(weekStart);
+        const summary = rows.map(r =>
+          `${r.strategy_key}: ${r.wins}W/${r.losses}L WR=${r.win_rate != null ? r.win_rate + '%' : 'n/a'}`
+        ).join(' | ');
+        this._log(`📋 Weekly learning generated for ${weekStart} — ${summary || 'no resolved trades'}`);
+      } catch {
+        this._log(`📋 Weekly summary generated for week of ${weekStart}`);
+      }
     } catch (err) {
-      this._err('Weekly summary generation error', err);
+      this._err(`Weekly summary generation FAILED for week of ${weekStart ?? 'unknown'}: ${err.message}`, err);
+      console.error('[weekly-summary]', err.stack);
     }
   }
 
