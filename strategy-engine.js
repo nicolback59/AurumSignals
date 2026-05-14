@@ -81,10 +81,10 @@ function evaluateAll(barSets, cfg = {}) {
   }
 
   // ── MGC SCALP ────────────────────────────────────────────────────────────────
-  // Passes 30m and 45m bars as additional MTF confluence layers.
+  // bars3mMgc is the execution TF (preferred); falls back to bars5m inside the strategy.
   if (instrument === 'MGC' || instrument == null) {
     if (bars5mMgc.length >= 40 && bars15mMgc.length >= 20) {
-      const sig = mgcScalp.evaluate(bars5mMgc, bars15mMgc, bars1hMgc, bars30mMgc, bars45mMgc, cfg, barIdx);
+      const sig = mgcScalp.evaluate(bars3mMgc ?? [], bars5mMgc, bars15mMgc, bars1hMgc, bars30mMgc, bars45mMgc, cfg, barIdx);
       if (sig) signals.push(sig);
     }
   }
