@@ -28,7 +28,7 @@ const {
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
 const ATR_MIN_PTS = 15; // minimum 1h ATR in MNQ points
-const MIN_BAR_GAP = 4;  // 4 × 1h = 4 hours minimum between signals
+const MIN_BAR_GAP = 2;  // 2 × 1h = 2 hours minimum between signals
 const MIN_RR      = 2.0;
 
 let lastSignalBar = -999;
@@ -43,7 +43,7 @@ let lastSignalBar = -999;
  * @param {number}   barIdx
  */
 function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
-  const MIN_BARS = 60;
+  const MIN_BARS = 30;
   if (bars.length < MIN_BARS) return null;
   if (!htf2Bars || htf2Bars.length < 3) return null;
 
@@ -95,7 +95,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const htf2Bias = dailyBull ? 1 : dailyBear ? -1 : 0;
 
   const sess = getSessionInfo(last.timestamp);
-  if (sess.quality < 0.50) return null;
+  if (sess.quality < 0.30) return null;
 
   // ── Direction candidates ─────────────────────────────────────────────────────
   const directions = [];
@@ -105,9 +105,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   for (const dir of directions) {
     const isBull = dir === 'LONG';
 
-    // ── EMA stack on 1h ─────────────────────────────────────────────────────
+    // ── EMA stack on 1h — scoring bonus, not a hard gate ────────────────────
     const esScore = emaStackScore(closes, 9, 21, 21, dir); // 9/21 only on swing
-    if (esScore < 1) continue;
 
     // ── Pullback into value ──────────────────────────────────────────────────
     // Wide tolerance (1.5 ATR) + 24-bar lookback so we catch pullbacks from
