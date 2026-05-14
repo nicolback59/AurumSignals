@@ -29,6 +29,7 @@ const {
 } = require('./strategies/shared-indicators');
 const { isBlackout, classifyNow } = require('./clock/market-clock');
 const BarAggregator = require('./feed/bar-aggregator');
+const { createFeed } = require('./feed/feed-selector');
 const { rankSignal }        = require('./signals/signal-ranker');
 const { checkAndRegister }  = require('./signals/signal-fingerprint');
 const {
@@ -113,6 +114,17 @@ class Scanner extends EventEmitter {
     this._lastGoodBars = {
       mnq5m: [], mnq1h: [], mgc5m: [], mgc1h: [],
     };
+
+    // Feed adapter — Tradovate WebSocket if credentials present, Yahoo otherwise
+    this._feed = createFeed({
+      instruments: ['MNQ', 'MGC'],
+      symbolMap:   {
+        MNQ: process.env.TRADOVATE_SYMBOL_MNQ || '',
+        MGC: process.env.TRADOVATE_SYMBOL_MGC || '',
+      },
+      pollMs: this.cfg.scanInterval,  // Yahoo poll interval matches scan interval
+    });
+    this.feedType = this._feed.constructor.name;  // 'TradovateFeed' | 'YahooFeed'
 
     this._prepareStatements();
   }
@@ -988,7 +1000,7 @@ class Scanner extends EventEmitter {
         this._log('⏸️  Market closed — scanner paused until next session opens');
       }
       try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash */ }
-      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true });
+      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true, feedType: this.feedType, feedConnected: this._feed.isConnected() });
       return;
     }
 
@@ -1115,7 +1127,7 @@ class Scanner extends EventEmitter {
       this._err('Scan cycle error', err);
     } finally {
       try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash on heartbeat */ }
-      this.emit('heartbeat', { scanCount: this._scanCount, at: ts() });
+      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), feedType: this.feedType, feedConnected: this._feed.isConnected() });
     }
   }
 

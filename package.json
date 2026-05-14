@@ -12,7 +12,8 @@
   "dependencies": {
     "better-sqlite3": "^9.6.0",
     "express": "^4.19.2",
-    "luxon": "^3.7.2"
+    "luxon": "^3.7.2",
+    "ws": "^8.20.1"
   },
   "engines": {
     "node": "20.x"

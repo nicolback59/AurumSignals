@@ -217,6 +217,22 @@ app.get('/api/signals', (req, res) => {
   res.json(rows);
 });
 
+app.get('/api/status', (req, res) => {
+  const scanner = global._scanner;
+  res.json({
+    feedType:      scanner?.feedType      ?? 'unknown',
+    feedConnected: scanner?._feed?.isConnected() ?? false,
+    tradovateConfigured: !!(
+      process.env.TRADOVATE_USERNAME &&
+      process.env.TRADOVATE_CID &&
+      process.env.TRADOVATE_SECRET
+    ),
+    env:           process.env.TRADOVATE_ENV || 'live',
+    scanCount:     scanner?._scanCount ?? 0,
+    uptime:        Math.floor(process.uptime()),
+  });
+});
+
 app.get('/api/stats', (req, res) => {
   const total      = db.prepare('SELECT COUNT(*) n FROM signals').get().n;
   const last24h    = db.prepare(`SELECT COUNT(*) n FROM signals WHERE received_at >= datetime('now','-1 day')`).get().n;
@@ -1176,6 +1192,7 @@ app.listen(PORT, '0.0.0.0', () => {
   // Start scanner in-process so the scanner is ALWAYS running when the server is running.
   // This eliminates the separate worker service and the "scanner not responding" issue.
   const scanner = new Scanner(db);
+  global._scanner = scanner;  // expose to /api/status
 
   scanner.on('signal',    data => _broadcastSSE('signal',    data));
   scanner.on('scan',      data => _broadcastSSE('scan',      data));
