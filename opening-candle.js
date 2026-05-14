@@ -26,11 +26,15 @@
 // ── Constants ─────────────────────────────────────────────────────────────────
 
 const SESSION_OPEN_BOUNDARIES = [
-  { key: 'NY_AFTERNOON', hhmm: 1330 },
-  { key: 'NY_MIDDAY',    hhmm: 1130 },
-  { key: 'NY_OPEN',      hhmm:  930 },  // power hour
-  { key: 'PREMARKET',    hhmm:  800 },
-  { key: 'LONDON',       hhmm:  300 },
+  { key: 'GLOBEX_OPEN',    hhmm: 1700, label: 'Globex/Futures Open' },
+  { key: 'LATE_AFTERNOON', hhmm: 1500, label: 'Late Afternoon / Last Power Hour' },
+  { key: 'NY_AFTERNOON',   hhmm: 1330, label: 'NY Afternoon' },
+  { key: 'POWER_HOUR_MID', hhmm: 1030, label: 'Power Hour Mid (10:30)' },
+  { key: 'NY_MIDDAY',      hhmm: 1130, label: 'NY Midday' },
+  { key: 'NY_OPEN',        hhmm:  930, label: 'NYSE / Futures RTH Open ★' },
+  { key: 'PREMARKET',      hhmm:  800, label: 'Pre-Market Open' },
+  { key: 'ASIA_OVERLAP',   hhmm:  200, label: 'Asia/London Overlap' },
+  { key: 'LONDON',         hhmm:  300, label: 'London Open' },
 ];
 
 // Minimum historical bias accuracy before we apply confidence adjustment.
@@ -140,27 +144,33 @@ function getEtDateKey(timestamp) {
 
 function loadSessionStats(db, instrument) {
   try {
-    const row = db.prepare(`SELECT value FROM strategy_params WHERE key = ?`)
+    const row = db.prepare(`SELECT params_json FROM strategy_params WHERE instrument = ?`)
       .get(`${DB_KEY_PREFIX}${instrument}`);
-    if (row) return JSON.parse(row.value);
+    if (row) return JSON.parse(row.params_json);
   } catch {}
-  return {};  // { [sessionKey]: { correct, total, lastUpdated } }
+  return {};  // { [sessionKey]: { correct, total, wins, losses, lastUpdated } }
 }
 
 function saveSessionStats(db, instrument, stats) {
-  db.prepare(`
-    INSERT INTO strategy_params (key, value) VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-  `).run(`${DB_KEY_PREFIX}${instrument}`, JSON.stringify(stats));
+  try {
+    db.prepare(`
+      INSERT INTO strategy_params (instrument, params_json, updated_at, version)
+      VALUES (?, ?, datetime('now'), 1)
+      ON CONFLICT(instrument) DO UPDATE SET
+        params_json = excluded.params_json,
+        updated_at  = excluded.updated_at,
+        version     = version + 1
+    `).run(`${DB_KEY_PREFIX}${instrument}`, JSON.stringify(stats));
+  } catch { /* never crash */ }
 }
 
 function loadDailyCandles(db, instrument) {
   try {
-    const row = db.prepare(`SELECT value FROM strategy_params WHERE key = ?`)
+    const row = db.prepare(`SELECT params_json FROM strategy_params WHERE instrument = ?`)
       .get(`${DB_CANDLE_PREFIX}${instrument}`);
-    if (row) return JSON.parse(row.value);
+    if (row) return JSON.parse(row.params_json);
   } catch {}
-  return {};  // { [dateKey_sessionKey]: { bar, bias, strength, usedForSignals } }
+  return {};  // { [dateKey_sessionKey]: { bar, bias, strength, bodyRatio, volume, followThrough, timestamp } }
 }
 
 function saveDailyCandles(db, instrument, candles) {
@@ -171,10 +181,16 @@ function saveDailyCandles(db, instrument, candles) {
     ? Object.fromEntries(Object.entries(candles).filter(([k]) => k >= cutoff))
     : candles;
 
-  db.prepare(`
-    INSERT INTO strategy_params (key, value) VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
-  `).run(`${DB_CANDLE_PREFIX}${instrument}`, JSON.stringify(pruned));
+  try {
+    db.prepare(`
+      INSERT INTO strategy_params (instrument, params_json, updated_at, version)
+      VALUES (?, ?, datetime('now'), 1)
+      ON CONFLICT(instrument) DO UPDATE SET
+        params_json = excluded.params_json,
+        updated_at  = excluded.updated_at,
+        version     = version + 1
+    `).run(`${DB_CANDLE_PREFIX}${instrument}`, JSON.stringify(pruned));
+  } catch { /* never crash */ }
 }
 
 // ── Core API ──────────────────────────────────────────────────────────────────
@@ -196,24 +212,59 @@ function recordOpeningCandle(db, instrument, bar) {
   const storeKey   = `${dateKey}_${sessionKey}`;
 
   const candles = loadDailyCandles(db, instrument);
-  if (candles[storeKey]) return candles[storeKey]; // already recorded today
 
-  const classified = classifyCandle(bar);
-  const entry = {
-    dateKey,
-    sessionKey,
-    bar:      { open: bar.open, high: bar.high, low: bar.low, close: bar.close },
-    bias:     classified.bias,
-    strength: classified.strength,
-    bodyRatio: classified.bodyRatio,
-    timestamp: bar.timestamp,
-    settled:  false, // will be updated with outcome
-  };
+  if (!candles[storeKey]) {
+    const classified = classifyCandle(bar);
+    candles[storeKey] = {
+      dateKey,
+      sessionKey,
+      bar:         { open: bar.open, high: bar.high, low: bar.low, close: bar.close },
+      bias:        classified.bias,
+      strength:    classified.strength,
+      bodyRatio:   classified.bodyRatio,
+      volume:      bar.volume ?? null,
+      range:       +(bar.high - bar.low).toFixed(4),
+      timestamp:   bar.timestamp,
+      settled:     false,
+      followThrough: null, // updated after 5 bars: { held: bool, bars1: price, bars3: price, bars5: price }
+    };
+  }
 
-  candles[storeKey] = entry;
+  // Follow-through update pass — scan any candles recorded earlier today that lack it
+  _updateFollowThrough(candles, bar);
+
   saveDailyCandles(db, instrument, candles);
+  return candles[storeKey];
+}
 
-  return entry;
+/**
+ * After each bar arrives, check whether any earlier opening candles in today's
+ * map are now 5 bars old and haven't had their follow-through recorded yet.
+ */
+function _updateFollowThrough(candles, currentBar) {
+  const FOLLOW_BAR_MS = 5 * 5 * 60_000; // 5 bars × 5 min = 25 min
+  const now = new Date(currentBar.timestamp).getTime();
+
+  for (const entry of Object.values(candles)) {
+    if (entry.followThrough !== null) continue; // already settled
+    const age = now - new Date(entry.timestamp).getTime();
+    if (age < FOLLOW_BAR_MS) continue; // too early
+
+    // Measure follow-through: did price move in the bias direction?
+    const open  = entry.bar.close; // use close of opening bar as reference
+    const curr  = currentBar.close;
+    const moved = curr - open;
+    const isBull = entry.bias === 'STRONG_BULL' || entry.bias === 'BULL';
+    const isBear = entry.bias === 'STRONG_BEAR' || entry.bias === 'BEAR';
+
+    entry.followThrough = {
+      held:      isBull ? moved > 0 : isBear ? moved < 0 : null,
+      priceDelta: +moved.toFixed(4),
+      barsElapsed: Math.floor(age / (5 * 60_000)),
+      settledAt:   currentBar.timestamp,
+    };
+    entry.settled = true;
+  }
 }
 
 /**
@@ -361,11 +412,12 @@ function updateSessionBiasFromBacktest(db, instrument, signalLog) {
     // Map session name → session key
     const sessionKeyMap = {
       'NY Open ★':           'NY_OPEN',
-      'London/NY Overlap':   'PREMARKET',
+      'London/NY Overlap':   'NY_OPEN',
       'London':              'LONDON',
       'Midday':              'NY_MIDDAY',
       'Afternoon ✓':         'NY_AFTERNOON',
       'Pre-Market':          'PREMARKET',
+      'After Hours':         'GLOBEX_OPEN',
     };
     const sessionKey = sessionKeyMap[trade.session] ?? null;
     if (!sessionKey) continue;

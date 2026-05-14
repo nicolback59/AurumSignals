@@ -765,6 +765,7 @@ app.get('/api/weekly-summary/:weekStart', (req, res) => {
 // POST — generate (or regenerate) the current week's summaries
 app.post('/api/weekly-summary/generate', (req, res) => {
   try {
+    if (!db) throw new Error('Database not initialized — check DB_PATH env var');
     const weekStart = req.body?.week_start || getWeekMonday();
     const summaries = generateWeeklySummaryData(db, weekStart);
 
@@ -1028,14 +1029,24 @@ app.get('/api/performance/midweek-report', (req, res) => {
 // Weekly deep strategy intelligence report
 app.get('/api/performance/weekly-deep', (req, res) => {
   try {
+    if (!db) throw new Error('Database not initialized — check DB_PATH env var');
     const weekStart = req.query.week || null;
     const force     = req.query.force === '1' || req.query.force === 'true';
     if (!force && weekStart) {
-      const cached = loadReport(db, 'WEEKLY', weekStart);
-      if (cached) return res.json(cached);
+      try {
+        const cached = loadReport(db, 'WEEKLY', weekStart);
+        if (cached) return res.json(cached);
+      } catch (cacheErr) {
+        console.error('[weekly-deep] cache load failed:', cacheErr.message);
+      }
     }
-    res.json(generateWeeklyDeepReport(db, weekStart));
-  } catch (err) { res.status(500).json({ error: err.message }); }
+    const report = generateWeeklyDeepReport(db, weekStart);
+    res.json(report);
+  } catch (err) {
+    console.error('[weekly-deep] ERROR:', err.message);
+    console.error(err.stack);
+    res.status(500).json({ error: err.message, stack_hint: err.stack?.split('\n')[1]?.trim() ?? 'unknown' });
+  }
 });
 
 // Cumulative performance intelligence for one instrument

@@ -56,7 +56,7 @@ services:
       - key: BT_SLIPPAGE
         value: 0.5       # execution slippage in price points
       - key: OPTIMIZER_INTERVAL_H
-        value: 12        # hours between parameter optimization cycles
+        value: 4         # hours between parameter optimization cycles
 
     disk:
       name: signals-db
