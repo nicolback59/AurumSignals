@@ -97,10 +97,10 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const sess = getSessionInfo(last.timestamp);
   if (sess.quality < 0.30) return null;
 
-  // ── Direction candidates ─────────────────────────────────────────────────────
+  // ── Direction candidates — structure gate removed; daily+1h EMA alignment is sufficient ─
   const directions = [];
-  if (dailyBull && ema9 > ema21 && (struct === 'BULL' || struct === 'UNCLEAR'))  directions.push('LONG');
-  if (dailyBear && ema9 < ema21 && (struct === 'BEAR' || struct === 'UNCLEAR'))  directions.push('SHORT');
+  if (dailyBull && ema9 > ema21)  directions.push('LONG');
+  if (dailyBear && ema9 < ema21)  directions.push('SHORT');
 
   for (const dir of directions) {
     const isBull = dir === 'LONG';
@@ -108,22 +108,19 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     // ── EMA stack on 1h — scoring bonus, not a hard gate ────────────────────
     const esScore = emaStackScore(closes, 9, 21, 21, dir); // 9/21 only on swing
 
-    // ── Pullback into value ──────────────────────────────────────────────────
-    // Wide tolerance (1.5 ATR) + 24-bar lookback so we catch pullbacks from
-    // the past day that are now holding as support/resistance.
-    const tolerance = 1.5 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 24);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 24);
+    // ── Pullback into value — very wide tolerance so any recent touch qualifies ─
+    const tolerance = 3.0 * atr;
+    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 50);
+    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 50);
     if (!pulledToVwap && !pulledTo21) continue;
 
-    // ── Retest holds ─────────────────────────────────────────────────────────
-    // Allow up to 0.8 ATR wick through EMA21 — a tight retest, not a full breakdown.
+    // ── Retest holds — allow wider wicks to catch normal pullback structure ───
     const recentSlice = bars.slice(-3, -1);
-    if (isBull && recentSlice.some(b => b.close < ema21 - 0.8 * atr)) continue;
-    if (!isBull && recentSlice.some(b => b.close > ema21 + 0.8 * atr)) continue;
+    if (isBull && recentSlice.some(b => b.close < ema21 - 1.5 * atr)) continue;
+    if (!isBull && recentSlice.some(b => b.close > ema21 + 1.5 * atr)) continue;
 
-    // ── Confirmation candle ──────────────────────────────────────────────────
-    if (!(isBull ? isBullishCandle(last, 0.30) : isBearishCandle(last, 0.30))) continue;
+    // ── Confirmation candle — 20% body threshold for higher signal frequency ─
+    if (!(isBull ? isBullishCandle(last, 0.20) : isBearishCandle(last, 0.20))) continue;
 
     // ── Momentum ─────────────────────────────────────────────────────────────
     const rsiArr = calcRsi(closes, 14);
@@ -166,7 +163,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     // ── Near key S/R? ────────────────────────────────────────────────────────
     const srDist = srDistanceAtr(entry, bars, atr, 60);
-    if (srDist < 0.3) continue; // only block if sitting exactly on S/R
+    if (srDist < 0.15) continue; // only block if sitting exactly on S/R
 
     // ── Confidence score ─────────────────────────────────────────────────────
     const confidence = scoreSignal({

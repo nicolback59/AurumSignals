@@ -28,7 +28,7 @@ const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-s
 const TARGET_PTS  = 50;   // fixed primary target
 const PARTIAL_PTS = 25;   // partial exit
 const ATR_MIN_PTS = 10;   // minimum 5m ATR for move to be plausible
-const MIN_BAR_GAP = 2;    // 2 × 5m = 10 min spam guard — adaptive-cooldown.js handles strategy timing
+const MIN_BAR_GAP = 1;    // 1 × 5m = 5 min spam guard — adaptive-cooldown.js handles strategy timing
 
 let lastSignalBar = -999;
 
@@ -69,20 +69,16 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // ── HTF bias (15m) ────────────────────────────────────────────────────────────
   const htfBias = calcHtfBias(htfBars, 9, 21);
 
-  // ── Consolidation detection ───────────────────────────────────────────────────
-  // Look for tight range in last 12 bars before current.
-  // Accept atrRatio < 0.8 (was the built-in 0.5) — active NQ sessions easily
-  // span 3–5× ATR over 60 min, so the strict default rarely triggers.
+  // ── Consolidation detection — only reject extreme chop/expansion (atrRatio ≥ 2.5) ─
   const priorBars = bars.slice(0, -1); // exclude current bar
   const consol = detectConsolidation(priorBars, 12, 14);
-  if (consol.atrRatio >= 1.0) return null;
+  if (consol.atrRatio >= 2.5) return null;
 
   const { rangeHigh, rangeLow, curAtr: consolAtr } = consol;
 
-  // ── ATR expansion ─────────────────────────────────────────────────────────────
-  // Current ATR must be at least as large as consolidation ATR (breakout starting)
+  // ── ATR expansion — lowered threshold to allow more breakout detection ────────
   const consolAtrRatio = consolAtr ? atr / consolAtr : 1;
-  if (consolAtrRatio < 0.70) return null; // still inside consolidation range
+  if (consolAtrRatio < 0.40) return null; // still inside consolidation range
 
   // ── Volume spike (bonus but not required) ─────────────────────────────────────
   const volSpike = hasVolumeSpike(bars, 20, 1.3);
@@ -105,8 +101,8 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   for (const dir of directions) {
     const isBull = dir === 'LONG';
 
-    // ── Candle close strength ────────────────────────────────────────────────
-    if (!(isBull ? isBullishCandle(last, 0.30) : isBearishCandle(last, 0.30))) continue;
+    // ── Candle close strength — 20% body for higher signal frequency ─────────
+    if (!(isBull ? isBullishCandle(last, 0.20) : isBearishCandle(last, 0.20))) continue;
 
     // ── Minimum momentum (RSI not extreme) ──────────────────────────────────
     const rsiArr = calcRsi(closes, 14);
@@ -134,7 +130,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     // Risk must be reasonable — less than the target and not trivially small
     if (rawRisk < 8 || rawRisk >= TARGET_PTS * 0.9) continue;
     const rrToTarget = TARGET_PTS / rawRisk;
-    if (rrToTarget < 1.5) continue; // RR too poor
+    if (rrToTarget < 1.0) continue; // RR must be at least 1:1 to fixed 50-pt target
 
     // ── 50-point room check ──────────────────────────────────────────────────
     // Check that the target has clear room before a major S/R level
@@ -143,12 +139,10 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     const tp2 = tp1; // same level — full target
     const tp3 = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
 
-    // S/R distance check: need at least 1 ATR of clear room to tp1
+    // S/R: only block when a major level sits right at the partial target
     const srDist = srDistanceAtr(isBull ? tp1 : tp1, bars, atr, 50);
-    // Relax: we allow srDist < 1 because the target is fixed, we just need room
-    // Only reject if a major level is between entry and partial target
     const srToPartial = srDistanceAtr(isBull ? tp0 : tp0, bars, atr, 50);
-    if (srToPartial < 0.8) continue; // major S/R blocks partial target
+    if (srToPartial < 0.25) continue; // major S/R directly blocks partial target
 
     // ── Confidence score ─────────────────────────────────────────────────────
     const confidence = scoreSignal({

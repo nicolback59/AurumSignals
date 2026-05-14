@@ -324,21 +324,58 @@ async function saveSigNote(id) {
 }
 
 // ── Backtest renderer ──────────────────────────────────────────────────────────
-function renderBt() {
-  const el       = document.getElementById('btFeed');
+function updateBtStats() {
   const filtered = btFilter === 'ALL' ? btRuns : btRuns.filter(r => r.instrument === btFilter);
-
-  const totalWins = filtered.reduce((s, r) => s + (r.win_count  || 0), 0);
-  const totalLoss = filtered.reduce((s, r) => s + (r.loss_count || 0), 0);
-  const noted     = filtered.reduce((s, r) => s + (r.noted_count || 0), 0);
+  const totalWins   = filtered.reduce((s, r) => s + (r.win_count  || 0), 0);
+  const totalLoss   = filtered.reduce((s, r) => s + (r.loss_count || 0), 0);
+  const noted       = filtered.reduce((s, r) => s + (r.noted_count || 0), 0);
   const totalTrades = totalWins + totalLoss;
-  const btWr = totalTrades > 0 ? (totalWins / totalTrades * 100).toFixed(1) + '%' : '—';
-  document.getElementById('btStats').innerHTML =
+  const btWr        = totalTrades > 0 ? (totalWins / totalTrades * 100).toFixed(1) + '%' : '—';
+
+  // Aggregate per-strategy stats from any already-loaded trade caches
+  const aggByStrat   = {};
+  const filteredIds  = new Set(filtered.map(r => r.id));
+  const STRAT_ORDER_BT = ['MNQ Intraday', 'MNQ Swing', 'MNQ 50-Point', 'MGC Scalp', 'MGC Intraday'];
+  for (const [runId, trades] of Object.entries(runTradeCache)) {
+    if (!filteredIds.has(+runId)) continue;
+    for (const t of trades) {
+      const sn = t.setup || t.strategy_name || 'Unknown';
+      if (!aggByStrat[sn]) aggByStrat[sn] = { wins: 0, losses: 0, be: 0 };
+      if (t.outcome === 'WIN')       aggByStrat[sn].wins++;
+      else if (t.outcome === 'LOSS') aggByStrat[sn].losses++;
+      else                           aggByStrat[sn].be++;
+    }
+  }
+  const aggEntries = [
+    ...STRAT_ORDER_BT.filter(k => aggByStrat[k]),
+    ...Object.keys(aggByStrat).filter(k => !STRAT_ORDER_BT.includes(k)),
+  ];
+  const aggTable = aggEntries.length ? `
+    <span class="mini-stat" style="margin-left:8px;border-left:1px solid rgba(255,255,255,.1);padding-left:8px;display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+      ${aggEntries.map(name => {
+        const s   = aggByStrat[name];
+        const tot = s.wins + s.losses + s.be;
+        const wr  = tot > 0 ? (s.wins / tot * 100).toFixed(0) : null;
+        const col = wr == null ? 'var(--text-muted)' : +wr >= 55 ? 'var(--green)' : +wr >= 45 ? 'var(--yellow)' : 'var(--red)';
+        return `<span style="white-space:nowrap;font-size:10px"><span style="color:rgba(255,255,255,.5)">${escH(name)}:</span> <b style="color:${col}">${wr ?? '—'}%</b> <span style="color:rgba(255,255,255,.35)">${tot}t</span></span>`;
+      }).join('')}
+    </span>` : '';
+
+  const el = document.getElementById('btStats');
+  if (el) el.innerHTML =
     `<span class="mini-stat"><span class="v info">${filtered.length}</span> runs</span>` +
     `<span class="mini-stat"><span class="v win">${totalWins}</span> wins</span>` +
     `<span class="mini-stat"><span class="v loss">${totalLoss}</span> losses/BEs</span>` +
     `<span class="mini-stat"><span class="v win">${btWr}</span> WR</span>` +
-    `<span class="mini-stat"><span class="v info">${noted}</span> noted</span>`;
+    `<span class="mini-stat"><span class="v info">${noted}</span> noted</span>` +
+    aggTable;
+}
+
+function renderBt() {
+  const el       = document.getElementById('btFeed');
+  const filtered = btFilter === 'ALL' ? btRuns : btRuns.filter(r => r.instrument === btFilter);
+
+  updateBtStats();
 
   if (!filtered.length) {
     el.innerHTML = buildEmptyState(
@@ -395,20 +432,44 @@ function renderRunTrades(runId) {
     <span style="margin-left:auto;font-family:var(--font-mono)">Entry / SL / TP1</span>
   </div>`;
 
-  // Per-strategy breakdown
+  // Per-strategy breakdown table
+  const STRAT_ORDER = ['MNQ Intraday', 'MNQ Swing', 'MNQ 50-Point', 'MGC Scalp', 'MGC Intraday'];
   const byStrat = {};
   for (const t of trades) {
     const sn = t.setup || t.strategy_name || 'Unknown';
-    if (!byStrat[sn]) byStrat[sn] = { wins: 0, losses: 0 };
-    if (t.outcome === 'WIN') byStrat[sn].wins++;
-    else byStrat[sn].losses++;
+    if (!byStrat[sn]) byStrat[sn] = { wins: 0, losses: 0, be: 0 };
+    if (t.outcome === 'WIN')  byStrat[sn].wins++;
+    else if (t.outcome === 'LOSS') byStrat[sn].losses++;
+    else byStrat[sn].be++;
   }
-  const stratBreakdown = Object.entries(byStrat).map(([name, s]) => {
-    const tot = s.wins + s.losses;
-    const wr  = tot > 0 ? (s.wins / tot * 100).toFixed(0) + '%' : '–';
-    return `<span style="white-space:nowrap">${escH(name)}: <span style="color:var(--green)">${s.wins}W</span>/<em>${s.losses}L</em> <span style="color:var(--text-muted)">(${wr})</span></span>`;
-  }).join('<span style="color:rgba(255,255,255,.2);margin:0 6px">|</span>');
-  const stratHeader = `<div style="font-size:10px;padding:4px 12px 6px;border-bottom:1px solid rgba(255,255,255,.06);display:flex;flex-wrap:wrap;gap:6px;color:rgba(255,255,255,.55)"><span style="opacity:.5;margin-right:4px">strategies:</span>${stratBreakdown}</div>`;
+  const stratEntries = [
+    ...STRAT_ORDER.filter(k => byStrat[k]),
+    ...Object.keys(byStrat).filter(k => !STRAT_ORDER.includes(k)),
+  ].map(name => ({ name, ...byStrat[name] }));
+
+  const stratRows = stratEntries.map(s => {
+    const tot  = s.wins + s.losses + s.be;
+    const wr   = tot > 0 ? (s.wins / tot * 100).toFixed(0) : null;
+    const wrColor = wr == null ? 'var(--text-muted)' : +wr >= 55 ? 'var(--green)' : +wr >= 45 ? 'var(--yellow)' : 'var(--red)';
+    const wrText  = wr != null ? `${wr}%` : '—';
+    return `<div style="display:contents">
+      <span style="color:rgba(255,255,255,.75);font-weight:500">${escH(name)}</span>
+      <span style="color:var(--text-muted);text-align:right">${tot}</span>
+      <span style="color:${wrColor};font-weight:600;text-align:right">${wrText}</span>
+      <span style="text-align:right"><span style="color:var(--green)">${s.wins}W</span><span style="color:rgba(255,255,255,.3)"> / </span><span style="color:var(--red)">${s.losses}L</span>${s.be ? `<span style="color:rgba(255,255,255,.3)"> / </span><span style="color:var(--yellow)">${s.be}BE</span>` : ''}</span>
+    </div>`;
+  }).join('');
+
+  const stratHeader = `<div style="padding:8px 12px 6px;border-bottom:1px solid rgba(255,255,255,.08);">
+    <div style="font-size:9px;letter-spacing:.06em;text-transform:uppercase;color:rgba(255,255,255,.3);margin-bottom:6px">By Strategy</div>
+    <div style="display:grid;grid-template-columns:1fr auto auto auto;gap:2px 12px;font-size:11px;font-family:var(--font-mono)">
+      <span style="color:rgba(255,255,255,.3);font-size:9px">STRATEGY</span>
+      <span style="color:rgba(255,255,255,.3);font-size:9px;text-align:right">TRADES</span>
+      <span style="color:rgba(255,255,255,.3);font-size:9px;text-align:right">WIN%</span>
+      <span style="color:rgba(255,255,255,.3);font-size:9px;text-align:right">W / L</span>
+      ${stratRows}
+    </div>
+  </div>`;
 
   return stratHeader + header + trades.map(t => {
     const timeStr = t.timestamp ? hhmm(t.timestamp) : (t.bar_idx != null ? '#' + t.bar_idx : '—');
@@ -463,6 +524,8 @@ async function toggleRun(runId) {
     } catch { runTradeCache[runId] = []; }
   }
   if (tradesEl) tradesEl.innerHTML = renderRunTrades(runId);
+  // Refresh only the stats bar so aggregate per-strategy WR updates
+  updateBtStats();
 }
 
 function showTags(tradeId) {

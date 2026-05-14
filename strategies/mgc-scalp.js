@@ -159,15 +159,15 @@ function detectExhaustion(bars, atr, dir) {
   const lookback = Math.min(8, n);
   const slice = bars.slice(-lookback);
 
-  // Overextension: price moved > 3.5× ATR in direction without meaningful retracement
+  // Overextension: price moved > 5.5× ATR in direction without retracement
   const ext = dir === 'LONG'
     ? bars[n].close - Math.min(...slice.map(b => b.low))
     : Math.max(...slice.map(b => b.high)) - bars[n].close;
-  if (ext > 3.5 * atr) return true;
+  if (ext > 5.5 * atr) return true;
 
   // Climactic wide candle (blowoff move)
   const last = bars[n];
-  if (Math.abs(last.close - last.open) > 2.5 * atr) return true;
+  if (Math.abs(last.close - last.open) > 3.5 * atr) return true;
 
   return false;
 }
@@ -230,10 +230,9 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   const n    = exec.length - 1;
   const last = exec[n];
 
-  // ── Session gate ────────────────────────────────────────────────────────────
-  // Use market-clock so Asian + London are included (gold is active in both)
+  // ── Session gate — lower threshold to include more sessions ─────────────────
   const sess = getSessionInfoCompat(last.timestamp);
-  if (sess.isBlackout || sess.quality < 0.35) return null;
+  if (sess.isBlackout || sess.quality < 0.20) return null;
 
   // ── Core indicators ─────────────────────────────────────────────────────────
   const closes  = exec.map(b => b.close);
@@ -261,8 +260,8 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   const vwapState = getVwapState(exec, vwapArr);
   const volRegime = getVolatilityRegime(exec, atr);
 
-  // Reject pure chaos: high volatility + high chop = news/spike whipsaw
-  if (volRegime === 'HIGH' && chopScore > 0.55) return null;
+  // Reject pure chaos: high volatility + extreme chop only
+  if (volRegime === 'HIGH' && chopScore > 0.70) return null;
 
   // ── HTF biases ──────────────────────────────────────────────────────────────
   const htfBias   = calcHtfBias(bars15m, 9, 21);
@@ -272,7 +271,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
 
   const priorDay  = getPriorDayLevels(bars1h);
 
-  const isChop    = chopScore > 0.65;
+  const isChop    = chopScore > 0.80;
   const rsiOB     = rsi != null && rsi > 76;
   const rsiOS     = rsi != null && rsi < 24;
 
@@ -302,7 +301,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   // Pick highest raw score
   const best = candidates.reduce((a, b) => a.score > b.score ? a : b);
 
-  // ── Multi-TF confluence gate ─────────────────────────────────────────────────
+  // ── Multi-TF confluence gate — only block when ALL layers conflict ───────────
   const htfLayers = [
     { bias: htfBias,    present: true },
     { bias: htf1hBias,  present: bars1h  && bars1h.length  >= 21 },
@@ -313,9 +312,10 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   const presentLayers  = htfLayers.filter(l => l.present);
   const agreedLayers   = presentLayers.filter(l => l.bias === expectedBias);
   const conflictLayers = presentLayers.filter(l => l.bias !== 0 && l.bias !== expectedBias);
-  const minAgree = presentLayers.length >= 3 ? 2 : 1;
+  const minAgree = 1; // require at least 1 TF in agreement
   if (agreedLayers.length < minAgree) return null;
-  if (conflictLayers.length > agreedLayers.length) return null;
+  // Only block when all non-neutral layers conflict (overwhelming disagreement)
+  if (conflictLayers.length >= presentLayers.length) return null;
 
   const confluenceBonus = (agreedLayers.length - minAgree) * 4;
 
@@ -350,11 +350,11 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
 
   if (confidence < THRESHOLDS.MGC_SCALP) return null;
 
-  // Block entry within 0.5 ATR of prior day H/L (major S/R)
+  // Block entry within 0.2 ATR of prior day H/L (immediate S/R only)
   if (priorDay) {
     const e = last.close;
-    if (Math.abs(e - priorDay.high) < 0.5 * atr) return null;
-    if (Math.abs(e - priorDay.low)  < 0.5 * atr) return null;
+    if (Math.abs(e - priorDay.high) < 0.2 * atr) return null;
+    if (Math.abs(e - priorDay.low)  < 0.2 * atr) return null;
   }
 
   lastSignalBar = curIdx;
@@ -419,11 +419,11 @@ function evalContinuationPullback(ctx) {
     if (isBull && rsiOB) continue;
     if (!isBull && rsiOS) continue;
 
-    // Must have pulled back to EMA or VWAP recently
-    const tol   = 0.45 * atr;
-    const pull9  = hadPullbackToLevel(exec, ema9,  tol, dir, 7);
-    const pull21 = hadPullbackToLevel(exec, ema21, tol, dir, 7);
-    const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 7);
+    // Must have pulled back to EMA or VWAP recently — wide tolerance for more signals
+    const tol   = 0.80 * atr;
+    const pull9  = hadPullbackToLevel(exec, ema9,  tol, dir, 15);
+    const pull21 = hadPullbackToLevel(exec, ema21, tol, dir, 15);
+    const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 15);
     if (!pull9 && !pull21 && !pullV) continue;
 
     // Retest holds (no close through EMA21)
@@ -477,8 +477,8 @@ function evalVwapReclaimReject(ctx) {
   if (isBull && rsiOB) return null;
   if (!isBull && rsiOS) return null;
 
-  // Strong confirmation candle
-  if (!(isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35))) return null;
+  // Confirmation candle
+  if (!(isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25))) return null;
 
   const swLow  = recentSwingLow(exec, 6);
   const swHigh = recentSwingHigh(exec, 6);
@@ -552,8 +552,8 @@ function evalCompressionBreakout(ctx) {
   const rangeLow  = Math.min(...priorBars.map(b => b.low));
   const rangePts  = rangeHigh - rangeLow;
 
-  // Needs to be a genuinely tight range
-  if (rangePts > atr * 2.0) return null;
+  // Needs to be a reasonably tight range — widened to allow more breakouts
+  if (rangePts > atr * 3.5) return null;
 
   const brkLong  = last.close > rangeHigh;
   const brkShort = last.close < rangeLow;
@@ -565,13 +565,13 @@ function evalCompressionBreakout(ctx) {
   if (isBull && htfBias < 0) return null;
   if (!isBull && htfBias > 0) return null;
 
-  // MACD must be expanding in breakout direction
+  // MACD soft filter — only block if strongly counter-trend
   if (hist != null && histPrev != null) {
-    const expanding = isBull ? (hist > 0 && hist > histPrev) : (hist < 0 && hist < histPrev);
-    if (!expanding) return null;
+    const against = isBull ? (hist < 0 && hist < histPrev) : (hist > 0 && hist > histPrev);
+    if (against) return null;
   }
 
-  if (!(isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35))) return null;
+  if (!(isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25))) return null;
 
   const sl   = isBull ? rangeLow - 0.2 * atr : rangeHigh + 0.2 * atr;
   const risk = isBull ? last.close - sl : sl - last.close;
