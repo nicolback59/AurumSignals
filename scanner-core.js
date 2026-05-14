@@ -37,6 +37,9 @@ const {
   STATES, resolveBar, shouldExpire, stateToResult,
 } = require('./signals/signal-state-machine');
 const {
+  buildAlertPayload, flattenPayload, buildNtfyBody, buildNtfyHeaders,
+} = require('./signals/alert-payload');
+const {
   getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
   updateLearnedThresholds, updateLearningFromLiveSignals,
   getPredictedWinRate, getBacktestWinRates,
@@ -458,39 +461,10 @@ class Scanner extends EventEmitter {
 
   // ── ntfy push ────────────────────────────────────────────────────────────────
 
-  _sendNtfy(s) {
+  _sendNtfyPayload(payload) {
     if (!this.cfg.ntfyTopic) return;
-    // HTTP headers must be ASCII only — no emoji. Emoji go in the body only.
-    const arrow    = s.direction === 'LONG' ? '[LONG]' : '[SHORT]';
-    const priority = s.grade === 'A+' ? 'urgent' : 'high';
-    const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
-    const stratTag = s.strategy_name ? `[${s.strategy_name}] ` : '';
-    const predWR = s.predicted_wr_pct != null
-      ? `WinRate: ${s.predicted_wr_pct}%+/-${s.predicted_wr_band ?? 9}% (${s.predicted_wr_source ?? '?'})${s.predicted_wr_atr_spike ? ' [NEWS/SPIKE]' : ''}`
-      : null;
-    const dirEmoji = s.direction === 'LONG' ? '▲ LONG' : '▼ SHORT';
-    const body = [
-      `${dirEmoji} ${s.grade}  |  ${s.ticker ?? s.instrument}`,
-      s.setup        ? `Setup:   ${stratTag}${s.setup}`   : null,
-      s.trade_style  ? `Style:   ${s.trade_style}`         : null,
-      s.entry != null? `Entry:   ${s.entry}`               : null,
-      s.sl    != null? `SL:      ${s.sl}`                  : null,
-      s.tp1   != null? `TP1:     ${s.tp1}`                 : null,
-      s.tp2   != null? `TP2:     ${s.tp2}`                 : null,
-      s.tp3   != null? `TP3:     ${s.tp3}`                 : null,
-      s.tp4   != null? `TP4:     ${s.tp4}`                 : null,
-      s.rr    != null? `RR:      ${s.rr}`                  : null,
-      s.confidence != null ? `Conf:    ${s.confidence}/100` : null,
-      predWR,
-      s.session      ? `Session: ${s.session}`             : null,
-    ].filter(Boolean).join('\n');
-    const headers = {
-      'Content-Type': 'text/plain',
-      'Title':    `${arrow} ${s.grade} - ${s.ticker ?? s.instrument}`,
-      'Priority': priority,
-      'Tags':     tags,
-    };
-    if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+    const body    = buildNtfyBody(payload);
+    const headers = buildNtfyHeaders(payload, { ntfyToken: this.cfg.ntfyToken });
     fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
       .catch(err => this._err('[ntfy] send failed', err));
   }
@@ -533,6 +507,11 @@ class Scanner extends EventEmitter {
       signal.predicted_wr_dynamic_note = pred.dynamic_note;
     } catch { /* never crash signal storage */ }
 
+    const received_at = new Date().toISOString();
+    const rank        = signal._rank ?? null;
+    // Build canonical payload; id is null until after insert
+    const prePayload  = buildAlertPayload(signal, { id: null, received_at, rank });
+
     const info = this._stmts.insertSignal.run({
       ticker:        signal.ticker ?? `${signal.instrument}1!`,
       timeframe:     signal.timeframe ?? '5m',
@@ -557,18 +536,19 @@ class Scanner extends EventEmitter {
       instrument:    signal.instrument,
       rr:            signal.rr,
       trade_status:  STATES.ACTIVE,
-      raw_payload:   JSON.stringify(signal),
+      raw_payload:   JSON.stringify(prePayload),
     });
 
-    const id          = info.lastInsertRowid;
-    const stratLabel  = signal.strategy_name ?? signal.setup ?? 'unknown';
+    const id         = info.lastInsertRowid;
+    const stratLabel = signal.strategy_name ?? signal.setup ?? 'unknown';
     const logMsg = `✅ SIGNAL #${id} | ${signal.instrument} ${signal.direction} ${signal.grade} | ` +
       `${stratLabel} | confidence=${signal.confidence ?? signal.score}/100 | entry=${signal.entry} | rr=${signal.rr}`;
     this._log(logMsg, 'signal');
 
-    const enriched = { ...signal, id, received_at: new Date().toISOString() };
-    this.emit('signal', enriched);
-    this._sendNtfy(enriched);
+    // Rebuild with id for emit + ntfy
+    const payload = buildAlertPayload(signal, { id, received_at, rank });
+    this.emit('signal', { ...flattenPayload(payload), raw_payload: JSON.stringify(payload) });
+    this._sendNtfyPayload(payload);
     return id;
   }
 
@@ -929,7 +909,7 @@ class Scanner extends EventEmitter {
       this._log(`🏷️  ${sig.strategy_name} ${instrument} — tier ${rank.tier} (adj conf ${rank.adjustedConfidence}, session ${rank.session}×${rank.sessionModifier})`);
 
       this._lastSignalTimes[stratKey] = Date.now();
-      this._storeSignal({ ...sig, ticker: `${instrument}1!` });
+      this._storeSignal({ ...sig, ticker: `${instrument}1!`, _rank: rank });
       anyFired = true;
     }
 
@@ -1040,12 +1020,17 @@ class Scanner extends EventEmitter {
             this._fetchBackoffUntil = Date.now() + backoffMin * 60_000;
             this._log(`🔴 Rate-limit circuit breaker: ${backoffMin}min backoff (${this._consecutiveErrors} consecutive errors)`);
             if (this._consecutiveErrors >= 10 && this.cfg.ntfyTopic) {
-              this._sendNtfy({
-                direction: 'SHORT', grade: '!', instrument: 'SYS',
-                setup: `Rate-limit backoff ${backoffMin}min`, session: 'system',
-                ticker: 'NQ Signal Pro',
-                trade_style: `${this._consecutiveErrors} consecutive 429s — check Yahoo Finance access`,
-              });
+              const headers = {
+                'Content-Type': 'text/plain',
+                'Title':    `[SYS] Rate-limit backoff ${backoffMin}min`,
+                'Priority': 'urgent',
+                'Tags':     'warning',
+              };
+              if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+              fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
+                method: 'POST', headers,
+                body: `${this._consecutiveErrors} consecutive 429s — check Yahoo Finance access`,
+              }).catch(() => {});
             }
           }
 
