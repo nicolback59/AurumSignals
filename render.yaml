@@ -35,8 +35,8 @@ services:
         value: GC=F
       - key: SCAN_INTERVAL
         value: 15        # seconds between scans (15 = default, max 60)
-      - key: SCANNER_COOLDOWN
-        value: 90        # minutes between signals per instrument
+      - key: SCANNER_DUPLICATE_GUARD_MIN
+        value: 5         # spam/same-bar guard only — adaptive-cooldown.js controls strategy timing
       - key: SCANNER_MIN_SCORE
         value: 6         # base confidence floor (adaptive learning raises/lowers)
       - key: DAILY_SIGNAL_CAP

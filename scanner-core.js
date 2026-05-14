@@ -62,6 +62,12 @@ const {
 } = require('./strategy-dna');
 const { runEvolutionCycle }        = require('./strategy-evolution');
 const {
+  checkAdaptiveCooldown,
+  formatBlockLog,
+  formatBlockSummary,
+  formatStartupConfig,
+} = require('./adaptive-cooldown');
+const {
   recordOpeningCandle, getSessionOpenBias, getOpeningCandleAdjustment,
   updateSessionBiasAccuracy, updateSessionBiasFromBacktest,
   getOpeningCandleReport,
@@ -85,7 +91,7 @@ class Scanner extends EventEmitter {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
       symbolMgc:       config.symbolMgc       || process.env.SCANNER_SYMBOL_MGC   || 'GC=F',
       scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '120') * 1000, 300_000),
-      cooldown:        config.cooldown        || parseInt(process.env.SCANNER_COOLDOWN    || '10'),
+      duplicateGuardMin: config.duplicateGuardMin || parseInt(process.env.SCANNER_DUPLICATE_GUARD_MIN || '5'),
       baseScore:       config.baseScore       || parseInt(process.env.SCANNER_MIN_SCORE   || '6'),
       dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '20'),
       dailyMinSignals: config.dailyMinSignals || parseInt(process.env.DAILY_MIN_SIGNALS   || '20'),
@@ -695,7 +701,7 @@ class Scanner extends EventEmitter {
   // ── Per-instrument scan ───────────────────────────────────────────────────────
 
   async _scanInstrument(instrument, bars5m, bars15m, bars1h, bars4h, barsDly, bars30m = [], bars45m = [], bars3m = []) {
-    const cooldownMs = this.cfg.cooldown * 60_000;
+    const duplicateGuardMs = this.cfg.duplicateGuardMin * 60_000;
 
     // Daily cap
     const todayCount = this._stmts.dailySignalCount.get(instrument)?.cnt ?? 0;
@@ -741,7 +747,7 @@ class Scanner extends EventEmitter {
     // ── Minimum daily signal guarantee — 3-tier confidence relaxation ────────────
     // Target: 20 signals per instrument per day (20 MNQ + 20 MGC = 40 total).
     // Cap: 20 per instrument — fills the full allocation every trading day.
-    // 10-min cooldown allows up to 39 signals in a 6.5h session; cap keeps it clean.
+    // Duplicate guard (SCANNER_DUPLICATE_GUARD_MIN) keeps cap clean; adaptive cooldown handles real timing.
     // When behind pace, confidence gate is progressively relaxed across the day.
     const todayCountNow = this._stmts.dailySignalCount.get(instrument)?.cnt ?? 0;
     const minTarget     = this.cfg.dailyMinSignals ?? 20;
@@ -770,14 +776,41 @@ class Scanner extends EventEmitter {
     let adaptiveOverrides = {};
     try { adaptiveOverrides = loadAdaptiveOverrides(this.db); } catch { /* never crash */ }
 
+    // Regime is needed by the adaptive cooldown engine — fetch once per scan cycle
+    let currentRegime = 'unknown';
+    try { currentRegime = getMarketRegime(this.db); } catch { /* never crash */ }
+
     for (const sig of signals) {
-      // Per-strategy cooldown — each strategy has its own independent timer.
-      // This allows MNQ_SWING to fire even minutes after MNQ_INTRADAY did.
       const stratKey = `${instrument}_${sig.strategy_name}`;
-      if (Date.now() - (this._lastSignalTimes[stratKey] ?? 0) < cooldownMs) {
+
+      // ── Duplicate guard — spam/same-bar prevention only (SCANNER_DUPLICATE_GUARD_MIN) ──
+      if (Date.now() - (this._lastSignalTimes[stratKey] ?? 0) < duplicateGuardMs) {
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
-          sig.confidence, null, 'cooldown');
-        this._log(`⏳ Cooldown: ${sig.strategy_name} ${instrument} suppressed`);
+          sig.confidence, null, 'duplicate_guard');
+        continue;
+      }
+
+      // ── Adaptive cooldown — context-aware timing control ──────────────────
+      const cooldownResult = checkAdaptiveCooldown({
+        strategyName:   sig.strategy_name,
+        instrument,
+        session:        sig.session ?? 'unknown',
+        regime:         currentRegime,
+        confidence:     sig.confidence,
+        lastSignalTime: this._lastSignalTimes[stratKey] ?? 0,
+        db:             this.db,
+      });
+
+      if (!cooldownResult.allowed) {
+        const reason = `adaptive_cooldown: ${cooldownResult.reason} (${cooldownResult.remainingMin === Infinity ? '∞' : cooldownResult.remainingMin?.toFixed(1)}min remaining)`;
+        this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+          sig.confidence, null, reason);
+        if (this.cfg.logLevel === 'full') {
+          this._log(formatBlockLog(sig.strategy_name, instrument, sig.session ?? 'unknown',
+            sig.confidence, currentRegime, cooldownResult));
+        } else {
+          this._log(formatBlockSummary(sig.strategy_name, instrument, cooldownResult));
+        }
         continue;
       }
 
@@ -1884,10 +1917,11 @@ class Scanner extends EventEmitter {
 
     this._log(
       `Scanner started — feed=${this.feedType} symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +
-      `fallback=${Math.round(fallbackMs / 1000)}s cooldown=${cfg.cooldown}min ` +
+      `fallback=${Math.round(fallbackMs / 1000)}s dupGuard=${cfg.duplicateGuardMin}min ` +
       `cap=${cfg.dailySignalCap} minDaily=${cfg.dailyMinSignals} ` +
       `strategies=MNQ_INTRADAY,MNQ_SWING,MNQ_50PT,MGC_SCALP,MGC_INTRADAY`
     );
+    this._log(formatStartupConfig(cfg.duplicateGuardMin));
 
     // Startup ntfy confirmation — ASCII headers only, no emoji
     if (cfg.ntfyTopic) {
@@ -1899,7 +1933,7 @@ class Scanner extends EventEmitter {
           'Tags':     'white_check_mark',
         };
         if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
-        const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nCooldown: ${cfg.cooldown} min`;
+        const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nDuplicate guard: ${cfg.duplicateGuardMin}min | Adaptive cooldown: ENABLED`;
         fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body })
           .catch(() => {});
       }, 3_000);
