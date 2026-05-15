@@ -108,11 +108,12 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     // ── EMA stack on 1h — scoring bonus, not a hard gate ────────────────────
     const esScore = emaStackScore(closes, 9, 21, 21, dir); // 9/21 only on swing
 
-    // ── Pullback into value — very wide tolerance so any recent touch qualifies ─
-    const tolerance = 3.0 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 50);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 50);
-    if (!pulledToVwap && !pulledTo21) continue;
+    // ── Price in value zone — proximity check replaces historical pullback requirement ─
+    // Any bar where price is within 3 ATR of EMA21 or VWAP qualifies; no need to
+    // look back for a historical touch.
+    const nearEma21 = Math.abs(last.close - ema21) < 3.0 * atr;
+    const nearVwap  = Math.abs(last.close - vwap)  < 3.0 * atr;
+    if (!nearEma21 && !nearVwap) continue;
 
     // ── Retest holds — allow wider wicks to catch normal pullback structure ───
     const recentSlice = bars.slice(-3, -1);
@@ -122,19 +123,9 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     // ── Confirmation candle — 20% body threshold for higher signal frequency ─
     if (!(isBull ? isBullishCandle(last, 0.20) : isBearishCandle(last, 0.20))) continue;
 
-    // ── Momentum ─────────────────────────────────────────────────────────────
+    // ── Momentum — RSI extreme filter only (MACD removed to maximise frequency) ─
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
-    const { histogram } = calcMacd(closes);
-    const hist     = histogram[n];
-    const histPrev = histogram[n - 1];
-    // Soft MACD filter: only block if strongly counter-trend (accelerating against)
-    if (hist != null && histPrev != null) {
-      const stronglyAgainst = isBull
-        ? (hist < 0 && hist < histPrev)
-        : (hist > 0 && hist > histPrev);
-      if (stronglyAgainst) continue;
-    }
 
     // ── Stop-loss ────────────────────────────────────────────────────────────
     const swLow  = recentSwingLow(bars, 12);

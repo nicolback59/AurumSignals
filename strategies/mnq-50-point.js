@@ -64,7 +64,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const vwap    = vwapArr[n];
 
   const sess = getSessionInfo(last.timestamp);
-  if (sess.quality < 0.40) return null; // skip only low-quality sessions
+  if (sess.quality < 0.20) return null; // only skip true dead-market sessions
 
   // ── HTF bias (15m) ────────────────────────────────────────────────────────────
   const htfBias = calcHtfBias(htfBars, 9, 21);
@@ -76,18 +76,12 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
 
   const { rangeHigh, rangeLow, curAtr: consolAtr } = consol;
 
-  // ── ATR expansion — lowered threshold to allow more breakout detection ────────
-  const consolAtrRatio = consolAtr ? atr / consolAtr : 1;
-  if (consolAtrRatio < 0.40) return null; // still inside consolidation range
-
   // ── Volume spike (bonus but not required) ─────────────────────────────────────
   const volSpike = hasVolumeSpike(bars, 20, 1.3);
 
-  // ── Breakout check ────────────────────────────────────────────────────────────
-  // VWAP removed from primary breakout — consolidation below VWAP in a downtrend
-  // is still a valid breakout setup. VWAP direction is captured in the HTF bias score.
-  const breakoutLong  = last.close > rangeHigh;
-  const breakoutShort = last.close < rangeLow;
+  // ── Breakout check — accept near-breakout (within 0.5 ATR of range edge) ──────
+  const breakoutLong  = last.close > rangeHigh - 0.5 * atr;
+  const breakoutShort = last.close < rangeLow  + 0.5 * atr;
   const vwapAligned   = (breakoutLong && last.close > vwap) || (breakoutShort && last.close < vwap);
 
   // Also accept: retest of breakout level
@@ -127,10 +121,9 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       rawRisk = sl - entry;
     }
 
-    // Risk must be reasonable — less than the target and not trivially small
-    if (rawRisk < 8 || rawRisk >= TARGET_PTS * 0.9) continue;
+    // Risk bounds: at least 2 pts (not a dust stop), at most 1.2× target (60 pts)
+    if (rawRisk < 2 || rawRisk > TARGET_PTS * 1.2) continue;
     const rrToTarget = TARGET_PTS / rawRisk;
-    if (rrToTarget < 1.0) continue; // RR must be at least 1:1 to fixed 50-pt target
 
     // ── 50-point room check ──────────────────────────────────────────────────
     // Check that the target has clear room before a major S/R level
@@ -139,10 +132,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     const tp2 = tp1; // same level — full target
     const tp3 = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
 
-    // S/R: only block when a major level sits right at the partial target
     const srDist = srDistanceAtr(isBull ? tp1 : tp1, bars, atr, 50);
-    const srToPartial = srDistanceAtr(isBull ? tp0 : tp0, bars, atr, 50);
-    if (srToPartial < 0.25) continue; // major S/R directly blocks partial target
 
     // ── Confidence score ─────────────────────────────────────────────────────
     const confidence = scoreSignal({
