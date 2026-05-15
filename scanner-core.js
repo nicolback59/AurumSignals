@@ -2034,19 +2034,34 @@ class Scanner extends EventEmitter {
     );
     this._log(formatStartupConfig(cfg.duplicateGuardMin));
 
-    // Startup ntfy confirmation — ASCII headers only, no emoji
+    // Startup ntfy confirmation — throttled to once per 2 hours to prevent restart spam
     if (cfg.ntfyTopic) {
       setTimeout(() => {
-        const headers = {
-          'Content-Type': 'text/plain',
-          'Title':    'NQ Signal Pro V3 - Online',
-          'Priority': 'default',
-          'Tags':     'white_check_mark',
-        };
-        if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
-        const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nDuplicate guard: ${cfg.duplicateGuardMin}min | Adaptive cooldown: ENABLED`;
-        fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body })
-          .catch(() => {});
+        try {
+          const STARTUP_KEY  = '__startup_ntfy';
+          const THROTTLE_MS  = 2 * 60 * 60 * 1000; // 2 hours
+          const row = this.db.prepare(
+            `SELECT params_json FROM strategy_params WHERE instrument = ?`
+          ).get(STARTUP_KEY);
+          const lastSent = row ? (JSON.parse(row.params_json).lastSent ?? 0) : 0;
+          if (Date.now() - lastSent < THROTTLE_MS) return; // suppress restart spam
+
+          this.db.prepare(
+            `INSERT INTO strategy_params (instrument, params_json, updated_at) VALUES (?,?,datetime('now'))
+             ON CONFLICT(instrument) DO UPDATE SET params_json=excluded.params_json, updated_at=excluded.updated_at`
+          ).run(STARTUP_KEY, JSON.stringify({ lastSent: Date.now() }));
+
+          const headers = {
+            'Content-Type': 'text/plain',
+            'Title':    'NQ Signal Pro V3 - Online',
+            'Priority': 'default',
+            'Tags':     'white_check_mark',
+          };
+          if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
+          const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nDuplicate guard: ${cfg.duplicateGuardMin}min | Adaptive cooldown: ENABLED`;
+          fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body })
+            .catch(() => {});
+        } catch { /* never crash startup */ }
       }, 3_000);
     }
 
