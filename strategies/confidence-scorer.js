@@ -8,9 +8,9 @@ const {
 
 const THRESHOLDS = {
   MNQ_INTRADAY: 60,  // lowered from 68 — more MNQ intraday signals
-  MNQ_SWING:    50,  // lowered from 63 — match intraday signal frequency
-  MNQ_50PT:     55,  // lowered from 68 — match intraday signal frequency
-  MGC_SCALP:    50,  // lowered from 62 — match intraday signal frequency
+  MNQ_SWING:    42,  // aggressive — match intraday signal frequency
+  MNQ_50PT:     42,  // aggressive — match intraday signal frequency
+  MGC_SCALP:    45,  // lowered from 62 — match intraday signal frequency
   MGC_INTRADAY: 60,  // displayed as "MGC Scalp" (intraday trend variant)
 };
 
