@@ -1,0 +1,431 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign In — NQ Signal Pro</title>
+  <link rel="stylesheet" href="/design-system.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-ui);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Nav ── */
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      height: 60px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10,10,18,0.95);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-logo {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+    .nav-logo span { color: var(--blue); }
+    .nav-links { display: flex; align-items: center; gap: 24px; }
+    .nav-links a {
+      font-size: 13px;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color .15s;
+    }
+    .nav-links a:hover { color: var(--text-primary); }
+
+    /* ── Auth layout ── */
+    .auth-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 48px 16px;
+      background: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(77,144,255,.06) 0%, transparent 70%);
+    }
+
+    .auth-container {
+      width: 100%;
+      max-width: 420px;
+    }
+
+    .auth-brand {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .auth-brand-logo {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--text-primary);
+      letter-spacing: -0.04em;
+      margin-bottom: 8px;
+    }
+    .auth-brand-logo span { color: var(--blue); }
+    .auth-brand-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    .auth-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 36px 32px;
+      box-shadow: 0 8px 40px rgba(0,0,0,.4);
+    }
+
+    .auth-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      letter-spacing: -0.02em;
+    }
+    .auth-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 28px;
+    }
+
+    .form-group {
+      margin-bottom: 18px;
+    }
+    .form-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 7px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .form-input {
+      width: 100%;
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      padding: 11px 14px;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .form-input::placeholder { color: var(--text-muted); }
+    .form-input:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(77,144,255,.12);
+    }
+    .form-input.error {
+      border-color: var(--red);
+      box-shadow: 0 0 0 3px rgba(255,80,80,.1);
+    }
+
+    .form-forgot {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: -12px;
+      margin-bottom: 18px;
+    }
+    .form-forgot a {
+      font-size: 12px;
+      color: var(--blue);
+      text-decoration: none;
+    }
+    .form-forgot a:hover { text-decoration: underline; }
+
+    .btn-submit {
+      width: 100%;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-family: var(--font-ui);
+      font-size: 14px;
+      font-weight: 600;
+      padding: 12px;
+      cursor: pointer;
+      transition: background .15s, box-shadow .15s, transform .1s;
+      margin-top: 4px;
+    }
+    .btn-submit:hover {
+      background: #5ea8ff;
+      box-shadow: 0 4px 20px rgba(77,144,255,.35);
+    }
+    .btn-submit:active { transform: scale(.99); }
+    .btn-submit:disabled {
+      opacity: .5;
+      cursor: not-allowed;
+    }
+
+    .auth-error {
+      background: rgba(255,80,80,.08);
+      border: 1px solid rgba(255,80,80,.3);
+      border-radius: 8px;
+      color: var(--red);
+      font-size: 13px;
+      padding: 10px 14px;
+      margin-bottom: 18px;
+      display: none;
+    }
+    .auth-error.visible { display: block; }
+
+    .auth-divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 24px 0;
+    }
+    .auth-divider::before,
+    .auth-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .auth-divider span {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .auth-footer {
+      text-align: center;
+      margin-top: 24px;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .auth-footer a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+    .auth-footer a:hover { text-decoration: underline; }
+
+    .plan-badges {
+      display: flex;
+      gap: 8px;
+      justify-content: center;
+      margin-top: 20px;
+    }
+    .plan-badge {
+      font-size: 11px;
+      font-weight: 600;
+      padding: 3px 10px;
+      border-radius: 20px;
+      letter-spacing: .04em;
+    }
+    .plan-badge-free { background: rgba(120,120,140,.15); color: var(--text-muted); border: 1px solid var(--border); }
+    .plan-badge-pro  { background: rgba(77,144,255,.12);  color: var(--blue);  border: 1px solid rgba(77,144,255,.3); }
+    .plan-badge-elite { background: rgba(124,110,246,.12); color: #a78bfa; border: 1px solid rgba(124,110,246,.3); }
+
+    /* ── Spinner ── */
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ── Disclaimer ── */
+    .disclaimer {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 24px;
+      line-height: 1.6;
+      padding: 0 8px;
+    }
+    .disclaimer a { color: var(--text-muted); text-decoration: underline; }
+
+    @media (max-width: 480px) {
+      .auth-card { padding: 28px 20px; border-radius: 12px; }
+      .nav { padding: 0 16px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav class="nav">
+    <a href="/landing" class="nav-logo">NQ Signal <span>Pro</span></a>
+    <div class="nav-links">
+      <a href="/pricing">Pricing</a>
+      <a href="/register">Create Account</a>
+    </div>
+  </nav>
+
+  <!-- Auth wrapper -->
+  <div class="auth-wrapper">
+    <div class="auth-container">
+
+      <div class="auth-brand">
+        <div class="auth-brand-logo">NQ Signal <span>Pro</span></div>
+        <div class="auth-brand-sub">Institutional-grade NQ &amp; MGC signals</div>
+      </div>
+
+      <div class="auth-card">
+        <div class="auth-title">Welcome back</div>
+        <div class="auth-sub">Sign in to access your signals dashboard</div>
+
+        <div class="auth-error" id="authError"></div>
+
+        <form id="loginForm" novalidate>
+          <div class="form-group">
+            <label class="form-label" for="email">Email Address</label>
+            <input
+              class="form-input"
+              type="email"
+              id="email"
+              name="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="password">Password</label>
+            <input
+              class="form-input"
+              type="password"
+              id="password"
+              name="password"
+              placeholder="Your password"
+              autocomplete="current-password"
+              required
+            />
+          </div>
+
+          <div class="form-forgot">
+            <a href="#">Forgot password?</a>
+          </div>
+
+          <button type="submit" class="btn-submit" id="submitBtn">
+            Sign In
+          </button>
+        </form>
+
+        <div class="auth-divider"><span>New here?</span></div>
+
+        <div class="auth-footer">
+          Don't have an account?
+          <a href="/register">Create one free</a>
+        </div>
+      </div>
+
+      <div class="plan-badges">
+        <span class="plan-badge plan-badge-free">Free</span>
+        <span class="plan-badge plan-badge-pro">Pro $29/mo</span>
+        <span class="plan-badge plan-badge-elite">Elite $59/mo</span>
+      </div>
+
+      <div class="disclaimer">
+        Trading futures involves significant risk. Past performance is not indicative of future results.<br>
+        By signing in you agree to our <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const form    = document.getElementById('loginForm');
+      const btn     = document.getElementById('submitBtn');
+      const errBox  = document.getElementById('authError');
+      const emailEl = document.getElementById('email');
+      const passEl  = document.getElementById('password');
+
+      function showError(msg) {
+        errBox.textContent = msg;
+        errBox.classList.add('visible');
+      }
+      function clearError() {
+        errBox.classList.remove('visible');
+      }
+      function setLoading(on) {
+        btn.disabled = on;
+        btn.innerHTML = on
+          ? '<span class="spinner"></span>Signing in…'
+          : 'Sign In';
+      }
+
+      // Auto-redirect if already logged in
+      fetch('/api/auth/me', { credentials: 'same-origin' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => {
+          if (data && data.id) {
+            window.location.href = '/';
+          }
+        })
+        .catch(() => {});
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        clearError();
+
+        const email    = emailEl.value.trim();
+        const password = passEl.value;
+
+        if (!email) { showError('Please enter your email address.'); emailEl.focus(); return; }
+        if (!password) { showError('Please enter your password.'); passEl.focus(); return; }
+
+        setLoading(true);
+        try {
+          const res = await fetch('/api/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ email, password }),
+          });
+          const data = await res.json();
+
+          if (!res.ok) {
+            showError(data.error || 'Login failed. Please try again.');
+            emailEl.classList.add('error');
+            passEl.classList.add('error');
+          } else {
+            // Redirect to dashboard (or ?next= param)
+            const params = new URLSearchParams(window.location.search);
+            const next   = params.get('next');
+            window.location.href = next || '/';
+          }
+        } catch (err) {
+          showError('Network error. Please check your connection and try again.');
+        } finally {
+          setLoading(false);
+        }
+      });
+
+      // Clear error state on input
+      [emailEl, passEl].forEach(el => {
+        el.addEventListener('input', () => {
+          el.classList.remove('error');
+          clearError();
+        });
+      });
+    })();
+  </script>
+
+</body>
+</html>

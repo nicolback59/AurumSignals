@@ -1,0 +1,1303 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="NQ Signal Pro V3 — Professional algorithmic signal research for NQ and Gold futures traders. Real-time alerts, backtested strategies, transparent performance.">
+  <title>NQ Signal Pro V3 — Professional Futures Signal Research</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    /* ── Landing-specific overrides ── */
+    body { font-size: 15px; }
+
+    /* ── Public Nav ── */
+    .pub-nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      height: 64px;
+      background: rgba(7,7,14,.94);
+      border-bottom: 1px solid var(--border-default);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    .pub-nav-logo {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .pub-nav-logo .l1 { color: var(--yellow); }
+    .pub-nav-logo .l2 { color: var(--blue); }
+    .pub-nav-links {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .pub-nav-link {
+      padding: 6px 14px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      transition: var(--t);
+    }
+    .pub-nav-link:hover { color: var(--text-primary); background: var(--border-subtle); }
+    .pub-nav-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .nav-login {
+      padding: 7px 16px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-default);
+      transition: var(--t);
+    }
+    .nav-login:hover { color: var(--text-primary); border-color: var(--border-strong); }
+    .nav-cta {
+      padding: 8px 20px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      color: #07070e;
+      background: var(--blue);
+      transition: var(--t);
+      letter-spacing: .01em;
+    }
+    .nav-cta:hover { background: #6ac5ff; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(77,184,255,.35); }
+
+    /* ── Container ── */
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+
+    /* ── Section ── */
+    .section { padding: 88px 0; }
+    .section-alt { background: rgba(13,13,26,.6); }
+    .section-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: 14px;
+    }
+    .section-title {
+      font-size: clamp(26px, 3.5vw, 36px);
+      font-weight: 700;
+      letter-spacing: -.02em;
+      color: var(--text-primary);
+      line-height: 1.2;
+      margin-bottom: 16px;
+    }
+    .section-subtitle {
+      font-size: 16px;
+      color: var(--text-secondary);
+      line-height: 1.7;
+      max-width: 580px;
+    }
+    .section-head { text-align: center; margin-bottom: 56px; }
+    .section-head .section-subtitle { margin: 0 auto; }
+
+    /* ── Hero ── */
+    .hero {
+      padding: 100px 0 88px;
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::before {
+      content: '';
+      position: absolute;
+      top: -120px; left: 50%;
+      transform: translateX(-50%);
+      width: 900px; height: 600px;
+      background: radial-gradient(ellipse at center, rgba(77,184,255,.06) 0%, rgba(192,132,252,.04) 40%, transparent 70%);
+      pointer-events: none;
+    }
+    .hero-inner {
+      position: relative;
+      text-align: center;
+    }
+    .hero-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      border: 1px solid var(--green-border);
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--green);
+      letter-spacing: .08em;
+      background: var(--green-glow);
+      margin-bottom: 28px;
+      animation: fadeInDown .6s ease-out both;
+    }
+    .hero-badge .live-dot {
+      width: 7px; height: 7px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 10px var(--green);
+      animation: livePulse 2s infinite;
+    }
+    @keyframes fadeInDown {
+      from { opacity: 0; transform: translateY(-16px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    @keyframes fadeInUp {
+      from { opacity: 0; transform: translateY(20px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+    .hero-title {
+      font-size: clamp(36px, 6vw, 68px);
+      font-weight: 700;
+      letter-spacing: -.035em;
+      line-height: 1.1;
+      margin-bottom: 24px;
+      background: linear-gradient(135deg, var(--blue) 0%, var(--purple) 100%);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      background-clip: text;
+      animation: fadeInDown .7s .1s ease-out both;
+    }
+    .hero-sub {
+      font-size: clamp(16px, 2vw, 19px);
+      color: var(--text-secondary);
+      line-height: 1.7;
+      max-width: 600px;
+      margin: 0 auto 40px;
+      animation: fadeInUp .7s .2s ease-out both;
+    }
+    .hero-actions {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 14px;
+      flex-wrap: wrap;
+      animation: fadeInUp .7s .35s ease-out both;
+    }
+    .btn-primary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-size: 15px;
+      font-weight: 600;
+      color: #07070e;
+      background: var(--blue);
+      transition: var(--t-slow);
+      letter-spacing: .01em;
+      border: none;
+      cursor: pointer;
+    }
+    .btn-primary:hover { background: #6ac5ff; transform: translateY(-2px); box-shadow: 0 8px 32px rgba(77,184,255,.4); }
+    .btn-secondary {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 14px 28px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+      background: transparent;
+      border: 1px solid var(--border-strong);
+      transition: var(--t-slow);
+    }
+    .btn-secondary:hover { border-color: var(--blue); color: var(--blue); transform: translateY(-2px); }
+
+    /* ── Trust Bar ── */
+    .trust-bar {
+      border-top: 1px solid var(--border-default);
+      border-bottom: 1px solid var(--border-default);
+      background: var(--bg-surface);
+    }
+    .trust-inner {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+    }
+    .trust-item {
+      padding: 28px 24px;
+      text-align: center;
+      border-right: 1px solid var(--border-default);
+    }
+    .trust-item:last-child { border-right: none; }
+    .trust-value {
+      font-family: var(--font-mono);
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--blue);
+      letter-spacing: -.01em;
+      margin-bottom: 6px;
+    }
+    .trust-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      letter-spacing: .04em;
+      font-weight: 500;
+    }
+
+    /* ── Signal Preview ── */
+    .preview-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 32px;
+    }
+    .preview-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 16px;
+      overflow: hidden;
+      position: relative;
+    }
+    .preview-card-inner {
+      filter: blur(5px);
+      pointer-events: none;
+      user-select: none;
+      padding: 18px;
+    }
+    .preview-card-overlay {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      background: rgba(7,7,14,.55);
+      backdrop-filter: blur(2px);
+      gap: 10px;
+    }
+    .preview-lock-icon {
+      font-size: 28px;
+      opacity: .9;
+    }
+    .preview-lock-label {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .preview-lock-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .preview-unlock-btn {
+      display: inline-flex;
+      padding: 7px 18px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 12px;
+      font-weight: 600;
+      color: #07070e;
+      background: var(--blue);
+      margin-top: 4px;
+      transition: var(--t);
+    }
+    .preview-unlock-btn:hover { background: #6ac5ff; }
+    .preview-field {
+      margin-bottom: 10px;
+    }
+    .preview-field-label {
+      font-size: 10px;
+      font-family: var(--font-mono);
+      color: var(--text-muted);
+      margin-bottom: 4px;
+      letter-spacing: .06em;
+    }
+    .preview-field-val {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      background: var(--bg-elevated);
+      border-radius: 5px;
+      padding: 4px 10px;
+      letter-spacing: .04em;
+    }
+    .preview-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .preview-inst {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .preview-inst.mnq { color: var(--mnq); }
+    .preview-inst.mgc { color: var(--mgc); }
+    .preview-dir-long {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 5px;
+      background: var(--green-glow);
+      color: var(--green);
+      border: 1px solid var(--green-border);
+    }
+    .preview-dir-short {
+      font-size: 11px;
+      font-weight: 700;
+      padding: 3px 10px;
+      border-radius: 5px;
+      background: var(--red-glow);
+      color: var(--red);
+      border: 1px solid var(--red-border);
+    }
+    .preview-callout {
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      padding: 20px 24px;
+      display: flex;
+      align-items: flex-start;
+      gap: 16px;
+    }
+    .preview-callout-icon { font-size: 22px; flex-shrink: 0; margin-top: 2px; }
+    .preview-callout-title {
+      font-size: 14px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 8px;
+    }
+    .preview-callout-list {
+      list-style: none;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .preview-callout-list li {
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .preview-callout-list li::before {
+      content: '✓';
+      color: var(--green);
+      font-weight: 700;
+      font-size: 12px;
+    }
+
+    /* ── Strategy Cards ── */
+    .strategy-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 20px;
+    }
+    .strategy-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 16px;
+      padding: 24px;
+      transition: var(--t-slow);
+    }
+    .strategy-card:hover {
+      border-color: var(--border-strong);
+      transform: translateY(-3px);
+      box-shadow: 0 12px 40px rgba(0,0,0,.4);
+    }
+    .strategy-card-top {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 14px;
+    }
+    .strategy-name {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+    }
+    .strategy-tf {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .strategy-inst-badge {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+    .strategy-inst-badge.mnq {
+      color: var(--mnq);
+      background: rgba(77,184,255,.1);
+      border: 1px solid rgba(77,184,255,.2);
+    }
+    .strategy-inst-badge.mgc {
+      color: var(--mgc);
+      background: rgba(245,197,66,.1);
+      border: 1px solid rgba(245,197,66,.2);
+    }
+    .strategy-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.65;
+      margin-bottom: 18px;
+    }
+    .strategy-filters-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+    }
+    .strategy-filters {
+      list-style: none;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+    .strategy-filters li {
+      font-size: 12px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .strategy-filters li::before {
+      content: '';
+      display: inline-block;
+      width: 5px; height: 5px;
+      border-radius: 50%;
+      background: var(--blue);
+      flex-shrink: 0;
+    }
+
+    /* ── How It Works ── */
+    .steps-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 28px;
+      position: relative;
+    }
+    .steps-grid::before {
+      content: '';
+      position: absolute;
+      top: 32px; left: calc(16.66% + 14px);
+      right: calc(16.66% + 14px);
+      height: 1px;
+      background: linear-gradient(90deg, var(--border-default), var(--border-strong), var(--border-default));
+      pointer-events: none;
+    }
+    .step-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 16px;
+      padding: 28px 24px;
+      text-align: center;
+      transition: var(--t-slow);
+    }
+    .step-card:hover { border-color: var(--border-strong); transform: translateY(-3px); }
+    .step-num {
+      width: 48px; height: 48px;
+      border-radius: 50%;
+      background: var(--bg-elevated);
+      border: 2px solid var(--blue-border);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-family: var(--font-mono);
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--blue);
+      margin: 0 auto 20px;
+    }
+    .step-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 10px;
+    }
+    .step-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.65;
+    }
+
+    /* ── Performance ── */
+    .perf-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 16px;
+      margin-bottom: 24px;
+    }
+    .perf-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 14px;
+      padding: 22px 18px;
+      text-align: center;
+    }
+    .perf-value {
+      font-family: var(--font-mono);
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--green);
+      margin-bottom: 8px;
+      letter-spacing: -.01em;
+    }
+    .perf-label {
+      font-size: 12px;
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .perf-caveat {
+      text-align: center;
+      font-size: 12px;
+      color: var(--text-muted);
+      font-style: italic;
+      margin-top: 8px;
+    }
+
+    /* ── Pricing ── */
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      align-items: stretch;
+    }
+    .pricing-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 16px;
+      padding: 28px 24px;
+      display: flex;
+      flex-direction: column;
+      transition: var(--t-slow);
+      position: relative;
+    }
+    .pricing-card:hover { transform: translateY(-3px); box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+    .pricing-card.popular {
+      border-color: var(--blue);
+      box-shadow: 0 0 30px rgba(77,184,255,.15);
+    }
+    .popular-badge {
+      position: absolute;
+      top: -12px; left: 50%;
+      transform: translateX(-50%);
+      padding: 4px 14px;
+      background: var(--blue);
+      color: #07070e;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      border-radius: 20px;
+      white-space: nowrap;
+    }
+    .pricing-tier {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+    .pricing-amount {
+      margin-bottom: 6px;
+    }
+    .pricing-price {
+      font-family: var(--font-mono);
+      font-size: 38px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -.03em;
+    }
+    .pricing-per {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-left: 4px;
+    }
+    .pricing-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 22px;
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .pricing-features {
+      list-style: none;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+      margin-bottom: 28px;
+    }
+    .pricing-features li {
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .pricing-features li .fi {
+      font-style: normal;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .pricing-features li.dim { color: var(--text-muted); }
+    .pricing-features li.dim .fi { color: var(--text-muted); }
+    .btn-plan {
+      display: block;
+      text-align: center;
+      padding: 12px 20px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      transition: var(--t-slow);
+      border: 1px solid;
+    }
+    .btn-plan-primary {
+      color: #07070e;
+      background: var(--blue);
+      border-color: var(--blue);
+    }
+    .btn-plan-primary:hover { background: #6ac5ff; border-color: #6ac5ff; transform: translateY(-1px); box-shadow: 0 6px 24px rgba(77,184,255,.4); }
+    .btn-plan-secondary {
+      color: var(--text-secondary);
+      background: transparent;
+      border-color: var(--border-strong);
+    }
+    .btn-plan-secondary:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
+    /* ── FAQ ── */
+    .faq-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 760px;
+      margin: 0 auto;
+    }
+    .faq-item {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .faq-q {
+      width: 100%;
+      background: none;
+      border: none;
+      padding: 20px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-align: left;
+      transition: var(--t);
+    }
+    .faq-q:hover { color: var(--blue); }
+    .faq-arrow {
+      color: var(--text-muted);
+      font-size: 16px;
+      flex-shrink: 0;
+      transition: transform var(--t);
+    }
+    .faq-item.open .faq-arrow { transform: rotate(45deg); color: var(--blue); }
+    .faq-a {
+      display: none;
+      padding: 0 22px 20px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.75;
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 16px;
+    }
+    .faq-item.open .faq-a { display: block; }
+
+    /* ── Risk Disclaimer ── */
+    .disclaimer-block {
+      background: rgba(245,197,66,.04);
+      border: 1px solid var(--yellow-border);
+      border-radius: 14px;
+      padding: 28px 32px;
+      max-width: 900px;
+      margin: 0 auto;
+    }
+    .disclaimer-title {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      color: var(--yellow);
+      margin-bottom: 12px;
+    }
+    .disclaimer-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.8;
+    }
+
+    /* ── Footer ── */
+    .pub-footer {
+      border-top: 1px solid var(--border-default);
+      padding: 40px 0;
+      background: var(--bg-surface);
+    }
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+    .footer-logo {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .footer-logo .l1 { color: var(--yellow); }
+    .footer-logo .l2 { color: var(--blue); }
+    .footer-copy {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+    .footer-links {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .footer-link {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: var(--t);
+    }
+    .footer-link:hover { color: var(--text-secondary); }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .pub-nav-links { display: none; }
+      .pub-nav { padding: 0 20px; }
+      .container { padding: 0 20px; }
+      .trust-inner { grid-template-columns: repeat(2, 1fr); }
+      .trust-item:nth-child(2) { border-right: none; }
+      .trust-item:nth-child(3) { border-top: 1px solid var(--border-default); }
+      .trust-item:nth-child(4) { border-top: 1px solid var(--border-default); border-right: none; }
+      .strategy-grid { grid-template-columns: 1fr; }
+      .steps-grid { grid-template-columns: 1fr; }
+      .steps-grid::before { display: none; }
+      .perf-grid { grid-template-columns: repeat(2, 1fr); }
+      .pricing-grid { grid-template-columns: 1fr; max-width: 440px; margin: 0 auto; }
+      .pricing-card { width: 100%; }
+    }
+    @media (max-width: 640px) {
+      .hero { padding: 64px 0 56px; }
+      .section { padding: 64px 0; }
+      .preview-grid { grid-template-columns: 1fr; }
+      .footer-inner { flex-direction: column; align-items: flex-start; }
+      .perf-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Top Navigation ── -->
+<nav class="pub-nav">
+  <a href="/" class="pub-nav-logo">
+    <span class="l1">NQ SIGNAL</span>&nbsp;<span class="l2">PRO V3</span>
+  </a>
+  <div class="pub-nav-links">
+    <a href="#features" class="pub-nav-link">Features</a>
+    <a href="#performance" class="pub-nav-link">Performance</a>
+    <a href="/pricing.html" class="pub-nav-link">Pricing</a>
+    <a href="/login" class="pub-nav-link">Login</a>
+  </div>
+  <div class="pub-nav-right">
+    <a href="/login" class="nav-login">Login</a>
+    <a href="/register" class="nav-cta">Start Free Trial</a>
+  </div>
+</nav>
+
+<!-- ── Hero ── -->
+<section class="hero">
+  <div class="container">
+    <div class="hero-inner">
+      <div class="hero-badge">
+        <span class="live-dot"></span>
+        LIVE SCANNING
+      </div>
+      <h1 class="hero-title">Professional Futures<br>Signal Research</h1>
+      <p class="hero-sub">Algorithmic NQ &amp; Gold signal intelligence — built for serious futures traders. Multi-factor validation. Real-time alerts. Transparent edge.</p>
+      <div class="hero-actions">
+        <a href="/register" class="btn-primary">Start Free Trial &rarr;</a>
+        <a href="#performance" class="btn-secondary">View Performance</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Trust Bar ── -->
+<div class="trust-bar">
+  <div class="container">
+    <div class="trust-inner">
+      <div class="trust-item">
+        <div class="trust-value">5</div>
+        <div class="trust-label">Active Strategies</div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-value" style="background: linear-gradient(90deg, var(--mnq), var(--mgc)); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text;">MNQ + MGC</div>
+        <div class="trust-label">Instruments Covered</div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-value">Real-Time</div>
+        <div class="trust-label">Alert Delivery</div>
+      </div>
+      <div class="trust-item">
+        <div class="trust-value" style="color: var(--green);">Backtested</div>
+        <div class="trust-label">Statistical Edge</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Signal Preview ── -->
+<section class="section" id="features">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-label">Signal Intelligence</div>
+      <h2 class="section-title">Signal Intelligence Preview</h2>
+      <p class="section-subtitle">Pro members see precise entry, stop-loss, and take-profit levels the moment a signal fires. Here's a glimpse of what's inside.</p>
+    </div>
+
+    <div class="preview-grid">
+      <!-- Blurred Signal Card 1 -->
+      <div class="preview-card">
+        <div class="preview-card-inner">
+          <div class="preview-header">
+            <span class="preview-inst mnq">MNQ · 5m Intraday</span>
+            <span class="preview-dir-long">LONG</span>
+          </div>
+          <div class="preview-field">
+            <div class="preview-field-label">ENTRY</div>
+            <div class="preview-field-val">████████</div>
+          </div>
+          <div class="preview-field">
+            <div class="preview-field-label">STOP LOSS</div>
+            <div class="preview-field-val">████████</div>
+          </div>
+          <div class="preview-field">
+            <div class="preview-field-label">TP1 / TP2 / TP3</div>
+            <div class="preview-field-val">████ / ████ / ████</div>
+          </div>
+          <div class="preview-field" style="margin-top:14px;">
+            <div class="preview-field-label">SIGNAL SCORE</div>
+            <div class="preview-field-val">████ / 100</div>
+          </div>
+        </div>
+        <div class="preview-card-overlay">
+          <div class="preview-lock-icon">&#128274;</div>
+          <div class="preview-lock-label">Pro Access Required</div>
+          <div class="preview-lock-sub">Full levels visible to members</div>
+          <a href="/register" class="preview-unlock-btn">Unlock Access</a>
+        </div>
+      </div>
+
+      <!-- Blurred Signal Card 2 -->
+      <div class="preview-card">
+        <div class="preview-card-inner">
+          <div class="preview-header">
+            <span class="preview-inst mgc">MGC · 3m Scalp</span>
+            <span class="preview-dir-short">SHORT</span>
+          </div>
+          <div class="preview-field">
+            <div class="preview-field-label">ENTRY</div>
+            <div class="preview-field-val">████████</div>
+          </div>
+          <div class="preview-field">
+            <div class="preview-field-label">STOP LOSS</div>
+            <div class="preview-field-val">████████</div>
+          </div>
+          <div class="preview-field">
+            <div class="preview-field-label">TP1 / TP2 / TP3</div>
+            <div class="preview-field-val">████ / ████ / ████</div>
+          </div>
+          <div class="preview-field" style="margin-top:14px;">
+            <div class="preview-field-label">SIGNAL SCORE</div>
+            <div class="preview-field-val">████ / 100</div>
+          </div>
+        </div>
+        <div class="preview-card-overlay">
+          <div class="preview-lock-icon">&#128274;</div>
+          <div class="preview-lock-label">Pro Access Required</div>
+          <div class="preview-lock-sub">Full levels visible to members</div>
+          <a href="/register" class="preview-unlock-btn">Unlock Access</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="preview-callout">
+      <div class="preview-callout-icon">&#128202;</div>
+      <div>
+        <div class="preview-callout-title">What Pro members see in every signal</div>
+        <ul class="preview-callout-list">
+          <li>Precise entry price, stop-loss level, and up to 3 take-profit targets</li>
+          <li>Signal quality score with multi-factor validation breakdown</li>
+          <li>Instrument, timeframe, setup type, and directional bias</li>
+          <li>Session context and real-time push notification delivery</li>
+          <li>Trade journal integration for outcome tracking</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Strategy Coverage ── -->
+<section class="section section-alt">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-label">Strategy Coverage</div>
+      <h2 class="section-title">Five Strategies. Two Markets.</h2>
+      <p class="section-subtitle">Each strategy is purpose-built for its timeframe and instrument. No one-size-fits-all approach — every setup has defined filters.</p>
+    </div>
+
+    <div class="strategy-grid">
+      <!-- MNQ Intraday -->
+      <div class="strategy-card">
+        <div class="strategy-card-top">
+          <div>
+            <div class="strategy-name">MNQ Intraday</div>
+            <div class="strategy-tf">5-Minute Chart</div>
+          </div>
+          <span class="strategy-inst-badge mnq">MNQ</span>
+        </div>
+        <p class="strategy-desc">High-frequency intraday setups capturing short momentum bursts during key Futures sessions. Designed for traders available during market hours with disciplined risk management.</p>
+        <div class="strategy-filters-label">Key Filters</div>
+        <ul class="strategy-filters">
+          <li>HTF trend alignment (1h / 4h)</li>
+          <li>Opening range breakout confirmation</li>
+          <li>Volume profile acceptance filter</li>
+          <li>Session time restriction (RTH / Asian edge)</li>
+        </ul>
+      </div>
+
+      <!-- MNQ Swing -->
+      <div class="strategy-card">
+        <div class="strategy-card-top">
+          <div>
+            <div class="strategy-name">MNQ Swing</div>
+            <div class="strategy-tf">1-Hour Chart</div>
+          </div>
+          <span class="strategy-inst-badge mnq">MNQ</span>
+        </div>
+        <p class="strategy-desc">Multi-session swing setups targeting 50–200 point moves over hours to days. Built for traders who prefer lower frequency, higher conviction positions with wider targets.</p>
+        <div class="strategy-filters-label">Key Filters</div>
+        <ul class="strategy-filters">
+          <li>Daily structure bias alignment</li>
+          <li>OTE zone (Optimal Trade Entry) scoring</li>
+          <li>Regime filter — excludes choppy sessions</li>
+          <li>Volatility expansion confirmation</li>
+        </ul>
+      </div>
+
+      <!-- MNQ 50-Point -->
+      <div class="strategy-card">
+        <div class="strategy-card-top">
+          <div>
+            <div class="strategy-name">MNQ 50-Point</div>
+            <div class="strategy-tf">5-Minute Chart</div>
+          </div>
+          <span class="strategy-inst-badge mnq">MNQ</span>
+        </div>
+        <p class="strategy-desc">Targets clean 50-point intraday moves using momentum confluence and institutional level identification. High selectivity — fewer signals, tighter criteria.</p>
+        <div class="strategy-filters-label">Key Filters</div>
+        <ul class="strategy-filters">
+          <li>Standard deviation band positioning</li>
+          <li>Combo setup requirement (2+ confluences)</li>
+          <li>Pre-market level acceptance</li>
+          <li>Minimum 2:1 reward-to-risk filter</li>
+        </ul>
+      </div>
+
+      <!-- MGC Scalp -->
+      <div class="strategy-card">
+        <div class="strategy-card-top">
+          <div>
+            <div class="strategy-name">MGC Scalp</div>
+            <div class="strategy-tf">3m / 5m Charts</div>
+          </div>
+          <span class="strategy-inst-badge mgc">MGC</span>
+        </div>
+        <p class="strategy-desc">Gold micro-contract scalp strategy targeting short, high-probability moves during the London and US sessions. Focuses on structure confluences unique to gold's behavior.</p>
+        <div class="strategy-filters-label">Key Filters</div>
+        <ul class="strategy-filters">
+          <li>London session open range playbook</li>
+          <li>Gold-specific RST (Reversal Signal Tool)</li>
+          <li>Correlation filter vs. DXY / Bond yields</li>
+          <li>Intraday liquidity sweep confirmation</li>
+        </ul>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── How It Works ── -->
+<section class="section">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-label">How It Works</div>
+      <h2 class="section-title">From Scanner to Your Device</h2>
+      <p class="section-subtitle">Fully automated signal pipeline — no manual calling, no lagging indicators. Three stages between market data and your alert.</p>
+    </div>
+
+    <div class="steps-grid">
+      <div class="step-card">
+        <div class="step-num">1</div>
+        <div class="step-title">Scanner monitors markets 24/5</div>
+        <p class="step-desc">The scanner runs continuously across all covered instruments and timeframes during market hours, ingesting price action in real time without interruption.</p>
+      </div>
+      <div class="step-card">
+        <div class="step-num">2</div>
+        <div class="step-title">Multi-factor signal validation</div>
+        <p class="step-desc">Each candidate signal is scored against a multi-layer filter stack — structure, momentum, session context, regime, and confluence requirements must all align.</p>
+      </div>
+      <div class="step-card">
+        <div class="step-num">3</div>
+        <div class="step-title">Instant alerts to your device</div>
+        <p class="step-desc">Qualifying signals trigger push notifications and dashboard updates simultaneously. Entry, stop-loss, and all take-profit levels are included in the alert.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Performance ── -->
+<section class="section section-alt" id="performance">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-label">Transparent Performance</div>
+      <h2 class="section-title">Numbers, Not Promises</h2>
+      <p class="section-subtitle">We publish real stats — not cherry-picked highlights. All figures are backtested unless otherwise noted.</p>
+    </div>
+
+    <div class="perf-grid">
+      <div class="perf-card">
+        <div class="perf-value">~80%</div>
+        <div class="perf-label">MGC Scalp Win Rate (BT)</div>
+      </div>
+      <div class="perf-card">
+        <div class="perf-value">5</div>
+        <div class="perf-label">Active Strategies Running</div>
+      </div>
+      <div class="perf-card">
+        <div class="perf-value">2,000+</div>
+        <div class="perf-label">Bars Backtested Per Strategy</div>
+      </div>
+      <div class="perf-card">
+        <div class="perf-value" style="font-size:18px;">Multi-Session</div>
+        <div class="perf-label">London + US + Asia Coverage</div>
+      </div>
+    </div>
+
+    <p class="perf-caveat">Based on backtesting with historical data. Past performance does not guarantee future results. Forward live results may differ materially from backtest figures.</p>
+  </div>
+</section>
+
+<!-- ── Pricing ── -->
+<section class="section" id="pricing">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-label">Pricing</div>
+      <h2 class="section-title">Straightforward Plans</h2>
+      <p class="section-subtitle">Start free, upgrade when you're ready. No hidden fees, no auto-renewing annual traps.</p>
+    </div>
+
+    <div class="pricing-grid">
+      <!-- Free -->
+      <div class="pricing-card">
+        <div class="pricing-tier">Free</div>
+        <div class="pricing-amount">
+          <span class="pricing-price">$0</span><span class="pricing-per">/mo</span>
+        </div>
+        <p class="pricing-desc">Get a feel for the platform. Delayed signal previews with entry/target details blurred.</p>
+        <ul class="pricing-features">
+          <li><i class="fi">✓</i> Delayed signal previews</li>
+          <li><i class="fi">✓</i> Basic dashboard access</li>
+          <li class="dim"><i class="fi">—</i> Blurred entry &amp; target details</li>
+          <li class="dim"><i class="fi">—</i> No push alerts</li>
+          <li class="dim"><i class="fi">—</i> No trade journal</li>
+          <li class="dim"><i class="fi">—</i> No performance dashboard</li>
+        </ul>
+        <a href="/register" class="btn-plan btn-plan-secondary">Get Started Free</a>
+      </div>
+
+      <!-- Pro -->
+      <div class="pricing-card popular">
+        <div class="popular-badge">Most Popular</div>
+        <div class="pricing-tier" style="color: var(--blue);">Pro</div>
+        <div class="pricing-amount">
+          <span class="pricing-price">$29</span><span class="pricing-per">/mo</span>
+        </div>
+        <p class="pricing-desc">Everything you need for serious signal research. Full access to all live signals and tools.</p>
+        <ul class="pricing-features">
+          <li><i class="fi">✓</i> Real-time signal delivery</li>
+          <li><i class="fi">✓</i> Full entry, SL &amp; TP details</li>
+          <li><i class="fi">✓</i> Push alerts to your device</li>
+          <li><i class="fi">✓</i> Trade journal access</li>
+          <li><i class="fi">✓</i> Performance dashboard</li>
+          <li><i class="fi">✓</i> All 5 active strategies</li>
+        </ul>
+        <a href="/register" class="btn-plan btn-plan-primary">Start Free Trial</a>
+      </div>
+
+      <!-- Elite -->
+      <div class="pricing-card">
+        <div class="pricing-tier" style="color: var(--purple);">Elite</div>
+        <div class="pricing-amount">
+          <span class="pricing-price">$59</span><span class="pricing-per">/mo</span>
+        </div>
+        <p class="pricing-desc">Maximum depth for researchers and systematic traders. Full analytics and priority access.</p>
+        <ul class="pricing-features">
+          <li><i class="fi">✓</i> Everything in Pro</li>
+          <li><i class="fi">✓</i> Backtesting reports</li>
+          <li><i class="fi">✓</i> Strategy analytics breakdown</li>
+          <li><i class="fi">✓</i> Advanced performance metrics</li>
+          <li><i class="fi">✓</i> Priority updates &amp; roadmap access</li>
+          <li><i class="fi">✓</i> Priority support channel</li>
+        </ul>
+        <a href="/register" class="btn-plan btn-plan-secondary">Get Elite Access</a>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── FAQ ── -->
+<section class="section section-alt">
+  <div class="container">
+    <div class="section-head">
+      <div class="section-label">FAQ</div>
+      <h2 class="section-title">Common Questions</h2>
+    </div>
+
+    <div class="faq-list">
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          What are futures signals?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          Futures signals are algorithmically identified trade setups based on technical analysis of futures contracts — in our case, Micro E-mini Nasdaq (MNQ) and Micro Gold (MGC). A signal includes a suggested entry price, stop-loss level, and take-profit targets. They are research outputs, not financial advice.
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          How are signals generated?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          Signals are generated by an automated scanner that monitors real-time price action across multiple timeframes. Each potential signal is evaluated against a multi-factor filter stack including trend alignment, momentum, session context, and confluence scoring. Only setups that meet all criteria are published.
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          What markets are covered?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          NQ Signal Pro V3 covers two instruments: <strong style="color:var(--mnq)">MNQ</strong> (Micro E-mini Nasdaq-100 Futures) and <strong style="color:var(--mgc)">MGC</strong> (Micro Gold Futures). These are traded on the CME Group exchange. We currently run 5 distinct strategies across 3m, 5m, and 1h timeframes.
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          Is this financial advice?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          <strong>No.</strong> NQ Signal Pro is a market intelligence and research tool, not a financial advisory service. We do not know your financial situation, risk tolerance, or trading capital. All signals are research outputs based on algorithmic analysis. You are solely responsible for any trading decisions you make. Always consult a qualified financial professional before trading.
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          How fast are alerts delivered?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          Signals are processed and delivered in near real-time — typically within seconds of a qualifying setup forming. Push notifications are sent to your device simultaneously with dashboard updates. Delivery speed is dependent on your push notification service and device connection.
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ── Risk Disclaimer ── -->
+<section class="section">
+  <div class="container">
+    <div class="disclaimer-block">
+      <div class="disclaimer-title">⚠ RISK DISCLAIMER</div>
+      <p class="disclaimer-text">
+        Trading futures involves substantial risk of loss and is not suitable for all investors. NQ Signal Pro is a market intelligence and research tool — it does not provide financial advice, investment recommendations, or any form of regulated financial services. Past performance, including backtested results, is not indicative of future results. Simulated or hypothetical performance results have inherent limitations and may not reflect actual trading results. You are solely responsible for your trading decisions, risk management, and any losses that result. Never trade with money you cannot afford to lose. Please read and understand all risk disclosures before using any signal research service.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ── -->
+<footer class="pub-footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div>
+        <a href="/" class="footer-logo">
+          <span class="l1">NQ SIGNAL</span> <span class="l2">PRO V3</span>
+        </a>
+        <div class="footer-copy">&copy; 2025 NQ Signal Pro V3. All rights reserved.</div>
+      </div>
+      <div class="footer-links">
+        <a href="/privacy" class="footer-link">Privacy Policy</a>
+        <a href="/terms" class="footer-link">Terms of Service</a>
+        <a href="/pricing.html" class="footer-link">Pricing</a>
+        <a href="/login" class="footer-link">Login</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

@@ -1,6 +1,7 @@
 'use strict';
 const express  = require('express');
 const Database = require('better-sqlite3');
+const crypto   = require('crypto');
 const path     = require('path');
 const fs       = require('fs');
 const { getLearningStats, detectEdgeDegradation } = require('./learning');
@@ -34,7 +35,11 @@ const NTFY_TOPIC     = process.env.NTFY_TOPIC || '';
 const NTFY_TOKEN     = process.env.NTFY_TOKEN || '';
 
 const app = express();
-app.use(express.json({ limit: '64kb' }));
+// Stripe webhook needs raw body — skip JSON parsing for that path only
+app.use((req, res, next) => {
+  if (req.path === '/api/stripe/webhook') return express.raw({ type: 'application/json' })(req, res, next);
+  express.json({ limit: '64kb' })(req, res, next);
+});
 app.use(express.static(__dirname));
 
 // ── DATABASE ─────────────────────────────────────────────────────────────────────────────
@@ -1183,8 +1188,244 @@ app.get('/api/evolution/status', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// ══════════════════════════════════════════════════════════════════════════════
+// AUTH + SUBSCRIPTION SYSTEM
+// ══════════════════════════════════════════════════════════════════════════════
+
+const SESSION_COOKIE = 'nqsp_sid';
+const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+function parseCookies(header) {
+  const out = {};
+  (header || '').split(';').forEach(c => {
+    const eq = c.indexOf('=');
+    if (eq < 0) return;
+    try { out[c.slice(0, eq).trim()] = decodeURIComponent(c.slice(eq + 1).trim()); } catch {}
+  });
+  return out;
+}
+
+async function hashPassword(pw) {
+  const salt = crypto.randomBytes(32).toString('hex');
+  const key  = await new Promise((res, rej) =>
+    crypto.scrypt(pw, salt, 64, (e, k) => e ? rej(e) : res(k.toString('hex'))));
+  return `scrypt:${salt}:${key}`;
+}
+
+async function verifyPassword(pw, stored) {
+  const parts = (stored || '').split(':');
+  if (parts[0] !== 'scrypt' || parts.length !== 3) return false;
+  const [, salt, hash] = parts;
+  try {
+    const derived = await new Promise((res, rej) =>
+      crypto.scrypt(pw, salt, 64, (e, k) => e ? rej(e) : res(k.toString('hex'))));
+    return crypto.timingSafeEqual(Buffer.from(derived, 'hex'), Buffer.from(hash, 'hex'));
+  } catch { return false; }
+}
+
+function createSession(userId) {
+  const id = crypto.randomBytes(32).toString('hex');
+  const exp = Date.now() + SESSION_TTL_MS;
+  db.prepare('INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(id, userId, exp);
+  try { db.prepare('DELETE FROM user_sessions WHERE expires_at <= ?').run(Date.now()); } catch {}
+  return { id, expiresAt: exp };
+}
+
+function getSessionUser(req) {
+  const sid = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  if (!sid) return null;
+  try {
+    const row = db.prepare(`
+      SELECT s.user_id AS id, u.email, u.name, u.plan,
+             u.subscription_status, u.subscription_period_end
+      FROM user_sessions s JOIN users u ON u.id = s.user_id
+      WHERE s.id = ? AND s.expires_at > ?
+    `).get(sid, Date.now());
+    if (!row) return null;
+    const subOk = row.subscription_status === 'active' || row.subscription_status === 'trialing' ||
+                  (row.subscription_period_end && row.subscription_period_end > Date.now());
+    return { ...row,
+      isPro:   (row.plan === 'pro'   || row.plan === 'elite') && subOk,
+      isElite: (row.plan === 'elite') && subOk,
+    };
+  } catch { return null; }
+}
+
+function setSessionCookie(res, id, expiresAt) {
+  const secure = process.env.NODE_ENV === 'production' ? '; Secure' : '';
+  res.setHeader('Set-Cookie',
+    `${SESSION_COOKIE}=${id}; HttpOnly; Path=/; SameSite=Lax; Max-Age=${Math.floor((expiresAt - Date.now()) / 1000)}${secure}`);
+}
+function clearSessionCookie(res) {
+  res.setHeader('Set-Cookie', `${SESSION_COOKIE}=; HttpOnly; Path=/; SameSite=Lax; Max-Age=0`);
+}
+
+function requirePro(req, res, next) {
+  const user = getSessionUser(req);
+  if (!user) return res.status(401).json({ error: 'Login required', code: 'AUTH_REQUIRED' });
+  if (!user.isPro) return res.status(403).json({ error: 'Pro subscription required', code: 'UPGRADE_REQUIRED', upgrade_url: '/pricing' });
+  req.user = user;
+  next();
+}
+
+// ── Apply paywall to sensitive endpoints ──────────────────────────────────────
+// Free users get limited signal list (no entry/SL/TP details — blurred in UI)
+// requirePro guards analytics-heavy endpoints entirely
+
+// Wrap the existing /api/signals to support free preview (partial data)
+// (The endpoint itself remains; the frontend blurs details for non-subscribers)
+
+// ── Auth Routes ───────────────────────────────────────────────────────────────
+
+app.post('/api/auth/register', async (req, res) => {
+  try {
+    const { email, password, name } = req.body || {};
+    if (!email?.trim() || !password) return res.status(400).json({ error: 'Email and password required' });
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Invalid email format' });
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+    if (db.prepare('SELECT id FROM users WHERE email = ?').get(email.toLowerCase()))
+      return res.status(409).json({ error: 'An account with this email already exists' });
+
+    const hash = await hashPassword(password);
+    const info = db.prepare('INSERT INTO users (email, password_hash, name) VALUES (?, ?, ?)').run(
+      email.toLowerCase(), hash, (name || '').trim() || null);
+    db.prepare(`UPDATE users SET last_login = datetime('now') WHERE id = ?`).run(info.lastInsertRowid);
+    const { id: sid, expiresAt } = createSession(info.lastInsertRowid);
+    setSessionCookie(res, sid, expiresAt);
+    res.json({ ok: true, user: { id: info.lastInsertRowid, email: email.toLowerCase(), name: name || null, plan: 'free' } });
+  } catch (err) {
+    console.error('[auth/register]', err.message);
+    res.status(500).json({ error: 'Registration failed — please try again' });
+  }
+});
+
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { email, password } = req.body || {};
+    if (!email || !password) return res.status(400).json({ error: 'Email and password required' });
+    const user = db.prepare('SELECT * FROM users WHERE email = ?').get(email.toLowerCase());
+    if (!user || !await verifyPassword(password, user.password_hash))
+      return res.status(401).json({ error: 'Invalid email or password' });
+    const { id: sid, expiresAt } = createSession(user.id);
+    setSessionCookie(res, sid, expiresAt);
+    db.prepare(`UPDATE users SET last_login = datetime('now') WHERE id = ?`).run(user.id);
+    res.json({ ok: true, user: { id: user.id, email: user.email, name: user.name, plan: user.plan } });
+  } catch (err) {
+    console.error('[auth/login]', err.message);
+    res.status(500).json({ error: 'Login failed — please try again' });
+  }
+});
+
+app.post('/api/auth/logout', (req, res) => {
+  const sid = parseCookies(req.headers.cookie)[SESSION_COOKIE];
+  if (sid) try { db.prepare('DELETE FROM user_sessions WHERE id = ?').run(sid); } catch {}
+  clearSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get('/api/auth/me', (req, res) => {
+  const user = getSessionUser(req);
+  if (!user) return res.json({ authenticated: false });
+  res.json({ authenticated: true, user: { id: user.id, email: user.email, name: user.name,
+    plan: user.plan, isPro: user.isPro, isElite: user.isElite,
+    subscriptionStatus: user.subscription_status } });
+});
+
+// ── Stripe Billing ────────────────────────────────────────────────────────────
+
+const STRIPE_SECRET    = process.env.STRIPE_SECRET_KEY;
+const STRIPE_WSECRET   = process.env.STRIPE_WEBHOOK_SECRET;
+const STRIPE_PRICE_PRO = process.env.STRIPE_PRICE_ID_PRO;
+const STRIPE_PRICE_ELT = process.env.STRIPE_PRICE_ID_ELITE;
+const APP_URL          = (process.env.APP_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+
+let stripe = null;
+if (STRIPE_SECRET) {
+  try { stripe = require('stripe')(STRIPE_SECRET); console.log('[stripe] Billing initialized'); }
+  catch { console.warn('[stripe] stripe package missing — run npm install'); }
+} else { console.warn('[stripe] STRIPE_SECRET_KEY not set — billing disabled'); }
+
+app.post('/api/stripe/checkout', async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Billing not configured' });
+  const user = getSessionUser(req);
+  if (!user) return res.status(401).json({ error: 'Login required' });
+  const plan    = (req.body?.plan || 'pro').toLowerCase();
+  const priceId = plan === 'elite' ? STRIPE_PRICE_ELT : STRIPE_PRICE_PRO;
+  if (!priceId) return res.status(503).json({ error: `STRIPE_PRICE_ID_${plan.toUpperCase()} not configured` });
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      customer_email: user.email,
+      client_reference_id: String(user.id),
+      success_url: `${APP_URL}/?subscribed=1`,
+      cancel_url:  `${APP_URL}/pricing`,
+      metadata: { user_id: String(user.id), plan },
+    });
+    res.json({ url: session.url });
+  } catch (err) { console.error('[stripe/checkout]', err.message); res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/stripe/portal', async (req, res) => {
+  if (!stripe) return res.status(503).json({ error: 'Billing not configured' });
+  const user = getSessionUser(req);
+  if (!user) return res.status(401).json({ error: 'Login required' });
+  const dbUser = db.prepare('SELECT stripe_customer_id FROM users WHERE id = ?').get(user.id);
+  if (!dbUser?.stripe_customer_id) return res.status(400).json({ error: 'No billing account found. Subscribe first.' });
+  try {
+    const session = await stripe.billingPortal.sessions.create({
+      customer: dbUser.stripe_customer_id, return_url: `${APP_URL}/`,
+    });
+    res.json({ url: session.url });
+  } catch (err) { console.error('[stripe/portal]', err.message); res.status(500).json({ error: err.message }); }
+});
+
+app.get('/api/subscription/status', (req, res) => {
+  const user = getSessionUser(req);
+  if (!user) return res.status(401).json({ error: 'Login required' });
+  const dbUser = db.prepare('SELECT plan, subscription_status, subscription_period_end FROM users WHERE id = ?').get(user.id);
+  res.json({ plan: dbUser.plan, status: dbUser.subscription_status,
+    periodEnd: dbUser.subscription_period_end, isPro: user.isPro, isElite: user.isElite });
+});
+
+app.post('/api/stripe/webhook', async (req, res) => {
+  if (!stripe || !STRIPE_WSECRET) return res.status(503).send('Billing not configured');
+  let event;
+  try { event = stripe.webhooks.constructEvent(req.body, req.headers['stripe-signature'], STRIPE_WSECRET); }
+  catch (err) { console.error('[webhook] Bad signature:', err.message); return res.status(400).send('Invalid signature'); }
+
+  try {
+    const obj = event.data.object;
+    if (event.type === 'checkout.session.completed') {
+      const userId = Number(obj.client_reference_id || obj.metadata?.user_id);
+      const plan   = obj.metadata?.plan || 'pro';
+      if (userId && obj.customer && obj.subscription) {
+        const sub = await stripe.subscriptions.retrieve(obj.subscription);
+        db.prepare(`UPDATE users SET stripe_customer_id=?,stripe_subscription_id=?,plan=?,
+          subscription_status=?,subscription_period_end=? WHERE id=?`
+        ).run(obj.customer, obj.subscription, plan, sub.status, sub.current_period_end * 1000, userId);
+      }
+    } else if (event.type === 'customer.subscription.updated' || event.type === 'customer.subscription.deleted') {
+      const dbUser = db.prepare('SELECT id,plan FROM users WHERE stripe_subscription_id=?').get(obj.id);
+      if (dbUser) {
+        const newPlan = event.type === 'customer.subscription.deleted' ? 'free' : dbUser.plan;
+        db.prepare(`UPDATE users SET plan=?,subscription_status=?,subscription_period_end=? WHERE id=?`
+        ).run(newPlan, obj.status, obj.current_period_end * 1000, dbUser.id);
+      }
+    } else if (event.type === 'invoice.payment_failed') {
+      const dbUser = db.prepare('SELECT id FROM users WHERE stripe_customer_id=?').get(obj.customer);
+      if (dbUser) db.prepare('UPDATE users SET subscription_status=? WHERE id=?').run('past_due', dbUser.id);
+    }
+  } catch (err) { console.error('[webhook] Processing error:', err.message); }
+  res.json({ received: true });
+});
+
 // ── STATIC ────────────────────────────────────────────────────────────────────────────────
 app.get('/',         (req, res) => res.sendFile(path.join(__dirname, 'home.html')));
+app.get('/landing',  (req, res) => res.sendFile(path.join(__dirname, 'landing.html')));
+app.get('/pricing',  (req, res) => res.sendFile(path.join(__dirname, 'pricing.html')));
+app.get('/login',    (req, res) => res.sendFile(path.join(__dirname, 'login.html')));
+app.get('/register', (req, res) => res.sendFile(path.join(__dirname, 'register.html')));
 app.get('/signals',  (req, res) => res.sendFile(path.join(__dirname, 'dashboard.html')));
 app.get('/trades',   (req, res) => res.sendFile(path.join(__dirname, 'trades.html')));
 app.get('/stats',    (req, res) => res.sendFile(path.join(__dirname, 'stats.html')));

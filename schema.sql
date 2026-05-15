@@ -272,6 +272,34 @@ CREATE INDEX IF NOT EXISTS idx_tp_hits_signal ON tp_hits(signal_id);
 -- Add strategy_name to signals if missing (existing databases)
 CREATE TABLE IF NOT EXISTS _schema_migrations (migration TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')));
 
+-- ── AUTH — Users & Sessions ───────────────────────────────────────────────────
+
+CREATE TABLE IF NOT EXISTS users (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  email                  TEXT    UNIQUE NOT NULL COLLATE NOCASE,
+  password_hash          TEXT    NOT NULL,
+  name                   TEXT,
+  plan                   TEXT    NOT NULL DEFAULT 'free',  -- free | pro | elite
+  stripe_customer_id     TEXT    UNIQUE,
+  stripe_subscription_id TEXT    UNIQUE,
+  subscription_status    TEXT    DEFAULT 'inactive',       -- inactive|trialing|active|past_due|canceled
+  subscription_period_end INTEGER,                         -- unix timestamp ms
+  created_at             TEXT    NOT NULL DEFAULT (datetime('now')),
+  last_login             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_users_email       ON users(email);
+CREATE INDEX IF NOT EXISTS idx_users_stripe_cust ON users(stripe_customer_id);
+CREATE INDEX IF NOT EXISTS idx_users_stripe_sub  ON users(stripe_subscription_id);
+
+CREATE TABLE IF NOT EXISTS user_sessions (
+  id         TEXT    PRIMARY KEY,   -- 64-char hex random token
+  user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at INTEGER NOT NULL,      -- unix ms timestamp
+  created_at TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sessions_user    ON user_sessions(user_id);
+CREATE INDEX IF NOT EXISTS idx_sessions_expires ON user_sessions(expires_at);
+
 -- These are handled via the migration runner in server.js startup instead of
 -- raw SQL here, since SQLite does not support IF NOT EXISTS on ALTER TABLE.
 -- See server.js applyMigrations() for the actual column additions.
