@@ -16,13 +16,12 @@
  */
 
 const {
-  ema, calcAtr, calcVwap, calcRsi, calcMacd, calcAdx,
+  ema, calcAtr, calcVwap, calcRsi, calcAdx,
   calcHtfBias, emaStackScore,
   isBullishCandle, isBearishCandle,
   detectMarketStructure,
   recentSwingLow, recentSwingHigh,
   getSessionInfo, srDistanceAtr,
-  hadPullbackToLevel,
 } = require('./shared-indicators');
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');

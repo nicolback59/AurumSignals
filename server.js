@@ -305,13 +305,12 @@ app.get('/api/backtest/summary', (req, res) => {
 
 // ── BACKTEST DETAILS (per-strategy breakdown) ─────────────────────────────────
 app.get('/api/backtest/details', (req, res) => {
-  const runId = req.query.run_id;
+  let runId = req.query.run_id;
   if (!runId) {
     // Return details for the latest run
     const latest = db.prepare('SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 1').get();
     if (!latest) return res.json(null);
-    req.query.run_id = latest.id;
-    return res.redirect(`/api/backtest/details?run_id=${latest.id}`);
+    runId = latest.id;
   }
 
   const detail = db.prepare('SELECT * FROM backtest_details WHERE run_id = ?').get(runId);
@@ -467,7 +466,7 @@ app.post('/api/ntfy/test', async (req, res) => {
   };
   if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
 
-  const body = `Test sent at ${new Date().toISOString()}\nURL: ${NTFY_URL}\nTopic: ${NTFY_TOPIC}\nToken: ${NTFY_TOKEN ? 'set (' + NTFY_TOKEN.slice(0, 4) + '…)' : 'not set'}`;
+  const body = `Test sent at ${new Date().toISOString()}\nURL: ${NTFY_URL}\nToken: ${NTFY_TOKEN ? 'configured' : 'not set'}`;
 
   try {
     const r = await fetch(url, { method: 'POST', headers, body });
@@ -498,8 +497,6 @@ app.get('/api/health', (req, res) => {
       journal_entries:    entCount,
       ntfy_configured:    !!NTFY_TOPIC,
       webhook_secret_set: !!WEBHOOK_SECRET,
-      ntfy_url:           NTFY_URL,
-      ntfy_topic:         NTFY_TOPIC || null,
       uptime_s:           Math.floor(process.uptime()),
     });
   } catch (err) {
@@ -865,19 +862,22 @@ app.get('/api/diagnostics', (req, res) => {
 app.get('/api/diagnostics/summary', (req, res) => {
   try {
     const instrument = (req.query.instrument || '').toUpperCase() || null;
-    const hours      = Number(req.query.hours) || 24;
-    const since      = `datetime('now', '-${hours} hours')`;
-    const base = instrument
-      ? `FROM scan_diagnostics WHERE instrument='${instrument}' AND scanned_at >= ${since}`
-      : `FROM scan_diagnostics WHERE scanned_at >= ${since}`;
-    const total    = db.prepare(`SELECT COUNT(*) n ${base}`).get().n;
-    const fired    = db.prepare(`SELECT COUNT(*) n ${base} AND fired=1`).get().n;
-    const byInst   = db.prepare(`SELECT instrument, COUNT(*) total, SUM(fired) fired ${base} GROUP BY instrument`).all();
-    const topReasons = db.prepare(`
-      SELECT reject_reason, COUNT(*) n ${base} AND reject_reason IS NOT NULL
-      GROUP BY reject_reason ORDER BY n DESC LIMIT 10
-    `).all();
-    res.json({ total, fired, missRate: total > 0 ? +((1 - fired/total)*100).toFixed(1) : 0, byInst, topReasons });
+    const hours      = Math.min(Math.max(Number(req.query.hours) || 24, 1), 720);
+    const cutoff     = new Date(Date.now() - hours * 3600_000).toISOString();
+
+    if (instrument) {
+      const total      = db.prepare('SELECT COUNT(*) n FROM scan_diagnostics WHERE instrument=? AND scanned_at>=?').get(instrument, cutoff).n;
+      const fired      = db.prepare('SELECT COUNT(*) n FROM scan_diagnostics WHERE instrument=? AND scanned_at>=? AND fired=1').get(instrument, cutoff).n;
+      const byInst     = db.prepare('SELECT instrument, COUNT(*) total, SUM(fired) fired FROM scan_diagnostics WHERE instrument=? AND scanned_at>=? GROUP BY instrument').all(instrument, cutoff);
+      const topReasons = db.prepare('SELECT reject_reason, COUNT(*) n FROM scan_diagnostics WHERE instrument=? AND scanned_at>=? AND reject_reason IS NOT NULL GROUP BY reject_reason ORDER BY n DESC LIMIT 10').all(instrument, cutoff);
+      res.json({ total, fired, missRate: total > 0 ? +((1 - fired/total)*100).toFixed(1) : 0, byInst, topReasons });
+    } else {
+      const total      = db.prepare('SELECT COUNT(*) n FROM scan_diagnostics WHERE scanned_at>=?').get(cutoff).n;
+      const fired      = db.prepare('SELECT COUNT(*) n FROM scan_diagnostics WHERE scanned_at>=? AND fired=1').get(cutoff).n;
+      const byInst     = db.prepare('SELECT instrument, COUNT(*) total, SUM(fired) fired FROM scan_diagnostics WHERE scanned_at>=? GROUP BY instrument').all(cutoff);
+      const topReasons = db.prepare('SELECT reject_reason, COUNT(*) n FROM scan_diagnostics WHERE scanned_at>=? AND reject_reason IS NOT NULL GROUP BY reject_reason ORDER BY n DESC LIMIT 10').all(cutoff);
+      res.json({ total, fired, missRate: total > 0 ? +((1 - fired/total)*100).toFixed(1) : 0, byInst, topReasons });
+    }
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1045,7 +1045,7 @@ app.get('/api/performance/weekly-deep', (req, res) => {
   } catch (err) {
     console.error('[weekly-deep] ERROR:', err.message);
     console.error(err.stack);
-    res.status(500).json({ error: err.message, stack_hint: err.stack?.split('\n')[1]?.trim() ?? 'unknown' });
+    res.status(500).json({ error: err.message });
   }
 });
 

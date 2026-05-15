@@ -67,7 +67,7 @@ function evaluateAll(barSets, cfg = {}) {
 
   // ── MNQ 50-POINT ─────────────────────────────────────────────────────────────
   if (instrument === 'MNQ' || instrument == null) {
-    if (bars5m.length >= 40 && bars15m.length >= 20) {
+    if (bars5m.length >= 25 && bars15m.length >= 8) {
       const sig = mnq50Point.evaluate(bars5m, bars15m, cfg, barIdx);
       if (sig) signals.push(sig);
     }

@@ -15,12 +15,12 @@
  */
 
 const {
-  ema, calcAtr, calcVwap, calcRsi, calcMacd,
-  calcHtfBias, emaStackScore,
+  ema, calcAtr, calcVwap, calcRsi,
+  calcHtfBias,
   isBullishCandle, isBearishCandle,
   detectConsolidation, hasVolumeSpike,
   recentSwingLow, recentSwingHigh,
-  getSessionInfo, srDistanceAtr, detectSwings,
+  getSessionInfo, srDistanceAtr,
 } = require('./shared-indicators');
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
@@ -55,10 +55,6 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const atrArr = calcAtr(bars, 14);
   const atr    = atrArr[n];
   if (!atr || atr < ATR_MIN_PTS) return null;
-
-  // ATR must be large enough to support a 50-point move in reasonable time
-  // Rule: if 1 ATR < 10 pts, the market doesn't have enough momentum
-  if (atr < ATR_MIN_PTS) return null;
 
   const vwapArr = calcVwap(bars);
   const vwap    = vwapArr[n];
