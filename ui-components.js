@@ -1,5 +1,5 @@
 /* ═══════════════════════════════════════════════════════
-   NQ Signal Pro V3 — Shared UI Components
+   Aurum Signals — Shared UI Components
    ═══════════════════════════════════════════════════════ */
 'use strict';
 

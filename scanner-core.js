@@ -475,7 +475,7 @@ class Scanner extends EventEmitter {
         try {
           const res = await fetch(url, {
             headers: {
-              'User-Agent': 'Mozilla/5.0 (compatible; NQ-Signal-Pro/3.0)',
+              'User-Agent': 'Mozilla/5.0 (compatible; AurumSignals/1.0)',
               'Accept': 'application/json',
             },
             signal: ctrl.signal,
@@ -2333,7 +2333,7 @@ class Scanner extends EventEmitter {
 
           const headers = {
             'Content-Type': 'text/plain',
-            'Title':    'NQ Signal Pro V3 - Online',
+            'Title':    'Aurum Signals — Online',
             'Priority': 'default',
             'Tags':     'white_check_mark',
           };

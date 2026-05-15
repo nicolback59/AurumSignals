@@ -1,4 +1,4 @@
--- NQ Signal Pro V3 — SQLite schema
+-- Aurum Signals — SQLite schema
 
 CREATE TABLE IF NOT EXISTS signals (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -299,6 +299,17 @@ CREATE TABLE IF NOT EXISTS user_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_sessions_user    ON user_sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON user_sessions(expires_at);
+
+-- Password reset tokens — one-time use, expires in 1 hour
+CREATE TABLE IF NOT EXISTS password_reset_tokens (
+  token       TEXT    PRIMARY KEY,              -- 64-char hex
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  expires_at  INTEGER NOT NULL,                 -- unix ms
+  used        INTEGER NOT NULL DEFAULT 0,       -- 0=unused 1=consumed
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_reset_tokens_user    ON password_reset_tokens(user_id);
+CREATE INDEX IF NOT EXISTS idx_reset_tokens_expires ON password_reset_tokens(expires_at);
 
 -- These are handled via the migration runner in server.js startup instead of
 -- raw SQL here, since SQLite does not support IF NOT EXISTS on ALTER TABLE.
