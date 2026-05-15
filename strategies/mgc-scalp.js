@@ -44,6 +44,8 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
+const STRATEGY_VERSION = '4.2';
+
 const ATR_MIN_PTS = 1.5;
 const MIN_BAR_GAP = 1;          // 1-bar spam guard — adaptive-cooldown.js handles strategy timing
 const TP = [10, 14, 20, 25];    // fixed MGC take-profit levels in points
@@ -380,8 +382,9 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
     grade,
     win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4,
     score:         Math.round(confidence / 4),
-    setup:         'MGC Scalp',
-    htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+    setup:            'MGC Scalp',
+    strategy_version: STRATEGY_VERSION,
+    htf_bias:         htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
     session:       sess.name,
     trigger_reason: `${best.archetype} | regime:${regime} | vwap:${vwapState} | vol:${volRegime} | ${agreedLayers.length}/${presentLayers.length} TFs`,
     indicators: {
@@ -626,4 +629,4 @@ function evalChopMeanRevert(ctx) {
 
 function reset() { lastSignalBar = -999; }
 
-module.exports = { evaluate, reset, ATR_MIN_PTS, STRATEGY_NAME: 'MGC_SCALP' };
+module.exports = { evaluate, reset, ATR_MIN_PTS, STRATEGY_NAME: 'MGC_SCALP', STRATEGY_VERSION };

@@ -134,6 +134,17 @@
       </div>
     </div>
 
+    <!-- Strategy Performance Overview (all 5 strategies) -->
+    <div class="section-card">
+      <div class="section-card-header">
+        <span class="section-card-title">Strategy Performance — Latest Backtest</span>
+        <span style="font-size:10px;color:var(--text-muted)" id="stratPerfTimestamp"></span>
+      </div>
+      <div class="section-card-body" id="stratPerfTable">
+        <div style="font-size:11px;color:var(--text-muted)">Loading…</div>
+      </div>
+    </div>
+
     <!-- Backtest Activity -->
     <div class="section-card">
       <div class="section-card-header">
@@ -460,51 +471,102 @@ function renderRunsTable() {
   }).join('');
 }
 
-// ── Strategy performance breakdown from backtest ──────────────────────────────
+// ── Strategy metadata (versions, thresholds, descriptions) ───────────────────
+const STRAT_META = {
+  MNQ_INTRADAY: { label: 'MNQ Intraday',  ver: 'v2.1', threshold: 65, inst: 'MNQ' },
+  MNQ_SWING:    { label: 'MNQ Swing',     ver: 'v2.1', threshold: 55, inst: 'MNQ' },
+  MNQ_50PT:     { label: 'MNQ 50-Point',  ver: 'v2.1', threshold: 58, inst: 'MNQ' },
+  MGC_SCALP:    { label: 'MGC Scalp',     ver: 'v4.2', threshold: 45, inst: 'MGC' },
+  MGC_INTRADAY: { label: 'MGC Intraday',  ver: 'v1.0', threshold: 60, inst: 'MGC' },
+};
+
+// ── Strategy performance table (main column — always visible) ─────────────────
+function renderStratPerfTable(details) {
+  const el = document.getElementById('stratPerfTable');
+  if (!el) return;
+  const ts = document.getElementById('stratPerfTimestamp');
+
+  const byStrat = details?.by_strategy ?? {};
+  const ORDERED = ['MNQ_INTRADAY','MNQ_SWING','MNQ_50PT','MGC_SCALP','MGC_INTRADAY'];
+
+  if (!Object.keys(byStrat).length) {
+    el.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No per-strategy data yet — scanner runs backtest on startup.</div>';
+    return;
+  }
+
+  if (ts && details?.run_at) ts.textContent = details.run_at.slice(0,16).replace('T',' ') + ' UTC';
+
+  const rows = ORDERED.map(k => {
+    const meta = STRAT_META[k] || { label: k, ver: '—', threshold: '—', inst: '?' };
+    const m    = byStrat[k] || {};
+    const wr   = m.winRate  != null ? (m.winRate * 100).toFixed(1) + '%' : '—';
+    const pf   = m.profitFactor != null ? (+m.profitFactor).toFixed(2) : '—';
+    const cnt  = m.tradeCount ?? 0;
+    const instColor = meta.inst === 'MNQ' ? 'var(--mnq)' : 'var(--mgc)';
+    const wrCls = m.winRate == null ? '' : wrClass(m.winRate);
+    const pfColor = m.profitFactor == null ? '' : m.profitFactor >= 1.5
+      ? 'color:var(--green)'
+      : m.profitFactor >= 1.0
+        ? 'color:var(--orange)'
+        : 'color:var(--red)';
+    return `<tr>
+      <td>
+        <span style="color:${instColor};font-size:9px;font-weight:700;margin-right:4px">${meta.inst}</span>
+        <span style="font-weight:600">${escH(meta.label)}</span>
+        <span style="color:var(--text-muted);font-size:9px;margin-left:4px">${meta.ver}</span>
+      </td>
+      <td style="color:var(--text-secondary)">${cnt}</td>
+      <td class="${wrCls}">${wr}</td>
+      <td style="${pfColor}">${pf}</td>
+      <td style="color:var(--text-muted);font-size:9px">${meta.threshold}</td>
+    </tr>`;
+  });
+
+  el.innerHTML = `<table class="data-table"><thead><tr>
+    <th>Strategy</th><th>Trades</th><th>Win %</th><th>P/F</th><th>Min Score</th>
+  </tr></thead><tbody>${rows.join('')}</tbody></table>
+  <div style="margin-top:6px;font-size:9px;color:var(--text-muted)">
+    Win % target: MNQ Intraday 50%+ · MNQ Swing 55%+ · MNQ 50-Pt 55%+ · MGC Scalp 75%+
+  </div>`;
+}
+
+// ── Strategy performance breakdown from backtest (right sidebar) ──────────────
 function renderStrategyBreakdown() {
   const el = document.getElementById('strategyBreakdown');
   if (!el) return;
 
-  // Pull from latest backtest run's details (stored in raw_payload or byStrategy)
   const latestRun = allRuns[0];
   if (!latestRun) {
     el.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">Run a backtest to see per-strategy results.</div>';
     return;
   }
 
-  // Fetch backtest details for the latest run
   fetch(`/api/backtest/details?run_id=${latestRun.id}`)
     .then(r => r.json())
     .catch(() => null)
     .then(details => {
-      const byStrat = details?.by_strategy ?? {};
-      const STRAT_LABELS = {
-        MNQ_INTRADAY: 'MNQ Intraday',
-        MNQ_SWING:    'MNQ Swing',
-        MNQ_50PT:     'MNQ 50-Point',
-        MGC_SCALP:    'MGC Scalp',
-        MGC_INTRADAY: 'MGC Intraday',
-      };
+      // Populate both the sidebar and the main-column table
+      renderStratPerfTable(details);
 
+      const byStrat = details?.by_strategy ?? {};
       const rows = Object.entries(byStrat).map(([k, m]) => ({
-        name: STRAT_LABELS[k] ?? k,
+        name: (STRAT_META[k] || {}).label ?? k,
         ...m,
       }));
 
       if (!rows.length) {
-        el.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No per-strategy data yet — run a full backtest.</div>';
+        el.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No per-strategy data yet.</div>';
         return;
       }
 
       el.innerHTML = `<table class="data-table"><thead><tr>
-        <th>Strategy</th><th>Trades</th><th>Win %</th><th>Profit Factor</th><th>Sharpe</th>
+        <th>Strategy</th><th>Trades</th><th>Win %</th><th>P/F</th>
       </tr></thead><tbody>` +
         rows.map(r => `<tr>
-          <td style="font-weight:600">${escH(r.name)}</td>
+          <td style="font-weight:600;font-size:10px">${escH(r.name)}</td>
           <td>${r.tradeCount ?? 0}</td>
           <td class="${wrClass((r.winRate ?? 0))}">${r.winRate != null ? (r.winRate * 100).toFixed(1) + '%' : '—'}</td>
           <td>${r.profitFactor ?? '—'}</td>
-          <td>${r.sharpe ?? '—'}</td>
         </tr>`).join('') +
         '</tbody></table>';
     });

@@ -25,6 +25,8 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
+const STRATEGY_VERSION = '2.1';
+
 const TARGET_PTS  = 50;   // fixed primary target
 const PARTIAL_PTS = 25;   // partial exit
 const ATR_MIN_PTS = 10;   // minimum 5m ATR for move to be plausible
@@ -65,10 +67,11 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // ── HTF bias (15m) ────────────────────────────────────────────────────────────
   const htfBias = calcHtfBias(htfBars, 9, 21);
 
-  // ── Consolidation detection — only reject extreme chop/expansion (atrRatio ≥ 2.5) ─
+  // ── Consolidation detection — reject chop/expansion (atrRatio ≥ 2.0) ────────
+  // Tightened from 2.5: a breakout from a messy range has much lower follow-through.
   const priorBars = bars.slice(0, -1); // exclude current bar
   const consol = detectConsolidation(priorBars, 12, 14);
-  if (consol.atrRatio >= 2.5) return null;
+  if (consol.atrRatio >= 2.0) return null;
 
   const consolAtrRatio = consol.atrRatio;
   const { rangeHigh, rangeLow, curAtr: consolAtr } = consol;
@@ -76,11 +79,11 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // ── Volume spike (bonus but not required) ─────────────────────────────────────
   const volSpike = hasVolumeSpike(bars, 20, 1.3);
 
-  // ── Breakout check — accept near-breakout (within 1.0 ATR of range edge) ──────
-  // Widened from 0.5 ATR to 1.0 ATR to catch bars that close just inside the
-  // consolidation boundary but are already committed to the breakout direction.
-  const breakoutLong  = last.close > rangeHigh - 1.0 * atr;
-  const breakoutShort = last.close < rangeLow  + 1.0 * atr;
+  // ── Breakout check — accept near-breakout (within 0.75 ATR of range edge) ────
+  // Tightened from 1.0 ATR: entries more than 0.75 ATR inside the range are still
+  // in consolidation and have lower probability of immediate follow-through.
+  const breakoutLong  = last.close > rangeHigh - 0.75 * atr;
+  const breakoutShort = last.close < rangeLow  + 0.75 * atr;
   const vwapAligned   = (breakoutLong && last.close > vwap) || (breakoutShort && last.close < vwap);
 
   // Also accept: retest of breakout level (lookback extended to 6 bars)
@@ -101,8 +104,8 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
     if (rsi != null) {
-      if (isBull  && rsi >= 78) continue; // extremely overbought
-      if (!isBull && rsi <= 22) continue; // extremely oversold
+      if (isBull  && rsi >= 75) continue; // overbought — chase entries fail breakouts
+      if (!isBull && rsi <= 25) continue; // oversold — avoid exhausted breakdowns
     }
 
     // ── Stop-loss (behind structure + 0.5 ATR) ──────────────────────────────
@@ -132,6 +135,9 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     const tp3 = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
 
     const srDist = srDistanceAtr(isBull ? tp1 : tp1, bars, atr, 50);
+    // Hard block if a major S/R level sits between entry and the 50-pt target.
+    // A level within 1.0 ATR of the path to TP likely caps the move before it arrives.
+    if (srDist < 1.0) continue;
 
     // ── Confidence score ─────────────────────────────────────────────────────
     const confidence = scoreSignal({
@@ -174,8 +180,9 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       grade,
       win_prob_tp1, win_prob_tp2, win_prob_tp3,
       score:         Math.round(confidence / 4),
-      setup:         'MNQ 50-Point',
-      htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+      setup:            'MNQ 50-Point',
+      strategy_version: STRATEGY_VERSION,
+      htf_bias:         htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
       trigger_reason: `Consolidation ${breakoutType} (range ${consol.rangePts?.toFixed(1)} pts), ATR expansion ×${consolAtrRatio.toFixed(2)}, 50-pt target clear`,
       indicators: {
@@ -211,4 +218,4 @@ function hadRetestBelow(bars, level, atr, lookback = 4) {
 
 function reset() { lastSignalBar = -999; }
 
-module.exports = { evaluate, reset, TARGET_PTS, ATR_MIN_PTS, STRATEGY_NAME: 'MNQ_50PT' };
+module.exports = { evaluate, reset, TARGET_PTS, ATR_MIN_PTS, STRATEGY_NAME: 'MNQ_50PT', STRATEGY_VERSION };
