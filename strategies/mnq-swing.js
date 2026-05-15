@@ -43,9 +43,8 @@ let lastSignalBar = -999;
  * @param {number}   barIdx
  */
 function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
-  const MIN_BARS = 30;
+  const MIN_BARS = 25;
   if (bars.length < MIN_BARS) return null;
-  if (!htf2Bars || htf2Bars.length < 3) return null;
 
   const curIdx = barIdx ?? bars.length;
   if (curIdx - lastSignalBar < (cfg.cooldownBars ?? MIN_BAR_GAP)) return null;
@@ -62,20 +61,6 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const vwapArr = calcVwap(bars);
   const vwap    = vwapArr[n];
 
-  // Daily trend — use EMA50 only (EMA200 needs 200 daily bars; we only have ~60).
-  // Use the 4h bars as the macro HTF instead.
-  const dlyCloses = htf2Bars.map(b => b.close);
-  const dly21Arr  = ema(dlyCloses, 21);
-  const dn        = dlyCloses.length - 1;
-  const dly21     = dly21Arr[dn];
-  const dlyClose  = htf2Bars[dn].close;
-
-  // Macro bias: price above/below daily EMA21
-  const dailyBull = dly21 != null && dlyClose > dly21;
-  const dailyBear = dly21 != null && dlyClose < dly21;
-
-  if (!dailyBull && !dailyBear) return null;
-
   // 1h EMA 9/21
   const ema9Arr  = ema(closes, 9);
   const ema21Arr = ema(closes, 21);
@@ -91,16 +76,29 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const struct = detectMarketStructure(bars, 30);
 
   // ── HTF biases ───────────────────────────────────────────────────────────────
-  const htfBias  = calcHtfBias(htfBars && htfBars.length >= 21 ? htfBars : bars, 9, 21);
-  const htf2Bias = dailyBull ? 1 : dailyBear ? -1 : 0;
+  // Use 4h bias as macro direction gate (reliable with limited bar history).
+  // Daily EMA21 with only ~4 daily bars in a backtest is too noisy to gate on.
+  const htfBias  = calcHtfBias(htfBars && htfBars.length >= 9 ? htfBars : bars, 9, 21);
+
+  // Daily is supplementary scoring only — not a hard gate
+  let htf2Bias = 0;
+  let dly21    = null;
+  if (htf2Bars && htf2Bars.length >= 3) {
+    const dlyCloses = htf2Bars.map(b => b.close);
+    const dly21Arr  = ema(dlyCloses, 21);
+    const dn        = dlyCloses.length - 1;
+    dly21           = dly21Arr[dn];
+    const dlyClose  = htf2Bars[dn].close;
+    htf2Bias = (dly21 != null && dlyClose > dly21) ? 1 : (dly21 != null && dlyClose < dly21) ? -1 : 0;
+  }
 
   const sess = getSessionInfo(last.timestamp);
-  if (sess.quality < 0.30) return null;
+  if (sess.quality < 0.20) return null;
 
-  // ── Direction candidates — structure gate removed; daily+1h EMA alignment is sufficient ─
+  // ── Direction candidates — 4h bias + 1h EMA9/21 alignment ──────────────────
   const directions = [];
-  if (dailyBull && ema9 > ema21)  directions.push('LONG');
-  if (dailyBear && ema9 < ema21)  directions.push('SHORT');
+  if (htfBias >= 0 && ema9 > ema21) directions.push('LONG');
+  if (htfBias <= 0 && ema9 < ema21) directions.push('SHORT');
 
   for (const dir of directions) {
     const isBull = dir === 'LONG';
@@ -108,20 +106,18 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     // ── EMA stack on 1h — scoring bonus, not a hard gate ────────────────────
     const esScore = emaStackScore(closes, 9, 21, 21, dir); // 9/21 only on swing
 
-    // ── Price in value zone — proximity check replaces historical pullback requirement ─
-    // Any bar where price is within 3 ATR of EMA21 or VWAP qualifies; no need to
-    // look back for a historical touch.
-    const nearEma21 = Math.abs(last.close - ema21) < 3.0 * atr;
-    const nearVwap  = Math.abs(last.close - vwap)  < 3.0 * atr;
+    // ── Price in value zone — 5 ATR radius for wide capture ─────────────────
+    const nearEma21 = Math.abs(last.close - ema21) < 5.0 * atr;
+    const nearVwap  = Math.abs(last.close - vwap)  < 5.0 * atr;
     if (!nearEma21 && !nearVwap) continue;
 
-    // ── Retest holds — allow wider wicks to catch normal pullback structure ───
+    // ── Retest holds — only block extreme breaks beyond 2 ATR ────────────────
     const recentSlice = bars.slice(-3, -1);
-    if (isBull && recentSlice.some(b => b.close < ema21 - 1.5 * atr)) continue;
-    if (!isBull && recentSlice.some(b => b.close > ema21 + 1.5 * atr)) continue;
+    if (isBull && recentSlice.some(b => b.close < ema21 - 2.0 * atr)) continue;
+    if (!isBull && recentSlice.some(b => b.close > ema21 + 2.0 * atr)) continue;
 
-    // ── Confirmation candle — 20% body threshold for higher signal frequency ─
-    if (!(isBull ? isBullishCandle(last, 0.20) : isBearishCandle(last, 0.20))) continue;
+    // ── Confirmation candle — 15% body threshold for higher signal frequency ─
+    if (!(isBull ? isBullishCandle(last, 0.15) : isBearishCandle(last, 0.15))) continue;
 
     // ── Momentum — RSI extreme filter only (MACD removed to maximise frequency) ─
     const rsiArr = calcRsi(closes, 14);
@@ -141,7 +137,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       rawRisk = sl - entry;
     }
 
-    if (rawRisk < ATR_MIN_PTS || rawRisk > 6 * atr) continue;
+    if (rawRisk < 5 || rawRisk > 6 * atr) continue;
 
     // ── Take-profit levels ────────────────────────────────────────────────────
     const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;

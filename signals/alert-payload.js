@@ -169,9 +169,21 @@ function buildNtfyBody(p) {
   const dir  = flat.direction === 'LONG' ? '▲ LONG' : '▼ SHORT';
   const tier = flat.tier ? `[${flat.tier}]` : '';
   const conf = flat.confidence != null ? `Conf: ${flat.confidence}/100` : null;
-  const predWR = flat.predicted_wr_pct != null
-    ? `WinRate: ${flat.predicted_wr_pct}%±${flat.predicted_wr_band ?? 9}% (${flat.predicted_wr_source ?? '?'})${flat.predicted_wr_atr_spike ? ' [SPIKE]' : ''}`
-    : null;
+
+  // TP1-specific win rate — prefer data-driven predicted WR, fall back to confidence-based estimate
+  let tp1WrLine = null;
+  if (flat.predicted_wr_pct != null) {
+    const band = flat.predicted_wr_band ?? 9;
+    const src  = flat.predicted_wr_source === 'confidence-estimate' ? 'est'
+               : flat.predicted_wr_source === 'live+backtest'       ? 'live+bt'
+               : flat.predicted_wr_source === 'backtest'            ? 'bt'
+               : flat.predicted_wr_source === 'live'                ? 'live'
+               : (flat.predicted_wr_source ?? '?');
+    const spike = flat.predicted_wr_atr_spike ? ' [SPIKE]' : '';
+    tp1WrLine = `TP1 WR: ${flat.predicted_wr_pct}%\xb1${band}% (${src})${spike}`;
+  } else if (flat.win_prob_tp1 != null) {
+    tp1WrLine = `TP1 WR: ${flat.win_prob_tp1}% (est)`;
+  }
 
   const stratMap = {
     MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing',
@@ -191,7 +203,7 @@ function buildNtfyBody(p) {
     flat.tp4   != null ? `TP4:      ${flat.tp4}`        : null,
     flat.rr    != null ? `RR:       ${flat.rr}`         : null,
     conf,
-    predWR,
+    tp1WrLine,
     flat.session    ? `Session:  ${flat.session}`       : null,
   ].filter(Boolean).join('\n');
 }

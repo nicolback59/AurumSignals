@@ -175,7 +175,10 @@ class Scanner extends EventEmitter {
       `),
 
       getPendingSignals: db.prepare(`
-        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument, s.trade_style
+        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
+               s.trade_style, s.strategy_name, s.session, s.setup,
+               s.win_prob_tp1,
+               json_extract(s.raw_payload, '$.context.prediction.win_rate_pct') AS predicted_wr_pct
         FROM   signals s
         LEFT JOIN outcomes o ON o.signal_id = s.id
         WHERE  o.id IS NULL
@@ -479,21 +482,51 @@ class Scanner extends EventEmitter {
 
   // ── Outcome ntfy push ─────────────────────────────────────────────────────────
 
-  _sendNtfyOutcome(signalId, instrument, direction, result, pnlPts) {
+  _sendNtfyOutcome(sig, result, pnlPts) {
     if (!this.cfg.ntfyTopic) return;
-    // HTTP headers must be ASCII only — emoji in body only
-    const pnlStr   = pnlPts != null ? ` (${pnlPts >= 0 ? '+' : ''}${pnlPts} pts)` : '';
-    const priority = result === 'WIN' ? 'default' : result === 'LOSS' ? 'high' : 'default';
-    const resultEmoji = result === 'WIN' ? '[WIN]' : result === 'LOSS' ? '[LOSS]' : '[BE]';
-    const headers  = {
+    const { id: signalId, instrument, direction } = sig;
+    const pnlStr = pnlPts != null ? ` (${pnlPts >= 0 ? '+' : ''}${pnlPts} pts)` : '';
+
+    const STRAT_LABELS = {
+      MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing',
+      MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday',
+    };
+
+    let title, tags, priority, body;
+
+    if (result === 'WIN') {
+      const stratLabel = STRAT_LABELS[sig.strategy_name] || sig.setup || sig.strategy_name || instrument;
+      const wrPct      = sig.predicted_wr_pct ?? sig.win_prob_tp1;
+      const wrStr      = wrPct != null ? ` | WR was ${wrPct}%` : '';
+      priority = 'high';
+      tags     = 'trophy,white_check_mark';
+      title    = `[WIN] TP1 HIT ${instrument} ${direction}${pnlStr}`;
+      body     = [
+        `✅ TP1 HIT — ${direction} ${stratLabel}`,
+        sig.entry != null ? `Entry: ${sig.entry}  →  TP1: ${sig.tp1}` : null,
+        pnlPts    != null ? `Gained: ${pnlPts >= 0 ? '+' : ''}${pnlPts} pts` : null,
+        sig.session       ? `Session: ${sig.session}` : null,
+        `Signal #${signalId}${wrStr}`,
+      ].filter(Boolean).join('\n');
+    } else if (result === 'LOSS') {
+      priority = 'default';
+      tags     = 'x';
+      title    = `[LOSS] ${instrument} ${direction}${pnlStr}`;
+      body     = `❌ Stopped out: ${direction} ${instrument}${pnlStr}\nSignal #${signalId}`;
+    } else {
+      priority = 'default';
+      tags     = 'warning';
+      title    = `[BE] ${instrument} ${direction}`;
+      body     = `⚠️ Break-even: ${direction} ${instrument}\nSignal #${signalId}`;
+    }
+
+    const headers = {
       'Content-Type': 'text/plain',
-      'Title':    `${resultEmoji} ${instrument} ${direction}${pnlStr}`,
+      'Title':    title,
       'Priority': priority,
-      'Tags':     result === 'WIN' ? 'white_check_mark' : result === 'LOSS' ? 'x' : 'warning',
+      'Tags':     tags,
     };
     if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
-    const emoji = result === 'WIN' ? '✅' : result === 'LOSS' ? '❌' : '⚠️';
-    const body  = `${emoji} Signal #${signalId} resolved: ${direction} ${instrument} → ${result}${pnlStr}`;
     fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
       .catch(err => this._err('[ntfy-outcome] send failed', err));
   }
@@ -645,7 +678,7 @@ class Scanner extends EventEmitter {
 
       this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolution.toState}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
       this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
-      if (result !== 'EXPIRED') this._sendNtfyOutcome(sig.id, instrument, sig.direction, result, pnlPts);
+      if (result !== 'EXPIRED') this._sendNtfyOutcome(sig, result, pnlPts);
       resolvedCount++;
     }
 

@@ -41,8 +41,8 @@ let lastSignalBar = -999;
  * @param {number}   barIdx
  */
 function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
-  const MIN_BARS = 40;
-  if (bars.length < MIN_BARS || htfBars.length < 20) return null;
+  const MIN_BARS = 25;
+  if (bars.length < MIN_BARS || htfBars.length < 8) return null;
 
   const curIdx = barIdx ?? bars.length;
   if (curIdx - lastSignalBar < (cfg.cooldownBars ?? MIN_BAR_GAP)) return null;
@@ -74,6 +74,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const consol = detectConsolidation(priorBars, 12, 14);
   if (consol.atrRatio >= 2.5) return null;
 
+  const consolAtrRatio = consol.atrRatio;
   const { rangeHigh, rangeLow, curAtr: consolAtr } = consol;
 
   // ── Volume spike (bonus but not required) ─────────────────────────────────────
@@ -89,14 +90,14 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   const retestShort = !breakoutShort && hadRetestBelow(bars, rangeLow,  atr);
 
   const directions = [];
-  if ((breakoutLong  || retestLong)  && htfBias >= 0) directions.push('LONG');
-  if ((breakoutShort || retestShort) && htfBias <= 0) directions.push('SHORT');
+  if (breakoutLong  || retestLong)  directions.push('LONG');
+  if (breakoutShort || retestShort) directions.push('SHORT');
 
   for (const dir of directions) {
     const isBull = dir === 'LONG';
 
-    // ── Candle close strength — 20% body for higher signal frequency ─────────
-    if (!(isBull ? isBullishCandle(last, 0.20) : isBearishCandle(last, 0.20))) continue;
+    // ── Candle close strength — 15% body for higher signal frequency ─────────
+    if (!(isBull ? isBullishCandle(last, 0.15) : isBearishCandle(last, 0.15))) continue;
 
     // ── Minimum momentum (RSI not extreme) ──────────────────────────────────
     const rsiArr = calcRsi(closes, 14);
