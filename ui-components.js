@@ -7,6 +7,13 @@
 const fmt  = (v, d = 2) => v != null ? Number(v).toFixed(d) : '—';
 const fmtP = v => v != null ? Number(v).toFixed(0) + '%' : '—';
 
+// Format a P&L point value cleanly: rounds to 2dp, +/- prefix, ' pts' suffix
+function fmtPts(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  return (n > 0 ? '+' : '') + n.toFixed(2) + ' pts';
+}
+
 function escH(s) {
   if (s == null) return '';
   return String(s)
@@ -103,7 +110,7 @@ function setupBadge(setup) {
 
 function outcomeBadge(result, pnlPts) {
   if (!result) return '';
-  const pts = pnlPts != null ? ` ${pnlPts >= 0 ? '+' : ''}${pnlPts}` : '';
+  const pts = pnlPts != null ? ` ${Number(pnlPts) > 0 ? '+' : ''}${Number(pnlPts).toFixed(2)}` : '';
   return `<span class="badge badge-${result.toLowerCase()}">${result}${pts}</span>`;
 }
 
@@ -143,7 +150,7 @@ function probBar(label, val, cls) {
 function outcomeSection(sig) {
   if (sig.result) {
     const pts = sig.pnl_pts != null && sig.result !== 'EXPIRED'
-      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts</span>`
+      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${fmtPts(sig.pnl_pts)}</span>`
       : '';
     const exitTs = sig.exit_at
       ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:8px">${fmtDatetime(sig.exit_at)}</span>`

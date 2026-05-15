@@ -454,27 +454,23 @@
     </div>
   </div>
 
-  <!-- ── Bot Status ─────────────────────────────────────── -->
+  <!-- ── Scanner Status ────────────────────────────────────── -->
   <div class="bot-status-row">
     <div class="bot-status-tile">
       <div class="bot-status-dot unknown" id="mnqDot"></div>
-      <div>
-        <div class="bot-status-name">MNQ Scanner</div>
-        <div class="bot-status-sub" id="mnqScanSub">checking…</div>
+      <div style="flex:1;min-width:0">
+        <div class="bot-status-name" style="color:var(--mnq)">MNQ Scanner</div>
+        <div class="bot-status-sub" id="mnqScanSub" style="font-size:10px;color:var(--text-muted);margin-top:2px">initializing…</div>
       </div>
-      <div>
-        <div class="bot-status-lbl unknown" id="mnqStatus">—</div>
-      </div>
+      <div class="bot-status-lbl unknown" id="mnqStatus" style="font-size:10px;font-weight:700;letter-spacing:.05em">—</div>
     </div>
     <div class="bot-status-tile">
       <div class="bot-status-dot unknown" id="mgcDot"></div>
-      <div>
-        <div class="bot-status-name">MGC Scanner</div>
-        <div class="bot-status-sub" id="mgcScanSub">checking…</div>
+      <div style="flex:1;min-width:0">
+        <div class="bot-status-name" style="color:var(--mgc)">MGC Scanner</div>
+        <div class="bot-status-sub" id="mgcScanSub" style="font-size:10px;color:var(--text-muted);margin-top:2px">initializing…</div>
       </div>
-      <div>
-        <div class="bot-status-lbl unknown" id="mgcStatus">—</div>
-      </div>
+      <div class="bot-status-lbl unknown" id="mgcStatus" style="font-size:10px;font-weight:700;letter-spacing:.05em">—</div>
     </div>
   </div>
 
@@ -661,7 +657,7 @@ function renderHero(sig) {
   if (sig.result) {
     statusEl.textContent = sig.result;
     statusEl.className   = `status-pill ${sig.result.toLowerCase()}`;
-    if (sig.pnl_pts != null) statusEl.textContent += ` ${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts`;
+    if (sig.pnl_pts != null) statusEl.textContent += ` ${Number(sig.pnl_pts) > 0 ? '+' : ''}${Number(sig.pnl_pts).toFixed(2)} pts`;
   } else {
     const ageMs = Date.now() - new Date(sig.received_at + ' UTC').getTime();
     statusEl.textContent = ageMs < 7200000 ? 'ACTIVE' : 'OPEN';
@@ -736,7 +732,7 @@ function renderRecordBar(stats, journalSigs) {
   // Total ticks from resolved journal signals
   const totalTicks = journalSigs.reduce((s, t) => s + (t.pnl_pts || 0), 0);
   const ticksEl = document.getElementById('recTicks');
-  ticksEl.textContent = totalTicks !== 0 ? (totalTicks >= 0 ? '+' : '') + totalTicks : '0';
+  ticksEl.textContent = totalTicks !== 0 ? (totalTicks >= 0 ? '+' : '') + totalTicks.toFixed(2) : '0';
   ticksEl.style.color = totalTicks > 0 ? 'var(--green)' : totalTicks < 0 ? 'var(--red)' : 'var(--teal)';
 }
 
@@ -810,7 +806,7 @@ function connectSSE() {
     try {
       const d = JSON.parse(e.data);
       _scanCount = d.scanCount ?? _scanCount;
-      _applyBotStatus(true, `scan #${_scanCount} — ${d.instrument ?? ''} ${d.fired ? '🟢 signal fired' : 'watching…'}`);
+      _applyBotStatus(true, `scan #${_scanCount} — ${d.instrument ?? ''} ${d.fired ? '▲ signal fired' : 'watching…'}`);
     } catch { /* ignore */ }
   });
 
@@ -847,7 +843,7 @@ function renderStats(stats, recentSigs, journalSigs) {
   });
   const todayPnl = todayTrades.reduce((s, t) => s + (t.pnl_pts || 0), 0);
   const pnlEl    = document.getElementById('todayPnl');
-  pnlEl.textContent = todayTrades.length ? (todayPnl >= 0 ? '+' : '') + todayPnl + 'pts' : '—';
+  pnlEl.textContent = todayTrades.length ? (todayPnl >= 0 ? '+' : '') + todayPnl.toFixed(2) + ' pts' : '—';
   pnlEl.style.color = todayPnl > 0 ? 'var(--green)' : todayPnl < 0 ? 'var(--red)' : 'var(--text-muted)';
   document.getElementById('todayPnlSub').textContent = todayTrades.length
     ? `${todayTrades.length} resolved today`
@@ -936,7 +932,7 @@ function renderRecentTrades(journalSigs) {
   el.innerHTML = last5.map(s => {
     const pnl     = s.pnl_pts;
     const ptsCls  = pnl > 0 ? 'pos' : pnl < 0 ? 'neg' : 'flat';
-    const ptsText = pnl != null ? (pnl >= 0 ? '+' : '') + pnl + 'pts' : '—';
+    const ptsText = pnl != null ? (Number(pnl) >= 0 ? '+' : '') + Number(pnl).toFixed(2) + ' pts' : '—';
     return `<div class="recent-trade-row">
       <span class="rt-time">${hhmm(s.received_at)}</span>
       <span class="rt-dir ${s.direction === 'LONG' ? 'long' : 'short'}">${s.direction === 'LONG' ? '▲' : '▼'}</span>

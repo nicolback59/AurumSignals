@@ -460,7 +460,7 @@ function renderSummary(stats, trades) {
 
   const ptsEl = document.getElementById('sumPts');
   if (trades.some(t => t.pnl_pts != null)) {
-    ptsEl.textContent = (netPts >= 0 ? '+' : '') + netPts.toFixed(0) + 'pts';
+    ptsEl.textContent = (netPts >= 0 ? '+' : '') + netPts.toFixed(2) + ' pts';
     ptsEl.style.color = netPts > 0 ? 'var(--green)' : netPts < 0 ? 'var(--red)' : '';
   } else {
     ptsEl.textContent = '—';
@@ -551,7 +551,7 @@ function buildRow(t) {
 
   // Ticks column = pnl_pts
   const ticksCls = t.pnl_pts > 0 ? 'wr-hi' : t.pnl_pts < 0 ? 'wr-lo' : '';
-  const ticksTxt = t.pnl_pts != null ? (t.pnl_pts >= 0 ? '+' : '') + t.pnl_pts : '—';
+  const ticksTxt = t.pnl_pts != null ? (Number(t.pnl_pts) >= 0 ? '+' : '') + Number(t.pnl_pts).toFixed(2) + ' pts' : '—';
 
   // P&L $ column = pnl_usd
   const usd    = t.pnl_usd;
@@ -672,7 +672,7 @@ function renderMobileCards() {
   el.innerHTML = visible.map(t => {
     const isLong = t.direction === 'LONG';
     const ticksCls = t.pnl_pts > 0 ? 'wr-hi' : t.pnl_pts < 0 ? 'wr-lo' : '';
-    const ticksTxt = t.pnl_pts != null ? (t.pnl_pts >= 0 ? '+' : '') + t.pnl_pts + 'pts' : '—';
+    const ticksTxt = t.pnl_pts != null ? (Number(t.pnl_pts) >= 0 ? '+' : '') + Number(t.pnl_pts).toFixed(2) + ' pts' : '—';
     const mkt = t.instrument || (t.ticker || '').replace('1!', '') || '—';
     return `<div class="trade-card" style="
         background:var(--bg-surface);

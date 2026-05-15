@@ -1640,3 +1640,161 @@ body {
   .pricing-grid { max-width: 100%; }
   .trust-strip { gap: 20px; }
 }
+
+/* ═══════════════════════════════════════════════════════
+   UI POLISH v3 — Home tiles, nav, cards, mobile
+   ═══════════════════════════════════════════════════════ */
+
+/* ── Home page tiles: shadows + hover ───────────────── */
+.record-tile,
+.stat-tile,
+.bot-status-tile,
+.chart-wrap {
+  box-shadow: 0 2px 12px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.04);
+  transition: border-color var(--t), box-shadow var(--t-slow);
+}
+.record-tile:hover,
+.stat-tile:hover {
+  border-color: var(--border-strong);
+  box-shadow: 0 4px 24px rgba(0,0,0,.5), 0 0 0 1px rgba(255,255,255,.07);
+}
+.record-tile { border-radius: 12px; }
+.stat-tile   { border-radius: 12px; }
+.bot-status-tile { border-radius: 12px; }
+
+/* ── Hero card premium border ────────────────────────── */
+.hero-card { border-radius: 14px; box-shadow: 0 4px 24px rgba(0,0,0,.4); }
+.hero-card.long  { box-shadow: 0 4px 24px rgba(0,0,0,.4), 0 0 28px rgba(0,212,160,.06); }
+.hero-card.short { box-shadow: 0 4px 24px rgba(0,0,0,.4), 0 0 28px rgba(255,61,90,.06); }
+
+/* ── Level pills in hero card ────────────────────────── */
+.level-pill {
+  border-radius: 10px;
+  background: var(--bg-elevated);
+  border-color: var(--border-default);
+  box-shadow: 0 1px 4px rgba(0,0,0,.3);
+}
+
+/* ── Bot status tiles: cleaner look ──────────────────── */
+.bot-status-dot {
+  width: 8px;
+  height: 8px;
+}
+.bot-status-name { font-size: 12px; color: var(--text-secondary); }
+.bot-status-tile {
+  background: linear-gradient(135deg, var(--bg-surface) 0%, var(--bg-elevated) 100%);
+}
+
+/* ── Bottom nav: pill active indicator ───────────────── */
+.bottom-nav-item {
+  position: relative;
+  transition: color var(--t), background var(--t);
+}
+.bottom-nav-item.active {
+  color: var(--yellow);
+  background: rgba(245,197,66,.06);
+  border-radius: 10px;
+}
+.bottom-nav-icon { font-size: 18px; }
+.bottom-nav-label { font-size: 9px; letter-spacing: .05em; }
+
+/* ── Top nav: tighten logo ───────────────────────────── */
+.logo {
+  font-size: 13px;
+  letter-spacing: .04em;
+  opacity: .9;
+}
+.logo:hover { opacity: 1; }
+
+/* ── Filter chips: more breathing room ───────────────── */
+.filter-chips { padding: 10px 14px 0; gap: 6px; }
+.filter-chip { padding: 5px 14px; font-size: 12px; }
+.filter-chip.active {
+  background: rgba(245,197,66,.1);
+  border-color: var(--yellow-border);
+  color: var(--yellow);
+  font-weight: 600;
+}
+
+/* ── Stat bar: subtle separator line ─────────────────── */
+.stat-bar-item {
+  border-right: 1px solid var(--border-subtle);
+  transition: background var(--t);
+}
+.stat-bar-item:hover { background: var(--bg-elevated); }
+.stat-bar-item:last-child { border-right: none; }
+
+/* ── Signal card: slightly more padding ─────────────── */
+.signal-card-header { padding: 10px 14px 10px 17px; gap: 8px; }
+.signal-card-footer { padding: 8px 14px 8px 17px; }
+.signal-card-levels { padding: 12px 14px; }
+.signal-card-probs  { padding: 12px 14px; }
+
+/* ── Section card: ensure consistent radius ─────────── */
+.section-card { border-radius: 14px; }
+.bt-run-card  { border-radius: 12px; }
+
+/* ── Data table: slightly larger text ───────────────── */
+.data-table td { font-size: 12px; padding: 8px 10px; }
+
+/* ── Page header: better vertical rhythm ─────────────── */
+.page-hdr { padding: 22px 0 18px; }
+.page-hdr-title { font-size: 20px; }
+
+/* ── Skeleton: slightly faster shimmer ───────────────── */
+.skeleton { animation-duration: 1.3s; }
+
+/* ── Empty state: more refined ───────────────────────── */
+.empty-state-icon { font-size: 28px; }
+.empty-state-title { font-size: 13px; font-weight: 700; }
+.empty-state-desc { font-size: 11px; line-height: 1.7; }
+
+/* ── Toast: higher z and above bottom-nav ────────────── */
+.toast { z-index: 9999; border-radius: 12px; font-size: 13px; }
+
+/* ── Mobile-first improvements ───────────────────────── */
+@media (max-width: 900px) {
+  /* home-wrap safe-area bottom for bottom nav */
+  .home-wrap { padding-bottom: calc(80px + env(safe-area-inset-bottom, 0px)); }
+
+  /* bottom nav with proper safe-area */
+  .bottom-nav {
+    padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
+  }
+  .bottom-nav-items { height: 54px; }
+
+  /* toast above bottom nav on mobile */
+  .toast { bottom: calc(80px + env(safe-area-inset-bottom, 0px) + 8px); right: 16px; }
+
+  /* tighter top nav on mobile */
+  .top-nav { padding: 0 14px; height: 50px; }
+
+  /* section cards: slightly tighter on mobile */
+  .section-card-header { padding: 10px 14px; }
+  .section-card-body   { padding: 12px 14px; }
+
+  /* stat-bar smaller font on very small screens */
+  .stat-bar-value { font-size: 19px; }
+
+  /* bot status name slightly smaller */
+  .bot-status-name { font-size: 12px; }
+}
+
+@media (max-width: 480px) {
+  /* record bar: 3-column on small phones */
+  .record-tile-val { font-size: 18px; }
+  .record-tile { padding: 10px 8px; }
+
+  /* stat tiles: smaller value */
+  .stat-tile-val { font-size: 24px; }
+
+  /* signal card body: single column */
+  .signal-card-header { padding: 9px 12px 9px 14px; }
+
+  /* hero card: tighter */
+  .hero-card-hdr { padding: 10px 14px; }
+  .hero-card-body { padding: 14px; }
+}
+
+/* ── "bg-card" alias for landing/pricing compatibility ── */
+:root { --bg-card: var(--bg-surface); }
