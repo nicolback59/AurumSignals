@@ -19,9 +19,6 @@
       .main-layout { grid-template-columns: 1fr; }
       .right-col { display: none; }
     }
-    @media (max-width: 640px) {
-      .tv-row { grid-template-columns: 1fr; }
-    }
   </style>
 </head>
 <body>
@@ -49,24 +46,6 @@
   </div>
 </header>
 
-<!-- ── TICKER TAPE ───────────────────────────────────── -->
-<div class="ticker-wrap">
-  <div class="tradingview-widget-container" style="height:46px">
-    <div class="tradingview-widget-container__widget"></div>
-    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
-    {
-      "symbols":[
-        {"proName":"CME_MINI:NQ1!","title":"NQ Futures"},
-        {"proName":"COMEX:GC1!","title":"Gold GC"},
-        {"proName":"CME_MINI:MNQ1!","title":"MNQ"},
-        {"proName":"COMEX:MGC1!","title":"Micro Gold"}
-      ],
-      "showSymbolLogo":true,"isTransparent":true,"displayMode":"adaptive",
-      "colorTheme":"dark","locale":"en"
-    }
-    </script>
-  </div>
-</div>
 
 <!-- ── STAT BAR ─────────────────────────────────────── -->
 <div class="stat-bar">
@@ -156,29 +135,6 @@
       </div>
     </div>
 
-    <!-- TradingView Mini Charts -->
-    <div class="tv-row">
-      <div class="tv-box">
-        <div class="tv-box-lbl">NQ E-MINI (CME)</div>
-        <div class="tradingview-widget-container" style="height:100%">
-          <div class="tradingview-widget-container__widget" style="height:100%"></div>
-          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
-          {"symbol":"CME_MINI:NQ1!","width":"100%","height":"230","locale":"en","dateRange":"1D",
-           "colorTheme":"dark","isTransparent":true,"autosize":false,"largeChartUrl":""}
-          </script>
-        </div>
-      </div>
-      <div class="tv-box">
-        <div class="tv-box-lbl">GOLD GC (COMEX)</div>
-        <div class="tradingview-widget-container" style="height:100%">
-          <div class="tradingview-widget-container__widget" style="height:100%"></div>
-          <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
-          {"symbol":"COMEX:GC1!","width":"100%","height":"230","locale":"en","dateRange":"1D",
-           "colorTheme":"dark","isTransparent":true,"autosize":false,"largeChartUrl":""}
-          </script>
-        </div>
-      </div>
-    </div>
 
     <!-- Recent Backtest Runs -->
     <div class="section-card">
@@ -289,17 +245,17 @@ const CHART_OPTS = {
   maintainAspectRatio: false,
   plugins: {
     legend: {
-      labels: { color: '#48486a', font: { size: 10, family: 'JetBrains Mono, Consolas' } },
+      labels: { color: '#5a5046', font: { size: 10, family: 'JetBrains Mono, Consolas' } },
     },
   },
   scales: {
     x: {
-      ticks: { color: '#48486a', font: { size: 9 }, maxTicksLimit: 10 },
-      grid:  { color: 'rgba(255,255,255,.04)' },
+      ticks: { color: '#5a5046', font: { size: 9 }, maxTicksLimit: 10 },
+      grid:  { color: 'rgba(220,200,170,.05)' },
     },
     y: {
-      ticks: { color: '#48486a', font: { size: 9 } },
-      grid:  { color: 'rgba(255,255,255,.04)' },
+      ticks: { color: '#5a5046', font: { size: 9 } },
+      grid:  { color: 'rgba(220,200,170,.05)' },
     },
   },
 };
@@ -319,15 +275,15 @@ function buildWinRateChart(inst) {
   const datasets = [];
   if (inst === 'MNQ' || inst === 'ALL') datasets.push({
     label: 'MNQ Win %',
-    borderColor: '#4db8ff',
-    backgroundColor: 'rgba(77,184,255,.06)',
+    borderColor: '#3d9ec8',
+    backgroundColor: 'rgba(61,158,200,.07)',
     pointRadius: 3, pointHoverRadius: 5, tension: 0.3, fill: true,
     data: mnqRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
   });
   if (inst === 'MGC' || inst === 'ALL') datasets.push({
     label: 'MGC Win %',
-    borderColor: '#f5c542',
-    backgroundColor: 'rgba(245,197,66,.05)',
+    borderColor: '#c89022',
+    backgroundColor: 'rgba(200,144,34,.06)',
     pointRadius: 3, pointHoverRadius: 5, tension: 0.3,
     data: mgcRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
   });
@@ -341,7 +297,7 @@ function buildWinRateChart(inst) {
       plugins: {
         ...CHART_OPTS.plugins,
         annotation: { annotations: {
-          target: { type:'line', yMin:50, yMax:50, borderColor:'rgba(0,212,160,.2)', borderWidth:1, borderDash:[4,4] },
+          target: { type:'line', yMin:50, yMax:50, borderColor:'rgba(29,190,134,.2)', borderWidth:1, borderDash:[4,4] },
         }},
       },
       scales: {
@@ -364,8 +320,8 @@ function buildActivityChart() {
       labels: recent.map(r => r.run_at.slice(5,16).replace('T',' ')),
       datasets: [{
         label: 'Trades Tested',
-        backgroundColor: recent.map(r => r.instrument === 'MNQ' ? 'rgba(77,184,255,.4)' : 'rgba(245,197,66,.35)'),
-        borderColor:      recent.map(r => r.instrument === 'MNQ' ? '#4db8ff' : '#f5c542'),
+        backgroundColor: recent.map(r => r.instrument === 'MNQ' ? 'rgba(61,158,200,.4)' : 'rgba(200,144,34,.38)'),
+        borderColor:      recent.map(r => r.instrument === 'MNQ' ? '#3d9ec8' : '#c89022'),
         borderWidth: 1,
         borderRadius: 3,
         data: recent.map(r => r.trades_found),
