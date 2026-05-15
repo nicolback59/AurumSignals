@@ -465,7 +465,7 @@ app.post('/api/ntfy/test', async (req, res) => {
   const url     = `${NTFY_URL}/${NTFY_TOPIC}`;
   const headers = {
     'Content-Type': 'text/plain',
-    'Title':    'NQ Signal Pro - Test Notification',
+    'Title':    'Aurum Signals — Alert',
     'Priority': 'default',
     'Tags':     'bell',
   };
@@ -1192,7 +1192,7 @@ app.get('/api/evolution/status', (req, res) => {
 // AUTH + SUBSCRIPTION SYSTEM
 // ══════════════════════════════════════════════════════════════════════════════
 
-const SESSION_COOKIE = 'nqsp_sid';
+const SESSION_COOKIE = 'aurum_sid';
 const SESSION_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 
 function parseCookies(header) {
@@ -1331,6 +1331,75 @@ app.get('/api/auth/me', (req, res) => {
     subscriptionStatus: user.subscription_status } });
 });
 
+// ── Password Reset ───────────────────────────────────────────────────────────
+// Modular design: swap sendResetEmail() for real SMTP later without touching routes.
+
+const RESET_TTL_MS = 60 * 60 * 1000; // 1 hour
+const SITE_URL = (process.env.SITE_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
+
+async function sendResetEmail(email, token) {
+  const link = `${SITE_URL}/reset-password?token=${token}`;
+  // If SMTP is configured, plug in nodemailer here.
+  // For now, log the link so admins can share it manually during development.
+  console.log(`[auth/forgot-password] Reset link for ${email}: ${link}`);
+}
+
+app.post('/api/auth/forgot-password', async (req, res) => {
+  // Always return 200 regardless of whether email exists — prevents enumeration.
+  try {
+    const { email } = req.body || {};
+    if (!email?.trim() || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      return res.status(400).json({ error: 'Valid email required' });
+    }
+    const user = db.prepare('SELECT id, email FROM users WHERE email = ?').get(email.toLowerCase());
+    if (user) {
+      // Invalidate existing tokens for this user
+      db.prepare('DELETE FROM password_reset_tokens WHERE user_id = ?').run(user.id);
+      const token = crypto.randomBytes(32).toString('hex');
+      const exp   = Date.now() + RESET_TTL_MS;
+      db.prepare('INSERT INTO password_reset_tokens (token, user_id, expires_at) VALUES (?, ?, ?)').run(token, user.id, exp);
+      await sendResetEmail(user.email, token);
+    }
+    res.json({ ok: true, message: 'If that email is registered you will receive a reset link.' });
+  } catch (err) {
+    console.error('[auth/forgot-password]', err.message);
+    res.status(500).json({ error: 'Request failed — please try again' });
+  }
+});
+
+app.post('/api/auth/reset-password', async (req, res) => {
+  try {
+    const { token, password } = req.body || {};
+    if (!token || !password) return res.status(400).json({ error: 'Token and password required' });
+    if (password.length < 8) return res.status(400).json({ error: 'Password must be at least 8 characters' });
+
+    const row = db.prepare(
+      'SELECT * FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > ?'
+    ).get(token, Date.now());
+    if (!row) return res.status(400).json({ error: 'Reset link is invalid or has expired. Please request a new one.' });
+
+    const hash = await hashPassword(password);
+    db.prepare('UPDATE users SET password_hash = ? WHERE id = ?').run(hash, row.user_id);
+    // Mark token used and invalidate all sessions for security
+    db.prepare('UPDATE password_reset_tokens SET used = 1 WHERE token = ?').run(token);
+    db.prepare('DELETE FROM user_sessions WHERE user_id = ?').run(row.user_id);
+
+    res.json({ ok: true, message: 'Password updated. Please sign in.' });
+  } catch (err) {
+    console.error('[auth/reset-password]', err.message);
+    res.status(500).json({ error: 'Reset failed — please try again' });
+  }
+});
+
+app.get('/api/auth/verify-reset-token', (req, res) => {
+  const { token } = req.query;
+  if (!token) return res.status(400).json({ valid: false });
+  const row = db.prepare(
+    'SELECT id FROM password_reset_tokens WHERE token = ? AND used = 0 AND expires_at > ?'
+  ).get(token, Date.now());
+  res.json({ valid: !!row });
+});
+
 // ── Stripe Billing ────────────────────────────────────────────────────────────
 
 const STRIPE_SECRET    = process.env.STRIPE_SECRET_KEY;
@@ -1434,11 +1503,13 @@ app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest-d
 app.get('/journal',  (req, res) => res.sendFile(path.join(__dirname, 'journal.html')));
 app.get('/reports',  (req, res) => res.sendFile(path.join(__dirname, 'reports.html')));
 app.get('/news',     (req, res) => res.sendFile(path.join(__dirname, 'news.html')));
-app.get('/setup',    (req, res) => res.sendFile(path.join(__dirname, 'setup.html')));
+app.get('/setup',           (req, res) => res.sendFile(path.join(__dirname, 'setup.html')));
+app.get('/forgot-password', (req, res) => res.sendFile(path.join(__dirname, 'forgot-password.html')));
+app.get('/reset-password',  (req, res) => res.sendFile(path.join(__dirname, 'reset-password.html')));
 
 // ── START SERVER + SCANNER ────────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`NQ Signal Pro V3  →  http://localhost:${PORT}`);
+  console.log(`Aurum Signals → http://localhost:${PORT}`);
   console.log(`SQLite            →  ${DB_PATH}`);
 
   // Start scanner in-process so the scanner is ALWAYS running when the server is running.

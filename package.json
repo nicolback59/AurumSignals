@@ -1,7 +1,7 @@
 {
-  "name": "nq-signal-pro-v3",
-  "version": "3.0.0",
-  "description": "NQ Signal Pro V3 — TradingView webhook receiver and live signal dashboard for NQ/MNQ futures",
+  "name": "aurum-signals",
+  "version": "1.0.0",
+  "description": "Aurum Signals — Institutional-grade signal intelligence for NQ and Gold futures traders",
   "main": "server.js",
   "scripts": {
     "start": "node --max-old-space-size=400 --expose-gc server.js",
