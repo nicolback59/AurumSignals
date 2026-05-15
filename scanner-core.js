@@ -39,6 +39,7 @@ const {
 const {
   buildAlertPayload, flattenPayload, buildNtfyBody, buildNtfyHeaders,
 } = require('./signals/alert-payload');
+const { evaluateTPViability } = require('./signals/tp-viability');
 const {
   getAdaptiveMinScore, getMarketRegime, getLearnedThreshold,
   updateLearnedThresholds, updateLearningFromLiveSignals,
@@ -676,6 +677,27 @@ class Scanner extends EventEmitter {
   // ── Signal storage ────────────────────────────────────────────────────────────
 
   _storeSignal(signal) {
+    // Evaluate TP2/TP3 viability before storage.
+    // Nulls out tp2/tp3 (and their win probs) when the adjusted win probability
+    // doesn't clear the threshold — so they won't appear on the signal card,
+    // ntfy notification, or TP-hit tracking.
+    try {
+      const tpv = evaluateTPViability(signal);
+      if (!tpv.tp2Viable) {
+        signal.tp2 = null; signal.win_prob_tp2 = null;
+        if (!tpv.tp3Viable) signal.tp3 = null, signal.win_prob_tp3 = null;
+      }
+      if (signal.tp2 != null && !tpv.tp3Viable) {
+        signal.tp3 = null; signal.win_prob_tp3 = null;
+      }
+      this._log(
+        `📊 TP viability #? ${signal.instrument} ${signal.direction}: ` +
+        `TP2=${tpv.tp2Viable ? tpv.tp2AdjProb + '%✓' : tpv.tp2AdjProb + '%✗'} ` +
+        `TP3=${tpv.tp3Viable ? tpv.tp3AdjProb + '%✓' : tpv.tp3AdjProb + '%✗'} ` +
+        `[${tpv.factors}]`
+      );
+    } catch { /* never crash signal storage */ }
+
     // Attach predicted win rate before storage — this is the pre-completion success estimate
     try {
       const pred = getPredictedWinRate(this.db, signal);
