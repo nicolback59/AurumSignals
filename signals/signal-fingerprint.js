@@ -29,7 +29,10 @@ const _registry = new Map();
  * MGC: bucket = 0.5 pts
  */
 function _quantize(entry, instrument) {
-  const bucket = instrument === 'MNQ' ? 2.5 : 0.5;
+  // Bucket wide enough to absorb small price drifts between scan ticks.
+  // MNQ: 15 pts — prevents near-duplicate signals within ~7.5 pts of each other
+  // MGC: 3 pts  — prevents near-duplicate signals within ~1.5 pts
+  const bucket = instrument === 'MNQ' ? 15 : 3;
   return Math.round(entry / bucket) * bucket;
 }
 

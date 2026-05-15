@@ -240,7 +240,7 @@ class Scanner extends EventEmitter {
 
       getWinSignalsPendingTPs: db.prepare(`
         SELECT s.id, s.direction, s.entry, s.tp1, s.tp2, s.tp3,
-               s.instrument, s.strategy_name, s.session,
+               s.instrument, s.strategy_name, s.session, s.trade_style,
                o.exit_at AS tp1_hit_at,
                CASE WHEN h2.id IS NOT NULL THEN 1 ELSE 0 END AS tp2_done,
                CASE WHEN h3.id IS NOT NULL THEN 1 ELSE 0 END AS tp3_done
@@ -630,8 +630,21 @@ class Scanner extends EventEmitter {
     const pending = this._stmts.getWinSignalsPendingTPs.all(instrument);
     if (!pending.length) return;
 
+    // How long after TP1 hit to keep tracking for TP2/TP3
+    const TP_TRACK_MAX_MS = {
+      scalp:    2  * 3_600_000,   //  2 hours
+      intraday: 6  * 3_600_000,   //  6 hours
+      swing:    24 * 3_600_000,   // 24 hours
+    };
+    const now = Date.now();
+
     for (const sig of pending) {
       const tp1HitMs = new Date(sig.tp1_hit_at).getTime();
+
+      // Skip if this trade style's TP tracking window has expired
+      const maxMs = TP_TRACK_MAX_MS[sig.trade_style] ?? 6 * 3_600_000;
+      if (now - tp1HitMs > maxMs) continue;
+
       const afterBars = bars.filter(b => new Date(b.timestamp).getTime() > tp1HitMs);
       if (!afterBars.length) continue;
 
