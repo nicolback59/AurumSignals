@@ -136,7 +136,15 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       rawRisk = sl - entry;
     }
 
-    if (rawRisk < 5 || rawRisk > 6 * atr) continue;
+    // Cap rawRisk at 1 ATR so TP1 (2R = 2 ATR) is reachable inside the 24h
+    // backtest resolution window. Wide structural stops produce 2R targets of
+    // 200-400+ pts which NQ cannot reach in 24 h, causing 0% win rate.
+    if (rawRisk > atr) {
+      sl      = isBull ? entry - atr : entry + atr;
+      rawRisk = atr;
+    }
+
+    if (rawRisk < 10) continue;
 
     // ── Take-profit levels ────────────────────────────────────────────────────
     const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;

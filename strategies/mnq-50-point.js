@@ -76,14 +76,16 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // ── Volume spike (bonus but not required) ─────────────────────────────────────
   const volSpike = hasVolumeSpike(bars, 20, 1.3);
 
-  // ── Breakout check — accept near-breakout (within 0.5 ATR of range edge) ──────
-  const breakoutLong  = last.close > rangeHigh - 0.5 * atr;
-  const breakoutShort = last.close < rangeLow  + 0.5 * atr;
+  // ── Breakout check — accept near-breakout (within 1.0 ATR of range edge) ──────
+  // Widened from 0.5 ATR to 1.0 ATR to catch bars that close just inside the
+  // consolidation boundary but are already committed to the breakout direction.
+  const breakoutLong  = last.close > rangeHigh - 1.0 * atr;
+  const breakoutShort = last.close < rangeLow  + 1.0 * atr;
   const vwapAligned   = (breakoutLong && last.close > vwap) || (breakoutShort && last.close < vwap);
 
-  // Also accept: retest of breakout level
-  const retestLong  = !breakoutLong  && hadRetestAbove(bars, rangeHigh, atr);
-  const retestShort = !breakoutShort && hadRetestBelow(bars, rangeLow,  atr);
+  // Also accept: retest of breakout level (lookback extended to 6 bars)
+  const retestLong  = !breakoutLong  && hadRetestAbove(bars, rangeHigh, atr, 6);
+  const retestShort = !breakoutShort && hadRetestBelow(bars, rangeLow,  atr, 6);
 
   const directions = [];
   if (breakoutLong  || retestLong)  directions.push('LONG');
