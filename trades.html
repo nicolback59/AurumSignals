@@ -736,12 +736,12 @@ function renderPnlChart() {
     cum += t.pnl_pts;
     labels.push(hhmm(t.received_at));
     data.push(+cum.toFixed(1));
-    ptColors.push(cum >= 0 ? '#00d4a0' : '#ff3d5a');
+    ptColors.push(cum >= 0 ? '#2e9e6a' : '#a03838');
   }
 
   const finalVal  = data[data.length - 1] ?? 0;
-  const lineColor = finalVal >= 0 ? '#00d4a0' : '#ff3d5a';
-  const fillColor = finalVal >= 0 ? 'rgba(0,212,160,.07)' : 'rgba(255,61,90,.07)';
+  const lineColor = finalVal >= 0 ? '#2e9e6a' : '#a03838';
+  const fillColor = finalVal >= 0 ? 'rgba(46,158,106,.07)' : 'rgba(160,56,56,.07)';
 
   const ctx = document.getElementById('pnlChart').getContext('2d');
   if (pnlChart) pnlChart.destroy();
