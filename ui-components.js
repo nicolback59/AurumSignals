@@ -7,6 +7,13 @@
 const fmt  = (v, d = 2) => v != null ? Number(v).toFixed(d) : '—';
 const fmtP = v => v != null ? Number(v).toFixed(0) + '%' : '—';
 
+// Format a P&L point value cleanly: rounds to 2dp, +/- prefix, ' pts' suffix
+function fmtPts(v) {
+  if (v == null) return '—';
+  const n = Number(v);
+  return (n > 0 ? '+' : '') + n.toFixed(2) + ' pts';
+}
+
 function escH(s) {
   if (s == null) return '';
   return String(s)
@@ -103,7 +110,7 @@ function setupBadge(setup) {
 
 function outcomeBadge(result, pnlPts) {
   if (!result) return '';
-  const pts = pnlPts != null ? ` ${pnlPts >= 0 ? '+' : ''}${pnlPts}` : '';
+  const pts = pnlPts != null ? ` ${Number(pnlPts) > 0 ? '+' : ''}${Number(pnlPts).toFixed(2)}` : '';
   return `<span class="badge badge-${result.toLowerCase()}">${result}${pts}</span>`;
 }
 
@@ -143,7 +150,7 @@ function probBar(label, val, cls) {
 function outcomeSection(sig) {
   if (sig.result) {
     const pts = sig.pnl_pts != null && sig.result !== 'EXPIRED'
-      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${sig.pnl_pts > 0 ? '+' : ''}${sig.pnl_pts}pts</span>`
+      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${fmtPts(sig.pnl_pts)}</span>`
       : '';
     const exitTs = sig.exit_at
       ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:8px">${fmtDatetime(sig.exit_at)}</span>`
@@ -259,12 +266,19 @@ function wrClass(rate) {
   return 'wr-lo';
 }
 
+/* ── SVG icon strings for bottom nav ─────────────────── */
+const _ICON_HOME     = `<svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>`;
+const _ICON_SIGNAL   = `<svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>`;
+const _ICON_TRADES   = `<svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="20" x2="18" y2="10"/><line x1="12" y1="20" x2="12" y2="4"/><line x1="6" y1="20" x2="6" y2="14"/></svg>`;
+const _ICON_JOURNAL  = `<svg width="18" height="18" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>`;
+
 /* ── Bottom nav ──────────────────────────────────────── */
 function buildBottomNav(activePage) {
   const pages = [
-    { href: '/',         icon: '◈', label: 'Signals',  key: 'signals'  },
-    { href: '/backtest', icon: '◉', label: 'Backtest', key: 'backtest' },
-    { href: '/journal',  icon: '◎', label: 'Journal',  key: 'journal'  },
+    { href: '/',         icon: _ICON_HOME,    label: 'Home',    key: 'home'     },
+    { href: '/signals',  icon: _ICON_SIGNAL,  label: 'Signals', key: 'signals'  },
+    { href: '/trades',   icon: _ICON_TRADES,  label: 'Trades',  key: 'trades'   },
+    { href: '/journal',  icon: _ICON_JOURNAL, label: 'Journal', key: 'journal'  },
   ];
   return `<nav class="bottom-nav">
     <div class="bottom-nav-items">
@@ -275,4 +289,67 @@ function buildBottomNav(activePage) {
         </a>`).join('')}
     </div>
   </nav>`;
+}
+
+/* ── User auth menu (top-nav) ────────────────────────── */
+const _ICON_CHEVRON = `<svg width="10" height="10" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><polyline points="6 9 12 15 18 9"/></svg>`;
+
+async function initUserMenu(containerId = 'navUser') {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  el.style.cssText = 'position:relative;display:flex;align-items:center';
+
+  try {
+    const res = await fetch('/api/auth/me', { credentials: 'same-origin' });
+
+    if (!res.ok) {
+      el.innerHTML = `
+        <a href="/login" style="font-size:12px;font-weight:500;color:var(--text-muted);text-decoration:none;padding:4px 10px;border:1px solid var(--border-default);border-radius:6px;transition:150ms ease">Sign In</a>
+        <a href="/register" style="font-size:12px;font-weight:600;color:#fff;background:var(--accent);text-decoration:none;padding:4px 12px;border-radius:6px;margin-left:6px">Start Free</a>`;
+      return;
+    }
+
+    const u = await res.json();
+    const initial    = (u.name || u.email || '?')[0].toUpperCase();
+    const planColor  = u.plan === 'elite' ? 'var(--yellow)' : u.plan === 'pro' ? 'var(--accent)' : 'var(--text-muted)';
+    const planTxt    = (u.plan || 'free').toUpperCase();
+    const displayName = escH(u.name || u.email.split('@')[0]);
+
+    el.innerHTML = `
+      <button id="_nuBtn"
+        style="display:flex;align-items:center;gap:6px;background:var(--bg-elevated);border:1px solid var(--border-default);border-radius:20px;padding:3px 10px 3px 3px;cursor:pointer;color:var(--text-secondary);transition:150ms ease"
+        onmouseover="this.style.borderColor='var(--border-strong)'" onmouseout="this.style.borderColor='var(--border-default)'">
+        <span style="width:22px;height:22px;border-radius:50%;background:var(--accent-glow);border:1px solid var(--accent-border);display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;color:var(--accent);flex-shrink:0">${escH(initial)}</span>
+        <span style="font-size:11px;font-weight:600;max-width:90px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${displayName}</span>
+        <span style="font-size:9px;font-weight:700;letter-spacing:.05em;color:${planColor}">${escH(planTxt)}</span>
+        ${_ICON_CHEVRON}
+      </button>
+      <div id="_nud" style="display:none;position:absolute;top:calc(100% + 8px);right:0;min-width:200px;background:var(--bg-elevated);border:1px solid var(--border-strong);border-radius:12px;box-shadow:0 8px 32px rgba(0,0,0,.55);padding:6px;z-index:9999">
+        <div style="padding:8px 12px 10px;border-bottom:1px solid var(--border-subtle);margin-bottom:4px">
+          <div style="font-size:12px;font-weight:600;color:var(--text-primary)">${displayName}</div>
+          <div style="font-size:10px;color:var(--text-muted);margin-top:2px">${escH(u.email)}</div>
+          <div style="margin-top:6px"><span style="font-size:9px;font-weight:700;letter-spacing:.06em;padding:2px 8px;border-radius:20px;color:${planColor};border:1px solid;border-color:currentColor;background:rgba(255,255,255,.04)">${escH(planTxt)}</span></div>
+        </div>
+        ${u.plan !== 'elite' ? `<a href="/pricing" style="display:block;padding:7px 12px;border-radius:7px;font-size:12px;color:var(--accent);text-decoration:none;font-weight:500;transition:150ms ease" onmouseover="this.style.background='var(--accent-glow)'" onmouseout="this.style.background='transparent'">Upgrade Plan</a>` : ''}
+        <button onclick="signOut()" style="display:block;width:100%;padding:7px 12px;border-radius:7px;background:transparent;border:none;font:inherit;font-size:12px;color:var(--red);cursor:pointer;text-align:left;transition:150ms ease" onmouseover="this.style.background='var(--red-glow)'" onmouseout="this.style.background='transparent'">Sign Out</button>
+      </div>`;
+
+    // Toggle dropdown
+    document.getElementById('_nuBtn').addEventListener('click', (e) => {
+      e.stopPropagation();
+      const dd = document.getElementById('_nud');
+      dd.style.display = dd.style.display === 'block' ? 'none' : 'block';
+    });
+
+    // Close on outside click
+    document.addEventListener('click', () => {
+      const dd = document.getElementById('_nud');
+      if (dd) dd.style.display = 'none';
+    });
+  } catch { /* auth is optional — silent fail */ }
+}
+
+async function signOut() {
+  try { await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' }); } catch {}
+  window.location.href = '/login';
 }

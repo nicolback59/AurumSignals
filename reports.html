@@ -209,6 +209,7 @@
   </div>
   <div class="top-nav-right">
     <span class="refresh-label" id="refreshLbl">—</span>
+    <div id="navUser"></div>
   </div>
 </header>
 
@@ -776,6 +777,7 @@ loadOpeningCandle();
 loadEdgeHealth();
 
 document.getElementById('refreshLbl').textContent = new Date().toLocaleTimeString();
+initUserMenu();
 </script>
 </body>
 </html>
