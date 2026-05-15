@@ -337,35 +337,9 @@
     .bot-status-lbl.unknown  { color: var(--text-muted); }
     .bot-status-sub  { font-family: var(--font-mono); font-size: 9px; color: var(--text-muted); margin-top: 1px; }
 
-    /* ── Live Charts ────────────────────────────────── */
-    .chart-pair {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 10px;
-      margin-bottom: 14px;
-    }
-    .chart-wrap {
-      border-radius: 10px;
-      overflow: hidden;
-      border: 1px solid var(--border-default);
-      background: var(--bg-surface);
-    }
-    .chart-lbl {
-      padding: 7px 12px;
-      font-size: 10px;
-      font-weight: 700;
-      letter-spacing: .06em;
-      text-transform: uppercase;
-      color: var(--text-muted);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-    .tradingview-widget-container { height: 240px; width: 100%; }
-    .tradingview-widget-container__widget { height: 100%; width: 100%; }
-
     /* ── Responsive ────────────────────────────────── */
     @media (max-width: 600px) {
       .record-bar { grid-template-columns: repeat(3, 1fr); }
-      .chart-pair { grid-template-columns: 1fr; }
     }
     @media (max-width: 480px) {
       .levels-row { grid-template-columns: repeat(3, 1fr); }
@@ -461,7 +435,7 @@
       <div class="bot-status-dot unknown" id="mnqDot"></div>
       <div style="flex:1;min-width:0">
         <div class="bot-status-name" style="color:var(--mnq)">MNQ Scanner</div>
-        <div class="bot-status-sub" id="mnqScanSub" style="font-size:10px;color:var(--text-muted);margin-top:2px">initializing…</div>
+        <div class="bot-status-sub" id="mnqScanSub" style="font-size:10px;color:var(--text-muted);margin-top:2px">starting…</div>
       </div>
       <div class="bot-status-lbl unknown" id="mnqStatus" style="font-size:10px;font-weight:700;letter-spacing:.05em">—</div>
     </div>
@@ -469,31 +443,9 @@
       <div class="bot-status-dot unknown" id="mgcDot"></div>
       <div style="flex:1;min-width:0">
         <div class="bot-status-name" style="color:var(--mgc)">MGC Scanner</div>
-        <div class="bot-status-sub" id="mgcScanSub" style="font-size:10px;color:var(--text-muted);margin-top:2px">initializing…</div>
+        <div class="bot-status-sub" id="mgcScanSub" style="font-size:10px;color:var(--text-muted);margin-top:2px">starting…</div>
       </div>
       <div class="bot-status-lbl unknown" id="mgcStatus" style="font-size:10px;font-weight:700;letter-spacing:.05em">—</div>
-    </div>
-  </div>
-
-  <!-- ── Live Charts ─────────────────────────────────────── -->
-  <div class="chart-pair">
-    <div class="chart-wrap">
-      <div class="chart-lbl">MNQ — Micro NQ Futures · 1D</div>
-      <div class="tradingview-widget-container" style="height:240px">
-        <div class="tradingview-widget-container__widget" style="height:100%"></div>
-        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
-        {"symbol":"CME_MINI:MNQ1!","width":"100%","height":"240","locale":"en","dateRange":"1D","colorTheme":"dark","isTransparent":true,"autosize":false,"largeChartUrl":"","chartOnly":false,"noTimeScale":false}
-        </script>
-      </div>
-    </div>
-    <div class="chart-wrap">
-      <div class="chart-lbl">MGC — Micro Gold Futures · 1D</div>
-      <div class="tradingview-widget-container" style="height:240px">
-        <div class="tradingview-widget-container__widget" style="height:100%"></div>
-        <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-mini-symbol-overview.js" async>
-        {"symbol":"COMEX:MGC1!","width":"100%","height":"240","locale":"en","dateRange":"1D","colorTheme":"dark","isTransparent":true,"autosize":false,"largeChartUrl":"","chartOnly":false,"noTimeScale":false}
-        </script>
-      </div>
     </div>
   </div>
 
@@ -510,7 +462,7 @@
       <div class="empty-state" style="padding:28px 0 8px">
         <div class="empty-state-icon">◈</div>
         <div class="empty-state-title">No signals yet</div>
-        <div class="empty-state-desc">Waiting for TradingView webhook alerts.</div>
+        <div class="empty-state-desc">No signals yet. Waiting for webhook alerts.</div>
       </div>
     </div>
   </div>
@@ -753,14 +705,14 @@ function renderRecordBar(stats, journalSigs) {
 let _lastHeartbeatMs = 0;
 let _scanCount       = 0;
 
-function _applyBotStatus(online, subText) {
+function _applyBotStatus(online, subText, label) {
   const cls = online ? 'active' : 'inactive';
   for (const id of ['mnqDot', 'mgcDot']) {
     document.getElementById(id).className = `bot-status-dot ${cls}`;
   }
   for (const id of ['mnqStatus', 'mgcStatus']) {
     const el = document.getElementById(id);
-    el.textContent = online ? 'ACTIVE' : 'OFFLINE';
+    el.textContent = label || (online ? 'LIVE' : 'OFFLINE');
     el.className   = `bot-status-lbl ${cls}`;
   }
   for (const id of ['mnqScanSub', 'mgcScanSub']) {
@@ -774,10 +726,18 @@ async function renderBotStatus() {
     const d  = await r.json();
     _lastHeartbeatMs = Date.now();
     const isActive = d.online === true;
-    const subText  = isActive
-      ? `last scan ${d.ageMs != null ? Math.round(d.ageMs / 1000) + 's ago' : 'recently'}`
-      : 'scanner not responding';
-    _applyBotStatus(isActive, subText);
+    let label, subText;
+    if (isActive) {
+      const ageSec = d.ageMs != null ? Math.round(d.ageMs / 1000) : 0;
+      if (ageSec < 120)       { label = 'LIVE';     subText = `scan ${ageSec}s ago`; }
+      else if (ageSec < 600)  { label = 'UPDATING'; subText = `last scan ${Math.round(ageSec/60)}m ago`; }
+      else                    { label = 'STALE';    subText = `no scan for ${Math.round(ageSec/60)}m`; }
+    } else {
+      const mkt = getMarketContext();
+      label   = mkt.cls === 'closed' ? 'MKT CLOSED' : 'PAUSED';
+      subText = mkt.cls === 'closed' ? 'market closed' : 'scanner not responding';
+    }
+    _applyBotStatus(isActive, subText, label);
   } catch {
     _applyBotStatus(false, 'unavailable');
   }
@@ -793,7 +753,7 @@ function connectSSE() {
       const d = JSON.parse(e.data);
       _lastHeartbeatMs = Date.now();
       _scanCount = d.scanCount ?? _scanCount;
-      _applyBotStatus(true, `scan #${_scanCount} — just now`);
+      _applyBotStatus(true, `scan #${_scanCount} — just now`, 'LIVE');
     } catch { /* ignore */ }
   });
 
@@ -819,7 +779,7 @@ function connectSSE() {
     try {
       const d = JSON.parse(e.data);
       _scanCount = d.scanCount ?? _scanCount;
-      _applyBotStatus(true, `scan #${_scanCount} — ${d.instrument ?? ''} ${d.fired ? '▲ signal fired' : 'watching…'}`);
+      _applyBotStatus(true, `scan #${_scanCount} — ${d.instrument ?? ''} ${d.fired ? '▲ signal fired' : 'watching…'}`, 'LIVE');
     } catch { /* ignore */ }
   });
 
@@ -896,8 +856,8 @@ function renderPerfChart(journalSigs) {
   }
 
   const finalVal = data[data.length - 1] ?? 0;
-  const lineColor = finalVal >= 0 ? '#00d4a0' : '#ff3d5a';
-  const fillColor = finalVal >= 0 ? 'rgba(0,212,160,.08)' : 'rgba(255,61,90,.08)';
+  const lineColor = finalVal >= 0 ? '#1dbe86' : '#e04545';
+  const fillColor = finalVal >= 0 ? 'rgba(29,190,134,.08)' : 'rgba(224,69,69,.08)';
 
   const ctx = document.getElementById('perfChart').getContext('2d');
   if (perfChart) perfChart.destroy();
@@ -923,8 +883,8 @@ function renderPerfChart(journalSigs) {
       scales: {
         x: { display: false },
         y: {
-          ticks: { color: '#48486a', font: { size: 9 }, callback: v => v + 'pts' },
-          grid:  { color: 'rgba(255,255,255,.04)' },
+          ticks: { color: '#5a5046', font: { size: 9 }, callback: v => v + ' pts' },
+          grid:  { color: 'rgba(220,200,170,.05)' },
         },
       },
     },

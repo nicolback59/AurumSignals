@@ -6,7 +6,7 @@
   <title>NQ Signal Pro — Intelligence Reports</title>
   <link rel="stylesheet" href="/design-system.css">
   <style>
-    body { display: flex; flex-direction: column; min-height: 100dvh; background: var(--bg, #0a0a0f); }
+    body { display: flex; flex-direction: column; min-height: 100dvh; }
 
     .reports-layout {
       flex: 1;
@@ -20,15 +20,15 @@
     .tab-bar {
       display: flex;
       gap: 4px;
-      border-bottom: 1px solid rgba(255,255,255,.08);
+      border-bottom: 1px solid rgba(220,200,170,.08);
       margin-bottom: 24px;
       flex-wrap: wrap;
     }
     .tab-btn {
       background: none;
       border: none;
-      color: rgba(255,255,255,.45);
-      font: 600 13px/1 var(--font-mono, monospace);
+      color: rgba(237,231,217,.4);
+      font: 600 13px/1 var(--font-ui, sans-serif);
       letter-spacing: .04em;
       padding: 10px 18px;
       cursor: pointer;
@@ -36,16 +36,16 @@
       margin-bottom: -1px;
       transition: color .15s, border-color .15s;
     }
-    .tab-btn:hover  { color: rgba(255,255,255,.75); }
-    .tab-btn.active { color: #fff; border-bottom-color: var(--accent, #6c63ff); }
+    .tab-btn:hover  { color: rgba(237,231,217,.75); }
+    .tab-btn.active { color: var(--text-primary); border-bottom-color: var(--accent, #7a62e8); }
 
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
 
     /* ── Report block ── */
     .report-card {
-      background: rgba(255,255,255,.03);
-      border: 1px solid rgba(255,255,255,.07);
+      background: rgba(220,200,170,.03);
+      border: 1px solid rgba(220,200,170,.08);
       border-radius: 10px;
       padding: 20px 24px;
       margin-bottom: 20px;
@@ -56,20 +56,20 @@
       font-weight: 700;
       letter-spacing: .06em;
       text-transform: uppercase;
-      color: var(--accent, #6c63ff);
+      color: var(--accent, #7a62e8);
     }
     .report-pre {
       font: 12px/1.65 var(--font-mono, monospace);
-      color: rgba(255,255,255,.78);
+      color: rgba(237,231,217,.82);
       white-space: pre-wrap;
       word-break: break-word;
       margin: 0;
     }
-    .report-pre .hi-green  { color: #4ade80; }
-    .report-pre .hi-red    { color: #f87171; }
-    .report-pre .hi-yellow { color: #fbbf24; }
-    .report-pre .hi-blue   { color: #60a5fa; }
-    .report-pre .hi-purple { color: #a78bfa; }
+    .report-pre .hi-green  { color: #1dbe86; }
+    .report-pre .hi-red    { color: #e04545; }
+    .report-pre .hi-yellow { color: #c89022; }
+    .report-pre .hi-blue   { color: #3d9ec8; }
+    .report-pre .hi-purple { color: #a882e8; }
 
     /* ── Section grids ── */
     .metrics-grid {
@@ -79,8 +79,8 @@
       margin-bottom: 20px;
     }
     .metric-box {
-      background: rgba(255,255,255,.04);
-      border: 1px solid rgba(255,255,255,.07);
+      background: rgba(220,200,170,.04);
+      border: 1px solid rgba(220,200,170,.07);
       border-radius: 8px;
       padding: 12px 14px;
     }
@@ -88,36 +88,36 @@
       font: 600 10px/1 var(--font-mono, monospace);
       letter-spacing: .08em;
       text-transform: uppercase;
-      color: rgba(255,255,255,.4);
+      color: var(--text-muted);
       margin-bottom: 6px;
     }
     .metric-box .val {
-      font: 700 20px/1 var(--font-sans, sans-serif);
-      color: #fff;
+      font: 700 20px/1 var(--font-display, sans-serif);
+      color: var(--text-primary);
     }
-    .metric-box .val.green  { color: #4ade80; }
-    .metric-box .val.red    { color: #f87171; }
-    .metric-box .val.yellow { color: #fbbf24; }
+    .metric-box .val.green  { color: #1dbe86; }
+    .metric-box .val.red    { color: #e04545; }
+    .metric-box .val.yellow { color: #c89022; }
 
     /* ── Session table ── */
     .data-table {
       width: 100%;
       border-collapse: collapse;
-      font: 12px/1.5 var(--font-mono, monospace);
-      color: rgba(255,255,255,.78);
+      font: 12px/1.5 var(--font-ui, sans-serif);
+      color: rgba(237,231,217,.82);
     }
     .data-table th {
       text-align: left;
       font-size: 10px;
       letter-spacing: .07em;
       text-transform: uppercase;
-      color: rgba(255,255,255,.4);
-      border-bottom: 1px solid rgba(255,255,255,.08);
+      color: var(--text-muted);
+      border-bottom: 1px solid rgba(220,200,170,.08);
       padding: 6px 10px;
     }
     .data-table td {
       padding: 7px 10px;
-      border-bottom: 1px solid rgba(255,255,255,.04);
+      border-bottom: 1px solid rgba(220,200,170,.05);
     }
     .data-table tr:last-child td { border-bottom: none; }
 
@@ -129,11 +129,11 @@
       font-weight: 700;
       letter-spacing: .05em;
     }
-    .badge-green  { background: rgba(74,222,128,.15); color: #4ade80; }
-    .badge-red    { background: rgba(248,113,113,.15); color: #f87171; }
-    .badge-yellow { background: rgba(251,191,36,.15);  color: #fbbf24; }
-    .badge-gray   { background: rgba(255,255,255,.08); color: rgba(255,255,255,.5); }
-    .badge-purple { background: rgba(167,139,250,.15); color: #a78bfa; }
+    .badge-green  { background: rgba(29,190,134,.12);  color: #1dbe86; }
+    .badge-red    { background: rgba(224,69,69,.12);   color: #e04545; }
+    .badge-yellow { background: rgba(200,144,34,.12);  color: #c89022; }
+    .badge-gray   { background: rgba(220,200,170,.08); color: rgba(237,231,217,.5); }
+    .badge-purple { background: rgba(168,130,232,.12); color: #a882e8; }
 
     /* ── Controls ── */
     .controls-row {
@@ -144,29 +144,29 @@
       flex-wrap: wrap;
     }
     .week-picker {
-      background: rgba(255,255,255,.05);
-      border: 1px solid rgba(255,255,255,.12);
+      background: rgba(220,200,170,.05);
+      border: 1px solid rgba(220,200,170,.12);
       border-radius: 6px;
-      color: #fff;
+      color: var(--text-primary);
       font: 13px var(--font-mono, monospace);
       padding: 7px 12px;
     }
     .btn-sm {
-      background: rgba(108,99,255,.18);
-      border: 1px solid rgba(108,99,255,.4);
+      background: rgba(122,98,232,.15);
+      border: 1px solid rgba(122,98,232,.3);
       border-radius: 6px;
-      color: #a78bfa;
-      font: 600 12px var(--font-mono, monospace);
+      color: #a882e8;
+      font: 600 12px var(--font-ui, sans-serif);
       padding: 7px 14px;
       cursor: pointer;
       transition: background .15s;
     }
-    .btn-sm:hover { background: rgba(108,99,255,.32); }
+    .btn-sm:hover { background: rgba(122,98,232,.25); }
 
-    .loading-msg { color: rgba(255,255,255,.35); font: 13px var(--font-mono, monospace); padding: 24px 0; }
-    .error-msg   { color: #f87171; font: 13px var(--font-mono, monospace); padding: 24px 0; }
+    .loading-msg { color: rgba(237,231,217,.35); font: 13px var(--font-ui, sans-serif); padding: 24px 0; }
+    .error-msg   { color: #e04545; font: 13px var(--font-ui, sans-serif); padding: 24px 0; }
 
-    .divider { border: none; border-top: 1px solid rgba(255,255,255,.07); margin: 20px 0; }
+    .divider { border: none; border-top: 1px solid rgba(220,200,170,.07); margin: 20px 0; }
 
     /* ── Opening candle viz ── */
     .oc-grid {
@@ -175,17 +175,17 @@
       gap: 12px;
     }
     .oc-box {
-      background: rgba(255,255,255,.03);
-      border: 1px solid rgba(255,255,255,.07);
+      background: rgba(220,200,170,.03);
+      border: 1px solid rgba(220,200,170,.07);
       border-radius: 8px;
       padding: 14px;
     }
-    .oc-box .oc-session { font: 700 11px var(--font-mono, monospace); letter-spacing: .06em; text-transform: uppercase; color: rgba(255,255,255,.5); margin-bottom: 8px; }
-    .oc-box .oc-bias    { font: 700 15px var(--font-sans, sans-serif); margin-bottom: 6px; }
-    .oc-box .oc-stats   { font: 12px var(--font-mono, monospace); color: rgba(255,255,255,.5); }
-    .bull  { color: #4ade80; }
-    .bear  { color: #f87171; }
-    .neut  { color: rgba(255,255,255,.4); }
+    .oc-box .oc-session { font: 700 11px var(--font-mono, monospace); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
+    .oc-box .oc-bias    { font: 700 15px var(--font-display, sans-serif); margin-bottom: 6px; }
+    .oc-box .oc-stats   { font: 12px var(--font-mono, monospace); color: var(--text-secondary); }
+    .bull  { color: #1dbe86; }
+    .bear  { color: #e04545; }
+    .neut  { color: rgba(237,231,217,.4); }
   </style>
 </head>
 <body>
@@ -213,24 +213,6 @@
   </div>
 </header>
 
-<!-- ── TICKER TAPE ───────────────────────────────────── -->
-<div class="ticker-wrap">
-  <div class="tradingview-widget-container" style="height:46px">
-    <div class="tradingview-widget-container__widget"></div>
-    <script type="text/javascript" src="https://s3.tradingview.com/external-embedding/embed-widget-ticker-tape.js" async>
-    {
-      "symbols":[
-        {"proName":"CME_MINI:NQ1!","title":"NQ Futures"},
-        {"proName":"COMEX:GC1!","title":"Gold GC"},
-        {"proName":"CME_MINI:MNQ1!","title":"MNQ"},
-        {"proName":"COMEX:MGC1!","title":"Micro Gold"}
-      ],
-      "showSymbolLogo":true,"isTransparent":true,"displayMode":"adaptive",
-      "colorTheme":"dark","locale":"en"
-    }
-    </script>
-  </div>
-</div>
 
 <!-- ── MAIN ──────────────────────────────────────────── -->
 <div class="reports-layout">
@@ -246,7 +228,7 @@
   <div class="tab-panel active" id="tab-midweek">
     <div class="controls-row">
       <button class="btn-sm" id="btnForceMidweek">⟳ Regenerate</button>
-      <span style="color:rgba(255,255,255,.3);font:12px monospace" id="midweekMeta">—</span>
+      <span style="color:rgba(237,231,217,.35);font:12px monospace" id="midweekMeta">—</span>
     </div>
     <div id="midweekContent"><p class="loading-msg">Loading mid-week report…</p></div>
   </div>
@@ -254,11 +236,11 @@
   <!-- ── WEEKLY DEEP ────────────────────────────────────── -->
   <div class="tab-panel" id="tab-weekly">
     <div class="controls-row">
-      <label style="color:rgba(255,255,255,.4);font:12px monospace">Week of:</label>
+      <label style="color:rgba(237,231,217,.4);font:12px var(--font-ui,sans-serif)">Week of:</label>
       <input type="date" class="week-picker" id="weekPicker">
       <button class="btn-sm" id="btnLoadWeekly">Load</button>
       <button class="btn-sm" id="btnGenWeeklyTop" onclick="generateWeeklySummary()">Generate Learning</button>
-      <span style="color:rgba(255,255,255,.3);font:12px monospace" id="weeklyMeta">—</span>
+      <span style="color:rgba(237,231,217,.35);font:12px monospace" id="weeklyMeta">—</span>
     </div>
     <div id="weeklyContent"><p class="loading-msg">Select a week and click Load.</p></div>
   </div>
@@ -267,7 +249,7 @@
   <div class="tab-panel" id="tab-opening">
     <div class="controls-row">
       <button class="btn-sm" id="btnRefreshOC">⟳ Refresh</button>
-      <span style="color:rgba(255,255,255,.3);font:12px monospace" id="ocMeta">—</span>
+      <span style="color:rgba(237,231,217,.35);font:12px monospace" id="ocMeta">—</span>
     </div>
     <div id="ocContent"><p class="loading-msg">Loading opening candle data…</p></div>
   </div>
@@ -276,7 +258,7 @@
   <div class="tab-panel" id="tab-edge">
     <div class="controls-row">
       <button class="btn-sm" id="btnRefreshEdge">⟳ Refresh</button>
-      <span style="color:rgba(255,255,255,.3);font:12px monospace" id="edgeMeta">—</span>
+      <span style="color:rgba(237,231,217,.35);font:12px monospace" id="edgeMeta">—</span>
     </div>
     <div id="edgeContent"><p class="loading-msg">Loading edge health…</p></div>
   </div>
@@ -303,9 +285,9 @@ const fmtTs = ts => ts ? new Date(ts).toLocaleString() : '—';
 
 function colorWR(wr) {
   if (wr == null) return 'inherit';
-  if (wr >= 0.65) return '#4ade80';
-  if (wr >= 0.55) return '#fbbf24';
-  return '#f87171';
+  if (wr >= 0.65) return '#1dbe86';
+  if (wr >= 0.55) return '#c89022';
+  return '#e04545';
 }
 function badgeWR(wr) {
   if (wr == null) return `<span class="badge badge-gray">—</span>`;
@@ -373,7 +355,7 @@ function renderMidweek(d) {
   if (d.warnings?.length) {
     sections.push(`<div class="report-card">
       <h3>Warnings</h3>
-      ${d.warnings.map(w => `<div style="color:#fbbf24;font:12px monospace;margin-bottom:6px">• ${w}</div>`).join('')}
+      ${d.warnings.map(w => `<div style="color:#c89022;font:12px var(--font-ui,sans-serif);margin-bottom:6px">• ${w}</div>`).join('')}
     </div>`);
   }
 
@@ -381,7 +363,7 @@ function renderMidweek(d) {
   if (d.recommendations?.length) {
     sections.push(`<div class="report-card">
       <h3>Recommendations</h3>
-      ${d.recommendations.map(w => `<div style="color:#a78bfa;font:12px monospace;margin-bottom:6px">→ ${w}</div>`).join('')}
+      ${d.recommendations.map(w => `<div style="color:#a882e8;font:12px var(--font-ui,sans-serif);margin-bottom:6px">→ ${w}</div>`).join('')}
     </div>`);
   }
 
@@ -415,7 +397,7 @@ async function loadWeekly() {
 
     if (d.error) {
       document.getElementById('weeklyContent').innerHTML =
-        `<p class="error-msg">${d.error}</p><p style="color:rgba(255,255,255,.4);font:12px monospace;margin-top:8px">Click <b>Generate Learning</b> to build data for this week.</p>`;
+        `<p class="error-msg">${d.error}</p><p style="color:rgba(237,231,217,.4);font:12px var(--font-ui,sans-serif);margin-top:8px">Click <b>Generate Learning</b> to build data for this week.</p>`;
       return;
     }
     document.getElementById('weeklyMeta').textContent = `Week: ${d.week_start ?? week} | Generated: ${fmtTs(d.generated_at)}`;
@@ -501,9 +483,9 @@ function renderWeekly(d, weekFilter) {
   const es = d.edge_strengths;
   if (es?.strengths?.length || es?.weaknesses?.length) {
     const strengthRows = (es.strengths ?? []).map(s =>
-      `<div style="color:#4ade80;font:12px monospace;margin-bottom:5px">+ ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
+      `<div style="color:#1dbe86;font:12px var(--font-ui,sans-serif);margin-bottom:5px">+ ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
     const weakRows = (es.weaknesses ?? []).map(s =>
-      `<div style="color:#f87171;font:12px monospace;margin-bottom:5px">- ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
+      `<div style="color:#e04545;font:12px var(--font-ui,sans-serif);margin-bottom:5px">- ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
     if (strengthRows || weakRows) {
       sections.push(`<div class="report-card">
         ${strengthRows ? `<h3>Edge Strengths</h3>${strengthRows}` : ''}
@@ -519,7 +501,7 @@ function renderWeekly(d, weekFilter) {
   } else {
     sections.push(`<div class="report-card">
       <h3>Strategy Learning Summary</h3>
-      <p style="color:rgba(255,255,255,.35);font:12px monospace;margin:0">No learning summary for this week.
+      <p style="color:rgba(237,231,217,.35);font:12px var(--font-ui,sans-serif);margin:0">No learning summary for this week.
         <button class="btn-sm" id="btnGenWeeklyInline" onclick="generateWeeklySummary()" style="margin-left:12px">Generate</button>
       </p>
     </div>`);
@@ -530,13 +512,13 @@ function renderWeekly(d, weekFilter) {
 
 function renderLearningCards(rows) {
   const stratOrder = ['MNQ_INTRADAY','MNQ_SWING','MNQ_50PT','MGC_SCALP','MGC_INTRADAY'];
-  const stratColors = { MNQ_INTRADAY:'#2dd4bf', MNQ_SWING:'#60a5fa', MNQ_50PT:'#a78bfa', MGC_SCALP:'#fb923c', MGC_INTRADAY:'#fbbf24' };
+  const stratColors = { MNQ_INTRADAY:'#2ab8a2', MNQ_SWING:'#3d9ec8', MNQ_50PT:'#a882e8', MGC_SCALP:'#cb7828', MGC_INTRADAY:'#c89022' };
   const sorted = [...rows].sort((a, b) => stratOrder.indexOf(a.strategy_key) - stratOrder.indexOf(b.strategy_key));
 
   const cards = sorted.map(s => {
-    const color  = stratColors[s.strategy_key] || 'rgba(255,255,255,.4)';
+    const color  = stratColors[s.strategy_key] || 'rgba(237,231,217,.4)';
     const wr     = s.win_rate != null ? s.win_rate.toFixed(1) + '%' : '—';
-    const wrColor = s.win_rate == null ? 'rgba(255,255,255,.4)' : s.win_rate >= 55 ? '#4ade80' : s.win_rate >= 45 ? '#fbbf24' : '#f87171';
+    const wrColor = s.win_rate == null ? 'rgba(237,231,217,.4)' : s.win_rate >= 55 ? '#1dbe86' : s.win_rate >= 45 ? '#c89022' : '#e04545';
 
     const sectionBlock = (title, content, accent) => {
       if (!content) return '';
@@ -545,13 +527,13 @@ function renderLearningCards(rows) {
         const ci = l.indexOf(':');
         if (ci > 0 && ci < 40) {
           const key = l.slice(0, ci), val = l.slice(ci + 1).trim();
-          const kc = key.startsWith('REPEAT') || key.startsWith('ESCALATED') ? '#f87171' : key.startsWith('NO_') || key.startsWith('MAINTAIN') ? '#4ade80' : accent;
+          const kc = key.startsWith('REPEAT') || key.startsWith('ESCALATED') ? '#e04545' : key.startsWith('NO_') || key.startsWith('MAINTAIN') ? '#1dbe86' : accent;
           return `<div style="margin-bottom:5px;font-size:12px;line-height:1.5">
             <span style="font:700 10px monospace;color:${kc};margin-right:6px">[${escH(key)}]</span>
-            <span style="color:rgba(255,255,255,.65)">${escH(val)}</span>
+            <span style="color:rgba(237,231,217,.75)">${escH(val)}</span>
           </div>`;
         }
-        return `<div style="font-size:12px;color:rgba(255,255,255,.6);line-height:1.5;margin-bottom:4px">${escH(l)}</div>`;
+        return `<div style="font-size:12px;color:rgba(237,231,217,.65);line-height:1.5;margin-bottom:4px">${escH(l)}</div>`;
       }).join('');
       return `<div style="margin-top:12px">
         <div style="font:700 10px monospace;letter-spacing:.08em;text-transform:uppercase;color:${accent};margin-bottom:6px">${title}</div>
@@ -563,18 +545,18 @@ function renderLearningCards(rows) {
       ? `<span class="badge badge-red" style="margin-left:8px">ESCALATED</span>`
       : s.prior_repeats > 0 ? `<span class="badge badge-yellow" style="margin-left:8px">REPEAT x${s.prior_repeats}</span>` : '';
 
-    return `<div style="border-left:3px solid ${color};background:rgba(255,255,255,.03);border-radius:8px;border:1px solid rgba(255,255,255,.07);border-left-width:3px;padding:14px 16px;margin-bottom:10px">
+    return `<div style="border-left:3px solid ${color};background:rgba(220,200,170,.03);border-radius:8px;border:1px solid rgba(220,200,170,.08);border-left-width:3px;padding:14px 16px;margin-bottom:10px">
       <div style="display:flex;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:10px">
         <span style="font:700 13px sans-serif;color:${color}">${escH(s.strategy_label ?? s.strategy_key)}</span>
         ${escalBadge}
         <span style="flex:1"></span>
         <span style="font:700 11px monospace;color:${wrColor}">${wr} WR</span>
-        <span style="font:10px monospace;color:rgba(255,255,255,.4)">${s.total_signals} signals · ${s.wins}W/${s.losses}L/${s.breakevens}BE</span>
+        <span style="font:10px var(--font-mono,monospace);color:rgba(237,231,217,.4)">${s.total_signals} signals · ${s.wins}W/${s.losses}L/${s.breakevens}BE</span>
       </div>
       ${sectionBlock('Performance Review', s.performance_review, '#2dd4bf')}
-      ${sectionBlock('Failure Analysis',   s.failure_analysis,   '#f87171')}
-      ${sectionBlock('Corrective Actions', s.corrective_actions, '#fbbf24')}
-      ${sectionBlock('Pattern Tracking',   s.pattern_tracking,   '#a78bfa')}
+      ${sectionBlock('Failure Analysis',   s.failure_analysis,   '#e04545')}
+      ${sectionBlock('Corrective Actions', s.corrective_actions, '#c89022')}
+      ${sectionBlock('Pattern Tracking',   s.pattern_tracking,   '#a882e8')}
     </div>`;
   }).join('');
 
@@ -626,14 +608,14 @@ function renderOpeningCandle(d) {
         <div class="oc-grid">${cards}</div>
       </div>`);
     } else {
-      sections.push(`<div class="report-card"><h3>${inst} — Today's Session Opens</h3><p style="color:rgba(255,255,255,.3);font:12px monospace">No opening candles recorded yet today.</p></div>`);
+      sections.push(`<div class="report-card"><h3>${inst} — Today's Session Opens</h3><p style="color:rgba(237,231,217,.35);font:12px monospace">No opening candles recorded yet today.</p></div>`);
     }
 
     // Historical accuracy table
     if (r.sessionSummary?.length) {
       const rows = r.sessionSummary.map(s => {
         const acc = s.accuracy != null ? s.accuracy + '%' : '—';
-        const accColor = s.accuracy >= 60 ? '#4ade80' : s.accuracy >= 54 ? '#fbbf24' : '#f87171';
+        const accColor = s.accuracy >= 60 ? '#1dbe86' : s.accuracy >= 54 ? '#c89022' : '#e04545';
         const statusBadge = s.active
           ? `<span class="badge badge-green">ACTIVE</span>`
           : s.total >= r.minSampleSize
@@ -645,7 +627,7 @@ function renderOpeningCandle(d) {
           <td style="color:${accColor}">${acc}</td>
           <td>${s.wins ?? 0} / ${s.losses ?? 0}</td>
           <td>${statusBadge}</td>
-          <td style="color:rgba(255,255,255,.35)">${s.lastUpdated ? new Date(s.lastUpdated).toLocaleDateString() : '—'}</td>
+          <td style="color:rgba(237,231,217,.45)">${s.lastUpdated ? new Date(s.lastUpdated).toLocaleDateString() : '—'}</td>
         </tr>`;
       }).join('');
       sections.push(`<div class="report-card">
@@ -679,12 +661,12 @@ function renderEdgeHealth(d) {
   for (const inst of ['MNQ', 'MGC']) {
     const r = d[inst];
     if (!r) continue;
-    const alertColor = r.alert ? '#f87171' : '#4ade80';
+    const alertColor = r.alert ? '#e04545' : '#1dbe86';
     const alertLabel = r.alert ? '⚠ DEGRADATION DETECTED' : '✓ EDGE HEALTHY';
     sections.push(`<div class="report-card">
       <h3>${inst} — Edge Status</h3>
       <div style="color:${alertColor};font:700 14px monospace;margin-bottom:14px">${alertLabel}</div>
-      ${r.message ? `<div style="color:rgba(255,255,255,.6);font:12px monospace;margin-bottom:10px">${r.message}</div>` : ''}
+      ${r.message ? `<div style="color:rgba(237,231,217,.65);font:12px var(--font-ui,sans-serif);margin-bottom:10px">${r.message}</div>` : ''}
       <div class="metrics-grid">
         ${metric('Last 3 Avg WR', r.recentAvgWR != null ? r.recentAvgWR.toFixed(1) + '%' : '—', r.recentAvgWR >= 62 ? 'green' : r.recentAvgWR >= 52 ? 'yellow' : 'red')}
         ${metric('Prior 3 Avg WR', r.priorAvgWR != null ? r.priorAvgWR.toFixed(1) + '%' : '—')}
@@ -710,15 +692,15 @@ function renderStrategyTable(byStrategy) {
     const wr = s.total > 0 ? s.wins / s.total : null;
     const wrCls = wr == null ? 'badge-gray' : wr >= 0.65 ? 'badge-green' : wr >= 0.55 ? 'badge-yellow' : 'badge-red';
     const wrTxt = wr != null ? (wr * 100).toFixed(1) + '%' : '—';
-    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#4ade80' : '#f87171';
+    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#1dbe86' : '#e04545';
     return `<tr>
       <td style="color:#fff;font-weight:700">${s.strategy_name}</td>
-      <td style="color:rgba(255,255,255,.5)">${s.instrument ?? '—'}</td>
+      <td style="color:rgba(237,231,217,.55)">${s.instrument ?? '—'}</td>
       <td><span class="badge ${wrCls}">${wrTxt}</span></td>
       <td>${s.total ?? '—'}</td>
       <td>${s.wins ?? 0} / ${s.losses ?? 0}</td>
       <td style="color:${pnlColor}">${s.total_pnl != null ? (s.total_pnl > 0 ? '+' : '') + fix2(s.total_pnl) + ' pts' : '—'}</td>
-      <td style="color:rgba(255,255,255,.45)">${s.avg_confidence != null ? (+s.avg_confidence).toFixed(0) : '—'}</td>
+      <td style="color:rgba(237,231,217,.5)">${s.avg_confidence != null ? (+s.avg_confidence).toFixed(0) : '—'}</td>
     </tr>`;
   }).join('');
   return `<div class="report-card">
@@ -736,10 +718,10 @@ function renderSessionTable(bySession) {
     const wr = s.total > 0 ? s.wins / s.total : null;
     const wrCls = wr == null ? 'badge-gray' : wr >= 0.65 ? 'badge-green' : wr >= 0.55 ? 'badge-yellow' : 'badge-red';
     const wrTxt = wr != null ? (wr * 100).toFixed(1) + '%' : '—';
-    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#4ade80' : '#f87171';
+    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#1dbe86' : '#e04545';
     return `<tr>
       <td style="color:#fff">${s.session}</td>
-      <td style="color:rgba(255,255,255,.5)">${s.instrument ?? '—'}</td>
+      <td style="color:rgba(237,231,217,.55)">${s.instrument ?? '—'}</td>
       <td><span class="badge ${wrCls}">${wrTxt}</span></td>
       <td>${s.total ?? '—'}</td>
       <td style="color:${pnlColor}">${s.total_pnl != null ? (s.total_pnl > 0 ? '+' : '') + fix2(s.total_pnl) + ' pts' : '—'}</td>

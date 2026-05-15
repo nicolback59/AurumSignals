@@ -2,69 +2,70 @@
    NQ Signal Pro V3 — Design System
    ═══════════════════════════════════════════════════════ */
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=Plus+Jakarta+Sans:ital,wght@0,400;0,500;0,600;0,700;1,400&family=JetBrains+Mono:wght@400;500;600;700&display=swap');
 
 /* ── Design Tokens ───────────────────────────────────── */
 :root {
-  /* Backgrounds */
-  --bg-base:     #07070e;
-  --bg-surface:  #0d0d1a;
-  --bg-elevated: #111122;
-  --bg-overlay:  #181830;
+  /* Backgrounds — warm dark espresso */
+  --bg-base:     #09080a;
+  --bg-surface:  #100e0f;
+  --bg-elevated: #181415;
+  --bg-overlay:  #201b1d;
 
-  /* Borders */
-  --border-subtle:  rgba(255,255,255,.04);
-  --border-default: rgba(255,255,255,.07);
-  --border-strong:  rgba(255,255,255,.13);
+  /* Borders — warm parchment */
+  --border-subtle:  rgba(220, 200, 170, 0.04);
+  --border-default: rgba(220, 200, 170, 0.08);
+  --border-strong:  rgba(220, 200, 170, 0.15);
 
-  /* Text */
-  --text-primary:   #eaeaf8;
-  --text-secondary: #8888aa;
-  --text-muted:     #48486a;
+  /* Text — warm cream */
+  --text-primary:   #ede7d9;
+  --text-secondary: #9e9082;
+  --text-muted:     #5a5046;
 
-  /* Semantic — Green (positive / LONG / WIN) */
-  --green:        #00d4a0;
-  --green-glow:   rgba(0,212,160,.12);
-  --green-border: rgba(0,212,160,.25);
+  /* Semantic — Green (sage · positive / LONG / WIN) */
+  --green:        #1dbe86;
+  --green-glow:   rgba(29,190,134,.10);
+  --green-border: rgba(29,190,134,.22);
 
-  /* Semantic — Red (negative / SHORT / LOSS) */
-  --red:        #ff3d5a;
-  --red-glow:   rgba(255,61,90,.12);
-  --red-border: rgba(255,61,90,.25);
+  /* Semantic — Red (warm red · negative / SHORT / LOSS) */
+  --red:        #e04545;
+  --red-glow:   rgba(224,69,69,.10);
+  --red-border: rgba(224,69,69,.22);
 
-  /* Semantic — Yellow (warning / A+ grade) */
-  --yellow:        #f5c542;
-  --yellow-glow:   rgba(245,197,66,.12);
-  --yellow-border: rgba(245,197,66,.25);
+  /* Semantic — Gold (muted amber · A+ grade / warning) */
+  --yellow:        #c89022;
+  --yellow-glow:   rgba(200,144,34,.10);
+  --yellow-border: rgba(200,144,34,.22);
 
-  /* Semantic — Blue (info / neutral) */
-  --blue:        #4db8ff;
-  --blue-glow:   rgba(77,184,255,.12);
-  --blue-border: rgba(77,184,255,.25);
+  /* Semantic — Steel Blue (info / neutral) */
+  --blue:        #3d9ec8;
+  --blue-glow:   rgba(61,158,200,.10);
+  --blue-border: rgba(61,158,200,.22);
 
-  /* Semantic — Orange (breakeven / caution) */
-  --orange:        #f97316;
-  --orange-glow:   rgba(249,115,22,.12);
-  --orange-border: rgba(249,115,22,.25);
+  /* Semantic — Amber (breakeven / caution) */
+  --orange:        #cb7828;
+  --orange-glow:   rgba(203,120,40,.10);
+  --orange-border: rgba(203,120,40,.22);
 
   /* Accent */
-  --purple:      #c084fc;
-  --purple-glow: rgba(192,132,252,.12);
-  --teal:        #5eead4;
+  --purple:      #a882e8;
+  --purple-glow: rgba(168,130,232,.10);
+  --teal:        #2ab8a2;
 
   /* Trade levels */
-  --tp1: #34d399;
-  --tp2: #60a5fa;
-  --tp3: #c084fc;
-  --sl:  #f87171;
+  --tp1: #1dbe86;
+  --tp2: #3d9ec8;
+  --tp3: #a882e8;
+  --sl:  #e04545;
 
   /* Instrument colors */
-  --mnq: #4db8ff;
-  --mgc: #f5c542;
+  --mnq: #3d9ec8;
+  --mgc: #c89022;
 
   /* Typography */
-  --font-ui:   'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-  --font-mono: 'JetBrains Mono', 'Fira Code', 'SF Mono', Consolas, monospace;
+  --font-ui:      'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-display: 'Space Grotesk', 'Plus Jakarta Sans', sans-serif;
+  --font-mono:    'JetBrains Mono', 'SF Mono', 'Fira Code', Consolas, monospace;
 
   /* Transitions */
   --t: 150ms ease;
@@ -111,7 +112,7 @@ body {
   justify-content: space-between;
   padding: 0 20px;
   height: 52px;
-  background: rgba(7,7,14,.92);
+  background: rgba(9,8,10,.92);
   border-bottom: 1px solid var(--border-default);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -190,7 +191,7 @@ body {
   position: fixed;
   bottom: 0; left: 0; right: 0;
   z-index: 100;
-  background: rgba(7,7,14,.95);
+  background: rgba(9,8,10,.95);
   border-top: 1px solid var(--border-default);
   backdrop-filter: blur(16px);
   -webkit-backdrop-filter: blur(16px);
@@ -246,7 +247,7 @@ body {
   margin-bottom: 5px;
 }
 .stat-bar-value {
-  font-family: var(--font-mono);
+  font-family: var(--font-display);
   font-size: 20px;
   font-weight: 700;
   letter-spacing: -.02em;
@@ -1062,16 +1063,16 @@ body {
 /* ── Enhanced Design Tokens ──────────────────────────── */
 :root {
   /* Premium accent — warm violet */
-  --accent:         #7c6ef6;
-  --accent-glow:    rgba(124,110,246,.15);
-  --accent-border:  rgba(124,110,246,.30);
+  --accent:         #7a62e8;
+  --accent-glow:    rgba(122,98,232,.14);
+  --accent-border:  rgba(122,98,232,.28);
 
   /* Enhanced shadows */
   --shadow-card:    0 4px 24px rgba(0,0,0,.5), 0 0 0 1px var(--border-default);
   --shadow-elevated: 0 8px 32px rgba(0,0,0,.6), 0 0 0 1px var(--border-strong);
-  --shadow-glow-green:  0 0 20px rgba(0,212,160,.12);
-  --shadow-glow-red:    0 0 20px rgba(255,61,90,.12);
-  --shadow-glow-accent: 0 0 24px rgba(124,110,246,.18);
+  --shadow-glow-green:  0 0 20px rgba(29,190,134,.12);
+  --shadow-glow-red:    0 0 20px rgba(224,69,69,.12);
+  --shadow-glow-accent: 0 0 24px rgba(122,98,232,.18);
 
   /* Better card radius */
   --radius-card: 14px;
@@ -1111,7 +1112,7 @@ body {
 /* ── Premium Stat Bar ────────────────────────────────── */
 .stat-bar-item {
   padding: 12px 16px;
-  background: linear-gradient(180deg, var(--bg-surface) 0%, rgba(13,13,26,.95) 100%);
+  background: linear-gradient(180deg, var(--bg-surface) 0%, rgba(16,14,15,.98) 100%);
 }
 .stat-bar-label {
   font-size: 9px;
@@ -1120,13 +1121,14 @@ body {
   margin-bottom: 6px;
 }
 .stat-bar-value {
+  font-family: var(--font-display);
   font-size: 22px;
   letter-spacing: -.03em;
 }
 
 /* ── Premium Bottom Nav ──────────────────────────────── */
 .bottom-nav {
-  background: rgba(7,7,14,.96);
+  background: rgba(9,8,10,.96);
   border-top: 1px solid var(--border-default);
 }
 .bottom-nav-items {
@@ -1145,7 +1147,7 @@ body {
 .top-nav {
   height: 56px;
   padding: 0 24px;
-  background: rgba(7,7,14,.94);
+  background: rgba(9,8,10,.94);
 }
 .logo {
   font-size: 14px;
@@ -1170,7 +1172,7 @@ body {
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  background: rgba(7,7,14,.72);
+  background: rgba(9,8,10,.78);
   backdrop-filter: blur(2px);
   gap: 12px;
   z-index: 10;
@@ -1199,11 +1201,11 @@ body {
   text-decoration: none;
   letter-spacing: .03em;
   transition: var(--t);
-  box-shadow: 0 4px 16px rgba(124,110,246,.35);
+  box-shadow: 0 4px 16px rgba(122,98,232,.35);
 }
 .paywall-cta:hover {
   background: #9280f8;
-  box-shadow: 0 4px 20px rgba(124,110,246,.5);
+  box-shadow: 0 4px 20px rgba(122,98,232,.5);
   transform: translateY(-1px);
 }
 
@@ -1227,11 +1229,11 @@ body {
 .btn-primary {
   background: var(--accent);
   color: #fff;
-  box-shadow: 0 4px 16px rgba(124,110,246,.35);
+  box-shadow: 0 4px 16px rgba(122,98,232,.35);
 }
 .btn-primary:hover {
   background: #9280f8;
-  box-shadow: 0 4px 24px rgba(124,110,246,.5);
+  box-shadow: 0 4px 24px rgba(122,98,232,.5);
   transform: translateY(-1px);
 }
 .btn-secondary {
@@ -1270,7 +1272,7 @@ body {
   align-items: center;
   justify-content: center;
   padding: 24px 16px;
-  background: radial-gradient(ellipse at top, rgba(124,110,246,.06) 0%, transparent 60%),
+  background: radial-gradient(ellipse at top, rgba(122,98,232,.06) 0%, transparent 60%),
               var(--bg-base);
 }
 .auth-card {
@@ -1487,8 +1489,8 @@ body {
 }
 .pricing-card.featured {
   border-color: var(--accent-border);
-  box-shadow: 0 0 40px rgba(124,110,246,.15);
-  background: linear-gradient(160deg, rgba(124,110,246,.06) 0%, var(--bg-surface) 60%);
+  box-shadow: 0 0 40px rgba(122,98,232,.15);
+  background: linear-gradient(160deg, rgba(122,98,232,.06) 0%, var(--bg-surface) 60%);
   position: relative;
 }
 .pricing-card-badge {
@@ -1573,7 +1575,7 @@ body {
 
 /* ── Landing Hero ────────────────────────────────────── */
 .hero-gradient-text {
-  background: linear-gradient(135deg, #4db8ff 0%, #7c6ef6 50%, #c084fc 100%);
+  background: linear-gradient(135deg, #3d9ec8 0%, #7a62e8 50%, #c89022 100%);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
