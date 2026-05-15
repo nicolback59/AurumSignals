@@ -256,6 +256,18 @@ CREATE TABLE IF NOT EXISTS weekly_summaries (
 );
 CREATE INDEX IF NOT EXISTS idx_weekly_summaries ON weekly_summaries(week_start DESC, strategy_key);
 
+-- ── TP hits — tracks TP2/TP3 strikes after a signal reaches WIN (TP1 hit) ────
+-- Separate from outcomes so the WIN record is immutable once written.
+CREATE TABLE IF NOT EXISTS tp_hits (
+  id        INTEGER PRIMARY KEY AUTOINCREMENT,
+  signal_id INTEGER NOT NULL REFERENCES signals(id),
+  tp_level  INTEGER NOT NULL,   -- 2 or 3
+  hit_at    TEXT    NOT NULL,
+  pnl_pts   REAL,
+  UNIQUE(signal_id, tp_level)
+);
+CREATE INDEX IF NOT EXISTS idx_tp_hits_signal ON tp_hits(signal_id);
+
 -- ── Schema migrations (safe no-ops on fresh DBs) ─────────────────────────────
 -- Add strategy_name to signals if missing (existing databases)
 CREATE TABLE IF NOT EXISTS _schema_migrations (migration TEXT PRIMARY KEY, applied_at TEXT DEFAULT (datetime('now')));

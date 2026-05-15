@@ -166,6 +166,19 @@ class Scanner extends EventEmitter {
     this.feedType = this._feed.constructor.name;  // 'TradovateFeed' | 'YahooFeed'
 
     this._prepareStatements();
+
+    // Ensure tp_hits table exists for live + upgraded deployments
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tp_hits (
+        id        INTEGER PRIMARY KEY AUTOINCREMENT,
+        signal_id INTEGER NOT NULL REFERENCES signals(id),
+        tp_level  INTEGER NOT NULL,
+        hit_at    TEXT    NOT NULL,
+        pnl_pts   REAL,
+        UNIQUE(signal_id, tp_level)
+      );
+      CREATE INDEX IF NOT EXISTS idx_tp_hits_signal ON tp_hits(signal_id);
+    `);
   }
 
   // ── SQLite prepared statements ──────────────────────────────────────────────
@@ -218,6 +231,30 @@ class Scanner extends EventEmitter {
 
       updateTradeStatus: db.prepare(`
         UPDATE signals SET trade_status = ? WHERE id = ?
+      `),
+
+      insertTpHit: db.prepare(`
+        INSERT OR IGNORE INTO tp_hits (signal_id, tp_level, hit_at, pnl_pts)
+        VALUES (?, ?, ?, ?)
+      `),
+
+      getWinSignalsPendingTPs: db.prepare(`
+        SELECT s.id, s.direction, s.entry, s.tp1, s.tp2, s.tp3,
+               s.instrument, s.strategy_name, s.session,
+               o.exit_at AS tp1_hit_at,
+               CASE WHEN h2.id IS NOT NULL THEN 1 ELSE 0 END AS tp2_done,
+               CASE WHEN h3.id IS NOT NULL THEN 1 ELSE 0 END AS tp3_done
+        FROM   signals s
+        JOIN   outcomes o ON o.signal_id = s.id AND o.result = 'WIN'
+        LEFT JOIN tp_hits h2 ON h2.signal_id = s.id AND h2.tp_level = 2
+        LEFT JOIN tp_hits h3 ON h3.signal_id = s.id AND h3.tp_level = 3
+        WHERE  s.instrument = ?
+          AND  s.received_at >= datetime('now', '-48 hours')
+          AND  (
+            (s.tp2 IS NOT NULL AND h2.id IS NULL) OR
+            (s.tp3 IS NOT NULL AND h3.id IS NULL)
+          )
+        ORDER BY s.received_at ASC
       `),
 
       insertRejection: db.prepare(`
@@ -556,6 +593,71 @@ class Scanner extends EventEmitter {
     if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
     fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
       .catch(err => this._err('[ntfy-outcome] send failed', err));
+  }
+
+  // ── TP2 / TP3 push notification ───────────────────────────────────────────────
+
+  _sendNtfyTpHit(sig, tpLevel, exitPrice, pnlPts) {
+    if (!this.cfg.ntfyTopic) return;
+    const STRAT_LABELS = {
+      MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing',
+      MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday',
+    };
+    const stratLabel = STRAT_LABELS[sig.strategy_name] || sig.strategy_name || sig.instrument;
+    const pnlStr     = pnlPts != null ? ` (+${pnlPts} pts)` : '';
+    const emoji      = tpLevel === 2 ? '🎯' : '🔥';
+    const headers    = {
+      'Content-Type': 'text/plain',
+      'Title':    `[TP${tpLevel}] ${sig.instrument} ${sig.direction}${pnlStr}`,
+      'Priority': tpLevel === 2 ? 'high' : 'default',
+      'Tags':     tpLevel === 2 ? 'dart,moneybag' : 'fire,moneybag',
+    };
+    if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+    const body = [
+      `${emoji} TP${tpLevel} HIT — ${sig.direction} ${stratLabel}`,
+      sig.entry != null ? `Entry: ${sig.entry}  →  TP${tpLevel}: ${exitPrice}` : null,
+      pnlPts    != null ? `Gained: +${pnlPts} pts` : null,
+      sig.session       ? `Session: ${sig.session}` : null,
+      `Signal #${sig.id}`,
+    ].filter(Boolean).join('\n');
+    fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
+      .catch(err => this._err('[ntfy-tp] send failed', err));
+  }
+
+  // ── Track TP2 / TP3 hits on already-won signals ───────────────────────────────
+
+  _trackHigherTPs(bars, instrument) {
+    const pending = this._stmts.getWinSignalsPendingTPs.all(instrument);
+    if (!pending.length) return;
+
+    for (const sig of pending) {
+      const tp1HitMs = new Date(sig.tp1_hit_at).getTime();
+      const afterBars = bars.filter(b => new Date(b.timestamp).getTime() > tp1HitMs);
+      if (!afterBars.length) continue;
+
+      const levels = [
+        { level: 2, price: sig.tp2, done: !!sig.tp2_done },
+        { level: 3, price: sig.tp3, done: !!sig.tp3_done },
+      ].filter(l => l.price != null && !l.done);
+
+      for (const { level, price } of levels) {
+        for (const bar of afterBars) {
+          const hit = sig.direction === 'LONG' ? bar.high >= price : bar.low <= price;
+          if (hit) {
+            const pnlPts = +(sig.direction === 'LONG'
+              ? price - sig.entry
+              : sig.entry - price).toFixed(2);
+            this._stmts.insertTpHit.run(sig.id, level, bar.timestamp, pnlPts);
+            this._sendNtfyTpHit(sig, level, price, pnlPts);
+            this._log(
+              `TP${level} HIT #${sig.id} ${instrument}: ${sig.direction} @ ${price} (+${pnlPts} pts)`,
+              'signal'
+            );
+            break; // move on to next level
+          }
+        }
+      }
+    }
   }
 
   // ── Signal storage ────────────────────────────────────────────────────────────
@@ -1225,6 +1327,8 @@ class Scanner extends EventEmitter {
 
       if (mnqReady) this._autoResolveOutcomes(mnqResBars, 'MNQ');
       if (mgcReady) this._autoResolveOutcomes(mgcResBars, 'MGC');
+      if (mnqReady) this._trackHigherTPs(mnqResBars, 'MNQ');
+      if (mgcReady) this._trackHigherTPs(mgcResBars, 'MGC');
 
     } catch (err) {
       this._err('Scan cycle error', err);
@@ -2019,10 +2123,12 @@ class Scanner extends EventEmitter {
         await this._scanInstrument('MNQ', c5m, c15m, c1h, c4h, cDly);
         const resBars = _mergeResolutionBars(this._resolution1m.mnq, bars5m);
         this._autoResolveOutcomes(resBars, 'MNQ');
+        this._trackHigherTPs(resBars, 'MNQ');
       } else {
         await this._scanInstrument('MGC', c5m, c15m, c1h, [], [], c30m, c45m, c3m);
         const resBars = _mergeResolutionBars(this._resolution1m.mgc, bars5m);
         this._autoResolveOutcomes(resBars, 'MGC');
+        this._trackHigherTPs(resBars, 'MGC');
       }
 
       if (bars5m.length >= 2) {
