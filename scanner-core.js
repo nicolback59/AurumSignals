@@ -166,9 +166,8 @@ class Scanner extends EventEmitter {
     });
     this.feedType = this._feed.constructor.name;  // 'TradovateFeed' | 'YahooFeed'
 
-    this._prepareStatements();
-
-    // Ensure tp_hits table exists for live + upgraded deployments
+    // Create tp_hits BEFORE preparing statements — better-sqlite3 validates
+    // that referenced tables exist at prepare() time, not execution time.
     db.exec(`
       CREATE TABLE IF NOT EXISTS tp_hits (
         id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -180,6 +179,8 @@ class Scanner extends EventEmitter {
       );
       CREATE INDEX IF NOT EXISTS idx_tp_hits_signal ON tp_hits(signal_id);
     `);
+
+    this._prepareStatements();
   }
 
   // ── SQLite prepared statements ──────────────────────────────────────────────
@@ -250,12 +251,13 @@ class Scanner extends EventEmitter {
         LEFT JOIN tp_hits h2 ON h2.signal_id = s.id AND h2.tp_level = 2
         LEFT JOIN tp_hits h3 ON h3.signal_id = s.id AND h3.tp_level = 3
         WHERE  s.instrument = ?
-          AND  s.received_at >= datetime('now', '-48 hours')
+          AND  o.exit_at >= datetime('now', '-24 hours')
           AND  (
             (s.tp2 IS NOT NULL AND h2.id IS NULL) OR
             (s.tp3 IS NOT NULL AND h3.id IS NULL)
           )
-        ORDER BY s.received_at ASC
+        ORDER BY o.exit_at DESC
+        LIMIT 20
       `),
 
       insertRejection: db.prepare(`
@@ -628,25 +630,28 @@ class Scanner extends EventEmitter {
   // ── Track TP2 / TP3 hits on already-won signals ───────────────────────────────
 
   _trackHigherTPs(bars, instrument) {
+    try {
     const pending = this._stmts.getWinSignalsPendingTPs.all(instrument);
     if (!pending.length) return;
 
+    // Pre-compute bar timestamps once — avoids O(signals × bars) Date constructions
+    const barTimes = bars.map(b => new Date(b.timestamp).getTime());
+
     // How long after TP1 hit to keep tracking for TP2/TP3
     const TP_TRACK_MAX_MS = {
-      scalp:    2  * 3_600_000,   //  2 hours
-      intraday: 6  * 3_600_000,   //  6 hours
-      swing:    24 * 3_600_000,   // 24 hours
+      scalp:    2  * 3_600_000,
+      intraday: 6  * 3_600_000,
+      swing:    24 * 3_600_000,
     };
     const now = Date.now();
 
     for (const sig of pending) {
       const tp1HitMs = new Date(sig.tp1_hit_at).getTime();
-
-      // Skip if this trade style's TP tracking window has expired
-      const maxMs = TP_TRACK_MAX_MS[sig.trade_style] ?? 6 * 3_600_000;
+      const maxMs    = TP_TRACK_MAX_MS[sig.trade_style] ?? 6 * 3_600_000;
       if (now - tp1HitMs > maxMs) continue;
 
-      const afterBars = bars.filter(b => new Date(b.timestamp).getTime() > tp1HitMs);
+      // Use pre-computed timestamps for the filter
+      const afterBars = bars.filter((_, i) => barTimes[i] > tp1HitMs);
       if (!afterBars.length) continue;
 
       const levels = [
@@ -672,6 +677,7 @@ class Scanner extends EventEmitter {
         }
       }
     }
+    } catch (err) { this._err('[tp-track] TP hit tracking error', err); }
   }
 
   // ── Signal storage ────────────────────────────────────────────────────────────
@@ -684,14 +690,16 @@ class Scanner extends EventEmitter {
     try {
       const tpv = evaluateTPViability(signal);
       if (!tpv.tp2Viable) {
-        signal.tp2 = null; signal.win_prob_tp2 = null;
-        if (!tpv.tp3Viable) signal.tp3 = null, signal.win_prob_tp3 = null;
+        signal.tp2 = null;
+        signal.win_prob_tp2 = null;
       }
-      if (signal.tp2 != null && !tpv.tp3Viable) {
-        signal.tp3 = null; signal.win_prob_tp3 = null;
+      // TP3 requires TP2 to be viable — can't skip a level
+      if (!tpv.tp2Viable || !tpv.tp3Viable) {
+        signal.tp3 = null;
+        signal.win_prob_tp3 = null;
       }
       this._log(
-        `📊 TP viability #? ${signal.instrument} ${signal.direction}: ` +
+        `📊 TP viability ${signal.instrument} ${signal.direction}: ` +
         `TP2=${tpv.tp2Viable ? tpv.tp2AdjProb + '%✓' : tpv.tp2AdjProb + '%✗'} ` +
         `TP3=${tpv.tp3Viable ? tpv.tp3AdjProb + '%✓' : tpv.tp3AdjProb + '%✗'} ` +
         `[${tpv.factors}]`
