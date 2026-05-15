@@ -20,6 +20,8 @@ const {
   buildBarSetsFrom1m,
 } = require('./strategy-engine');
 
+const mnqSwing = require('./strategies/mnq-swing');
+
 const {
   aggregate1mTo5m, aggregate5mTo15m, aggregate5mTo30m, aggregate5mTo45m,
   aggregate5mTo1h, aggregate1hTo4h, aggregate1hToDaily,
@@ -508,9 +510,101 @@ function runBacktest(bars1m, params = {}, opts = {}) {
   return result;
 }
 
+// ── Swing-specific backtest on 1h bars ───────────────────────────────────────
+
+/**
+ * Backtest MNQ_SWING using separately-fetched 60-day 1h bars.
+ *
+ * WHY THIS EXISTS:
+ * The main runBacktest() derives 1h bars from 2000 1m bars, yielding only ~33
+ * 1h bars.  MNQ_SWING needs barsDly >= 3 to even evaluate (1.4 days = 1-2 daily
+ * bars → gate never passes) AND needs 24 forward 1h bars for outcome resolution.
+ * With 33 total bars, signals fired with only 3-5 remaining → always L/BE → 0%.
+ *
+ * This function takes pre-fetched 60-day 1h bars (~273 bars, already cached in
+ * _lastGoodBars.mnq1h), giving ~42 daily bars and a guaranteed 24-bar resolution
+ * window for every evaluated signal.
+ *
+ * @param {object[]} bars1h  - 1h OHLCV bars (60-day Yahoo range), oldest first
+ * @param {object}   opts
+ * @returns {{ trades: string[], metrics: object, signalLog: object[] }}
+ */
+function runSwingBacktest1h(bars1h, opts = {}) {
+  const slippage   = opts.slippage   ?? 0.5;
+  const warmup     = opts.warmup     ?? 25;   // bars1h warmup for indicators
+  const maxResolve = opts.maxResolve ?? 24;   // 24 × 1h = 24h forward window
+  const cooldown   = opts.cooldown   ?? 2;    // min 1h bars between signals
+
+  const bars4h  = aggregate1hTo4h(bars1h);
+  const barsDly = aggregate1hToDaily(bars1h);
+  const n       = bars1h.length;
+
+  const signalLog = [];
+  let   lastSigBar = -Infinity;
+
+  mnqSwing.reset();
+
+  for (let i = warmup; i < n - maxResolve; i++) {
+    if (i - lastSigBar < cooldown) continue;
+
+    // Build look-back-only slices (no lookahead bias)
+    const slc1h = bars1h.slice(0, i + 1);
+
+    // 4h: 1 bar every 4 1h bars
+    const j4h   = Math.min(Math.floor(i / 4) + 1, bars4h.length);
+    // Daily: NQ futures trade ~6h RTH + overnight; 6 is a conservative divisor
+    const jDly  = Math.min(Math.floor(i / 6) + 1, barsDly.length);
+
+    const slc4h  = bars4h.slice(0, j4h);
+    const slcDly = barsDly.slice(0, Math.max(1, jDly));
+
+    if (slc1h.length < 20 || slcDly.length < 3) continue;
+
+    const sig = mnqSwing.evaluate(slc1h, slc4h, slcDly, {}, i);
+    if (!sig) continue;
+
+    // Resolve against FUTURE bars — full 24h window guaranteed (loop ends at n - maxResolve)
+    const outcome = resolveOutcome(bars1h, i, sig.direction, sig.tp1, sig.sl, maxResolve, slippage);
+
+    const risk   = sig.direction === 'LONG' ? sig.entry - sig.sl : sig.sl - sig.entry;
+    const reward = sig.direction === 'LONG' ? sig.tp1 - sig.entry : sig.entry - sig.tp1;
+    const pnlPts = outcome === 'WIN'  ? +reward.toFixed(2)
+                 : outcome === 'LOSS' ? +(-risk).toFixed(2) : 0;
+    const pnlR   = outcome === 'WIN' ? sig.rr ?? 2.0 : outcome === 'LOSS' ? -1 : 0;
+
+    signalLog.push({
+      bar:           i,
+      timestamp:     bars1h[i].timestamp,
+      strategy_name: 'MNQ_SWING',
+      direction:     sig.direction,
+      entry:         sig.entry,
+      sl:            sig.sl,
+      tp1:           sig.tp1,
+      rr:            sig.rr,
+      confidence:    sig.confidence,
+      outcome,
+      pnlPts,
+      pnlR,
+      regime:        detectRegime(bars1h, i),
+      session:       sig.session,
+      trade_style:   'swing',
+      tradeStyle:    'swing',
+      htf_bias:      sig.htf_bias,
+      setup:         sig.setup ?? 'MNQ Swing',
+      score:         sig.score,
+    });
+
+    lastSigBar = i;
+  }
+
+  const metrics = calcEnhancedMetrics(signalLog);
+  return { trades: signalLog.map(r => r.outcome), metrics, signalLog };
+}
+
 module.exports = {
   runBacktest,
   runWalkForward,
+  runSwingBacktest1h,
   resolveOutcome,
   detectRegime,
   calcMetrics,
