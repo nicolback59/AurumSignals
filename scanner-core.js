@@ -76,6 +76,27 @@ const {
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function ts() { return new Date().toISOString(); }
 
+/**
+ * Merge 1m and 5m bar arrays for outcome resolution.
+ * 1m bars are sorted by time; we de-duplicate by preferring the 1m bar when
+ * both cover the same minute (more granular intrabar low/high).
+ * Result is chronologically sorted.
+ */
+function _mergeResolutionBars(bars1m, bars5m) {
+  if (!bars1m || bars1m.length === 0) return bars5m;
+  // Use a map keyed by minute to de-dup: prefer 1m bars over 5m bars
+  const byMinute = new Map();
+  for (const b of bars5m) {
+    const min = b.timestamp.slice(0, 16); // "YYYY-MM-DDTHH:MM"
+    if (!byMinute.has(min)) byMinute.set(min, b);
+  }
+  for (const b of bars1m) {
+    const min = b.timestamp.slice(0, 16);
+    byMinute.set(min, b); // 1m always wins
+  }
+  return [...byMinute.values()].sort((a, b) => a.timestamp < b.timestamp ? -1 : 1);
+}
+
 // ── Scanner class ─────────────────────────────────────────────────────────────
 
 class Scanner extends EventEmitter {
@@ -126,6 +147,12 @@ class Scanner extends EventEmitter {
     this._lastGoodBars = {
       mnq5m: [], mnq1h: [], mgc5m: [], mgc1h: [],
     };
+
+    // 1m bars fetched separately for outcome resolution (TP1/SL detection granularity)
+    // Yahoo 5m forming bar may not update intrabar low/high until the bar closes;
+    // 1m bars close every minute so TP1 touches are detected within ~60 seconds.
+    this._resolution1m = { mnq: [], mgc: [] };
+    this._resolution1mFetchedAt = 0;  // epoch ms of last 1m fetch
 
     // Feed adapter — Tradovate WebSocket if credentials present, Yahoo otherwise
     this._feed = createFeed({
@@ -1176,8 +1203,28 @@ class Scanner extends EventEmitter {
         mgcReady ? this._scanInstrument('MGC', mgc5mConf, mgc15m, mgc1hConf, [], [], mgc30m, mgc45m, []) : null,
       ].filter(Boolean));
 
-      if (mnqReady) this._autoResolveOutcomes(mnq5m, 'MNQ');
-      if (mgcReady) this._autoResolveOutcomes(mgc5m, 'MGC');
+      // Refresh 1m bars for resolution once per minute (more granular TP1/SL detection
+      // without hammering the rate limit — 5m forming bar low may lag by up to 5 min).
+      const nowMs = Date.now();
+      if (nowMs - this._resolution1mFetchedAt > 60_000) {
+        try {
+          const [mnq1m, mgc1m] = await Promise.all([
+            this._fetchYahooBars(this.cfg.symbol,    '1m', '1d'),
+            this._fetchYahooBars(this.cfg.symbolMgc, '1m', '1d'),
+          ]);
+          if (mnq1m.length) this._resolution1m.mnq = mnq1m.slice(-120); // last 2 hours
+          if (mgc1m.length) this._resolution1m.mgc = mgc1m.slice(-120);
+          this._resolution1mFetchedAt = nowMs;
+        } catch { /* non-critical — fall back to 5m bars */ }
+      }
+
+      // Merge 1m and 5m bars for resolution: 1m bars are more granular (detect intrabar
+      // TP1/SL touches within ~60s), 5m bars catch anything the 1m set missed.
+      const mnqResBars = _mergeResolutionBars(this._resolution1m.mnq, mnq5m);
+      const mgcResBars = _mergeResolutionBars(this._resolution1m.mgc, mgc5m);
+
+      if (mnqReady) this._autoResolveOutcomes(mnqResBars, 'MNQ');
+      if (mgcReady) this._autoResolveOutcomes(mgcResBars, 'MGC');
 
     } catch (err) {
       this._err('Scan cycle error', err);
@@ -1970,10 +2017,12 @@ class Scanner extends EventEmitter {
 
       if (instrument === 'MNQ') {
         await this._scanInstrument('MNQ', c5m, c15m, c1h, c4h, cDly);
-        this._autoResolveOutcomes(bars5m, 'MNQ');
+        const resBars = _mergeResolutionBars(this._resolution1m.mnq, bars5m);
+        this._autoResolveOutcomes(resBars, 'MNQ');
       } else {
         await this._scanInstrument('MGC', c5m, c15m, c1h, [], [], c30m, c45m, c3m);
-        this._autoResolveOutcomes(bars5m, 'MGC');
+        const resBars = _mergeResolutionBars(this._resolution1m.mgc, bars5m);
+        this._autoResolveOutcomes(resBars, 'MGC');
       }
 
       if (bars5m.length >= 2) {
