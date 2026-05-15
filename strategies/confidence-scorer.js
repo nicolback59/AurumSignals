@@ -7,11 +7,11 @@ const {
 // ── Per-strategy minimum confidence thresholds ────────────────────────────────
 
 const THRESHOLDS = {
-  MNQ_INTRADAY: 60,  // lowered from 68 — more MNQ intraday signals
-  MNQ_SWING:    42,  // aggressive — match intraday signal frequency
-  MNQ_50PT:     42,  // aggressive — match intraday signal frequency
-  MGC_SCALP:    45,  // lowered from 62 — match intraday signal frequency
-  MGC_INTRADAY: 60,  // displayed as "MGC Scalp" (intraday trend variant)
+  MNQ_INTRADAY: 65,  // raised from 60 — require stronger HTF+VWAP confluence
+  MNQ_SWING:    55,  // raised from 42 — require real trend + DI alignment
+  MNQ_50PT:     58,  // raised from 42 — require clean breakout + room to target
+  MGC_SCALP:    45,  // keep — already at ~80% WR; don't touch what works
+  MGC_INTRADAY: 60,  // keep
 };
 
 /**

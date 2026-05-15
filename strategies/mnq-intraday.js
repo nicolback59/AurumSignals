@@ -26,6 +26,8 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
+const STRATEGY_VERSION = '2.1';
+
 // Minimum ATR in MNQ points for intraday to be worth trading
 const ATR_MIN_PTS = 5;  // lowered from 8 — capture moves in moderate-volatility sessions
 // Cooldown: minimum bars between signals on this strategy
@@ -77,19 +79,19 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   if (isChoppingAroundVwap(bars, vwapArr, 5, 3)) return null;  // relaxed from (8,4)
 
   const sess = getSessionInfo(last.timestamp);
-  // Skip only truly dead sessions (pre-market, overnight)
-  if (sess.quality < 0.30) return null;  // relaxed from 0.50
+  // Skip low-quality sessions (pre-market, overnight, thin midday)
+  if (sess.quality < 0.35) return null;
 
   // ── HTF bias ──────────────────────────────────────────────────────────────────
   const htfBias  = calcHtfBias(htfBars, 9, 21);
   const htf2Bias = htf2Bars && htf2Bars.length >= 21 ? calcHtfBias(htf2Bars, 9, 21) : 0;
 
   // ── Determine direction candidates ───────────────────────────────────────────
-  // EMA9 > EMA21 is sufficient — EMA50 alignment is scored, not required as a gate.
-  // HTF must not be directly opposed (neutral is fine).
+  // Require 5m EMA stack AND at least one of the two HTFs to agree (not just neutral).
+  // Counter-trend entries into mixed HTF environments have historically ~30% WR.
   const directions = [];
-  if (ema9 > ema21 && htfBias >= 0)  directions.push('LONG');
-  if (ema9 < ema21 && htfBias <= 0)  directions.push('SHORT');
+  if (ema9 > ema21 && htfBias >= 0 && (htfBias === 1 || htf2Bias === 1)) directions.push('LONG');
+  if (ema9 < ema21 && htfBias <= 0 && (htfBias === -1 || htf2Bias === -1)) directions.push('SHORT');
 
   for (const dir of directions) {
     const isBull = dir === 'LONG';
@@ -124,8 +126,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
     if (rsi != null) {
-      if (isBull  && rsi >= 75) continue; // overbought
-      if (!isBull && rsi <= 25) continue; // oversold
+      if (isBull  && rsi >= 72) continue; // overbought — avoid chasing
+      if (!isBull && rsi <= 28) continue; // oversold — avoid chasing
     }
 
     // ── MACD momentum alignment (soft filter) ───────────────────────────────
@@ -207,8 +209,9 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       grade,
       win_prob_tp1, win_prob_tp2, win_prob_tp3,
       score:         Math.round(confidence / 4), // legacy compat
-      setup:         'MNQ Intraday',
-      htf_bias:      htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+      setup:            'MNQ Intraday',
+      strategy_version: STRATEGY_VERSION,
+      htf_bias:         htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
       trigger_reason: `EMA9/21 ${dir} (stack=${esScore}), pullback held, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF aligned`,
       indicators: {
@@ -231,4 +234,4 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 /** Reset cooldown state (used between backtest runs) */
 function reset() { lastSignalBar = -999; }
 
-module.exports = { evaluate, reset, ATR_MIN_PTS, STRATEGY_NAME: 'MNQ_INTRADAY' };
+module.exports = { evaluate, reset, ATR_MIN_PTS, STRATEGY_NAME: 'MNQ_INTRADAY', STRATEGY_VERSION };

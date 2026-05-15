@@ -26,6 +26,8 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
+const STRATEGY_VERSION = '2.1';
+
 const ATR_MIN_PTS = 15; // minimum 1h ATR in MNQ points
 const MIN_BAR_GAP = 1;  // 1 × 1h = 1h spam guard — adaptive-cooldown.js handles strategy timing
 const MIN_RR      = 2.0;
@@ -66,10 +68,12 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const ema9  = ema9Arr[n];
   const ema21 = ema21Arr[n];
 
-  // ADX on 1h (trend strength) — soft gate, just screen out flat chop
-  const { adx: adxArr } = calcAdx(bars, 14);
-  const adx = adxArr[n];
-  if (adx != null && adx < 8) return null; // extremely flat, skip
+  // ADX + DI on 1h: require a real trend, not just absence of extremes
+  const { adx: adxArr, diPlus: diPlusArr, diMinus: diMinusArr } = calcAdx(bars, 14);
+  const adx     = adxArr[n];
+  const diPlus  = diPlusArr?.[n];
+  const diMinus = diMinusArr?.[n];
+  if (adx != null && adx < 14) return null; // flat chop — swing has no edge below ADX 14
 
   // ── Market structure on 1h ───────────────────────────────────────────────────
   const struct = detectMarketStructure(bars, 30);
@@ -92,7 +96,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   }
 
   const sess = getSessionInfo(last.timestamp);
-  if (sess.quality < 0.20) return null;
+  if (sess.quality < 0.30) return null;
 
   // ── Direction candidates — 4h bias + 1h EMA9/21 alignment ──────────────────
   const directions = [];
@@ -105,15 +109,21 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     // ── EMA stack on 1h — scoring bonus, not a hard gate ────────────────────
     const esScore = emaStackScore(closes, 9, 21, 21, dir); // 9/21 only on swing
 
-    // ── Price in value zone — 5 ATR radius for wide capture ─────────────────
-    const nearEma21 = Math.abs(last.close - ema21) < 5.0 * atr;
-    const nearVwap  = Math.abs(last.close - vwap)  < 5.0 * atr;
+    // ── DI direction alignment — prevents entries against the trend's own momentum ──
+    // ADX can be rising while price is actually moving against us; DI resolves this.
+    if (isBull  && diPlus != null && diMinus != null && diPlus  < diMinus)  continue;
+    if (!isBull && diPlus != null && diMinus != null && diMinus < diPlus)   continue;
+
+    // ── Price in value zone — 3 ATR radius (tightened from 5) ───────────────
+    // Wide value zones allow entries too far from structure; 3 ATR is enough.
+    const nearEma21 = Math.abs(last.close - ema21) < 3.0 * atr;
+    const nearVwap  = Math.abs(last.close - vwap)  < 3.0 * atr;
     if (!nearEma21 && !nearVwap) continue;
 
-    // ── Retest holds — only block extreme breaks beyond 2 ATR ────────────────
+    // ── Retest holds — block breaks beyond 1.5 ATR (tightened from 2.0) ─────
     const recentSlice = bars.slice(-3, -1);
-    if (isBull && recentSlice.some(b => b.close < ema21 - 2.0 * atr)) continue;
-    if (!isBull && recentSlice.some(b => b.close > ema21 + 2.0 * atr)) continue;
+    if (isBull && recentSlice.some(b => b.close < ema21 - 1.5 * atr)) continue;
+    if (!isBull && recentSlice.some(b => b.close > ema21 + 1.5 * atr)) continue;
 
     // ── Confirmation candle — 15% body threshold for higher signal frequency ─
     if (!(isBull ? isBullishCandle(last, 0.15) : isBearishCandle(last, 0.15))) continue;
@@ -196,8 +206,9 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       grade,
       win_prob_tp1, win_prob_tp2, win_prob_tp3,
       score:         Math.round(confidence / 4),
-      setup:         'MNQ Swing',
-      htf_bias:      htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
+      setup:            'MNQ Swing',
+      strategy_version: STRATEGY_VERSION,
+      htf_bias:         htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
       trigger_reason: `Daily EMA50/200 ${isBull ? 'bull' : 'bear'} alignment, 1h pullback held ${isBull ? 'above' : 'below'} EMA21, momentum confirms`,
       indicators: {
@@ -220,4 +231,4 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
 function reset() { lastSignalBar = -999; }
 
-module.exports = { evaluate, reset, ATR_MIN_PTS, STRATEGY_NAME: 'MNQ_SWING' };
+module.exports = { evaluate, reset, ATR_MIN_PTS, STRATEGY_NAME: 'MNQ_SWING', STRATEGY_VERSION };
