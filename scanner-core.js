@@ -32,7 +32,7 @@ const BarAggregator = require('./feed/bar-aggregator');
 const { createFeed } = require('./feed/feed-selector');
 const BarWatcher    = require('./feed/bar-watcher');
 const { rankSignal }        = require('./signals/signal-ranker');
-const { checkAndRegister }  = require('./signals/signal-fingerprint');
+const signalDedup           = require('./signals/signal-dedup');
 const {
   STATES, resolveBar, shouldExpire, stateToResult,
 } = require('./signals/signal-state-machine');
@@ -108,6 +108,7 @@ class Scanner extends EventEmitter {
   constructor(db, config = {}) {
     super();
     this.db = db;
+    signalDedup.init(db);  // load persisted ideas + prep SQLite statements
 
     this.cfg = {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
@@ -848,6 +849,12 @@ class Scanner extends EventEmitter {
       );
       this._stmts.updateTradeStatus.run(resolution.toState, sig.id);
 
+      // Release the dedup slot so a genuinely new setup at the same zone can
+      // alert immediately rather than waiting for the suppression window.
+      if (result === 'WIN' || result === 'LOSS') {
+        signalDedup.releaseBySignal(sig);
+      }
+
       this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolution.toState}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
       this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
       if (result !== 'EXPIRED') this._sendNtfyOutcome(sig, result, pnlPts);
@@ -1129,12 +1136,15 @@ class Scanner extends EventEmitter {
         continue;
       }
 
-      // ── Signal fingerprint deduplication ─────────────────────────────────────
-      const { isDuplicate, fp } = checkAndRegister(sig);
+      // ── Trade-idea deduplication (fuzzy, family-aware, persistent) ─────────────
+      // Blocks same-family setups at the same price zone within the suppression
+      // window, regardless of which specific strategy fired first.
+      // e.g. MGC_SCALP + MGC_INTRADAY at the same entry = one alert, not two.
+      const { isDuplicate, suppressLog } = signalDedup.checkAndRegister(sig);
       if (isDuplicate) {
-        this._log(`🔁 Duplicate fingerprint suppressed: ${sig.strategy_name} ${instrument} ${sig.direction} @ ${sig.entry}`);
+        this._log(`🔇 ${suppressLog}`);
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
-          sig.confidence, null, 'duplicate fingerprint (same setup within 2h)');
+          sig.confidence, null, suppressLog);
         continue;
       }
 
