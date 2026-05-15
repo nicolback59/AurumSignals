@@ -7,7 +7,7 @@ services:
     name: nq-signal-pro-api
     runtime: node
     buildCommand: npm install
-    startCommand: node --max-old-space-size=400 server.js
+    startCommand: node --max-old-space-size=400 --expose-gc server.js
     plan: starter
     healthCheckPath: /api/health
     envVars:
@@ -50,7 +50,7 @@ services:
       - key: BACKTEST_INTERVAL_H
         value: 4         # hours between scheduled backtests
       - key: BACKTEST_BARS
-        value: 5000      # 1m bars (~3.5 days); gives 4+ daily bars so MNQ_SWING fires; 10000 OOMs on 512MB
+        value: 2000      # 1m bars (~1.4 days); 5000 OOMs on 512MB with walkForward=true (6×O(n²) runs)
       - key: BT_TARGET_TRADES
         value: 400       # stop backtest early once this many trades are found (raised for multi-strategy coverage)
       - key: BT_SLIPPAGE
