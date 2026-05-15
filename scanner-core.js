@@ -50,7 +50,7 @@ const {
 const {
   generateMidWeekReport, generateWeeklyDeepReport,
 } = require('./performance-reporter');
-const { runBacktest }          = require('./backtest-engine');
+const { runBacktest, runSwingBacktest1h, calcEnhancedMetrics } = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
   proposeRevision, evaluateShadow, multiObjectiveScore,
@@ -1460,6 +1460,31 @@ class Scanner extends EventEmitter {
         slippage:     this.cfg.btSlippage,
         walkForward:  true,
       });
+
+      // For MNQ: supplement the 1m-derived backtest with a dedicated swing backtest
+      // on the cached 60-day 1h bars.  The 1m dataset produces only ~33 1h bars,
+      // so barsDly never reaches 3 and swing is never evaluated there.  The 1h
+      // cache gives ~273 bars / ~42 daily bars with a guaranteed full 24h
+      // resolution window for every signal.
+      if (instrument === 'MNQ' && this._lastGoodBars.mnq1h.length >= 60) {
+        try {
+          const swingResult = runSwingBacktest1h(this._lastGoodBars.mnq1h, {
+            slippage: this.cfg.btSlippage,
+          });
+          const swCount = swingResult.signalLog.length;
+          const swWR    = swCount > 0 ? (swingResult.metrics.winRate * 100).toFixed(1) : 'N/A';
+          this._log(`SWING BT (1h): ${swCount} trades | WR=${swWR}%`);
+          if (swCount > 0) {
+            const merged   = [...(result.signalLog ?? []), ...swingResult.signalLog];
+            result.signalLog = merged;
+            result.trades    = merged.map(r => r.outcome);
+            result.metrics   = calcEnhancedMetrics(merged);
+          }
+        } catch (swingErr) {
+          this._err('Swing 1h backtest error', swingErr);
+        }
+      }
+
       const { metrics } = result;
       metrics.barsScanned = bars1m.length;
 
