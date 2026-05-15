@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="description" content="NQ Signal Pro V3 Pricing — Choose the plan that fits your trading research needs. Start with 7 days free, cancel anytime.">
+  <title>Pricing — NQ Signal Pro V3</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    /* ── Pricing page overrides ── */
+    body { font-size: 15px; }
+
+    /* ── Public Nav ── */
+    .pub-nav {
+      position: sticky;
+      top: 0;
+      z-index: 100;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      height: 64px;
+      background: rgba(7,7,14,.94);
+      border-bottom: 1px solid var(--border-default);
+      backdrop-filter: blur(20px);
+      -webkit-backdrop-filter: blur(20px);
+    }
+    .pub-nav-logo {
+      font-family: var(--font-mono);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-decoration: none;
+      display: flex;
+      align-items: center;
+    }
+    .pub-nav-logo .l1 { color: var(--yellow); }
+    .pub-nav-logo .l2 { color: var(--blue); }
+    .pub-nav-links {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .pub-nav-link {
+      padding: 6px 14px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-muted);
+      transition: var(--t);
+    }
+    .pub-nav-link:hover { color: var(--text-primary); background: var(--border-subtle); }
+    .pub-nav-link.active { color: var(--text-primary); }
+    .pub-nav-right {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .nav-login {
+      padding: 7px 16px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      border: 1px solid var(--border-default);
+      transition: var(--t);
+    }
+    .nav-login:hover { color: var(--text-primary); border-color: var(--border-strong); }
+    .nav-cta {
+      padding: 8px 20px;
+      border-radius: 8px;
+      text-decoration: none;
+      font-size: 13px;
+      font-weight: 600;
+      color: #07070e;
+      background: var(--blue);
+      transition: var(--t);
+    }
+    .nav-cta:hover { background: #6ac5ff; transform: translateY(-1px); box-shadow: 0 4px 20px rgba(77,184,255,.35); }
+
+    /* ── Container ── */
+    .container {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 28px;
+    }
+
+    /* ── Page Header ── */
+    .page-header {
+      padding: 72px 0 56px;
+      text-align: center;
+      position: relative;
+      overflow: hidden;
+    }
+    .page-header::before {
+      content: '';
+      position: absolute;
+      top: -80px; left: 50%;
+      transform: translateX(-50%);
+      width: 700px; height: 400px;
+      background: radial-gradient(ellipse at center, rgba(77,184,255,.05) 0%, transparent 65%);
+      pointer-events: none;
+    }
+    .page-header-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: 14px;
+    }
+    .page-header-title {
+      font-size: clamp(32px, 5vw, 52px);
+      font-weight: 700;
+      letter-spacing: -.03em;
+      line-height: 1.15;
+      color: var(--text-primary);
+      margin-bottom: 16px;
+    }
+    .page-header-sub {
+      font-size: 17px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+    }
+
+    /* ── Billing Toggle ── */
+    .billing-toggle-wrap {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 16px;
+      margin-bottom: 56px;
+    }
+    .toggle-option {
+      font-size: 14px;
+      font-weight: 500;
+      color: var(--text-secondary);
+      transition: var(--t);
+    }
+    .toggle-option.active { color: var(--text-primary); font-weight: 600; }
+    .toggle-switch {
+      position: relative;
+      width: 52px; height: 28px;
+      cursor: pointer;
+    }
+    .toggle-switch input { opacity: 0; width: 0; height: 0; position: absolute; }
+    .toggle-track {
+      position: absolute;
+      inset: 0;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      border-radius: 14px;
+      transition: var(--t-slow);
+    }
+    .toggle-thumb {
+      position: absolute;
+      top: 3px; left: 3px;
+      width: 20px; height: 20px;
+      background: var(--text-muted);
+      border-radius: 50%;
+      transition: var(--t-slow);
+    }
+    .toggle-switch input:checked + .toggle-track { background: var(--blue-glow); border-color: var(--blue-border); }
+    .toggle-switch input:checked ~ .toggle-thumb { transform: translateX(24px); background: var(--blue); }
+    .annual-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 3px 10px;
+      background: rgba(255,255,255,.04);
+      border: 1px solid var(--border-default);
+      border-radius: 20px;
+      font-size: 11px;
+      color: var(--text-muted);
+      font-style: italic;
+    }
+
+    /* ── Pricing Grid ── */
+    .pricing-section { padding-bottom: 72px; }
+    .pricing-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 20px;
+      align-items: stretch;
+      margin-bottom: 72px;
+    }
+    .pricing-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 16px;
+      padding: 28px 24px;
+      display: flex;
+      flex-direction: column;
+      transition: var(--t-slow);
+      position: relative;
+    }
+    .pricing-card:hover { transform: translateY(-3px); box-shadow: 0 12px 40px rgba(0,0,0,.35); }
+    .pricing-card.popular {
+      border-color: var(--blue);
+      box-shadow: 0 0 30px rgba(77,184,255,.15);
+    }
+    .popular-badge {
+      position: absolute;
+      top: -12px; left: 50%;
+      transform: translateX(-50%);
+      padding: 4px 14px;
+      background: var(--blue);
+      color: #07070e;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      border-radius: 20px;
+      white-space: nowrap;
+    }
+    .pricing-tier {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      margin-bottom: 12px;
+    }
+    .pricing-amount { margin-bottom: 6px; }
+    .pricing-price {
+      font-family: var(--font-mono);
+      font-size: 38px;
+      font-weight: 700;
+      color: var(--text-primary);
+      letter-spacing: -.03em;
+    }
+    .pricing-per {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-left: 4px;
+    }
+    .pricing-desc {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.6;
+      margin-bottom: 22px;
+      padding-bottom: 22px;
+      border-bottom: 1px solid var(--border-subtle);
+    }
+    .pricing-features {
+      list-style: none;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      flex: 1;
+      margin-bottom: 28px;
+    }
+    .pricing-features li {
+      font-size: 13px;
+      color: var(--text-secondary);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .pricing-features li .fi {
+      font-style: normal;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 700;
+      flex-shrink: 0;
+    }
+    .pricing-features li.dim { color: var(--text-muted); }
+    .pricing-features li.dim .fi { color: var(--text-muted); }
+    .btn-plan {
+      display: block;
+      text-align: center;
+      padding: 12px 20px;
+      border-radius: 10px;
+      text-decoration: none;
+      font-size: 14px;
+      font-weight: 600;
+      transition: var(--t-slow);
+      border: 1px solid;
+    }
+    .btn-plan-primary {
+      color: #07070e;
+      background: var(--blue);
+      border-color: var(--blue);
+    }
+    .btn-plan-primary:hover { background: #6ac5ff; border-color: #6ac5ff; transform: translateY(-1px); box-shadow: 0 6px 24px rgba(77,184,255,.4); }
+    .btn-plan-secondary {
+      color: var(--text-secondary);
+      background: transparent;
+      border-color: var(--border-strong);
+    }
+    .btn-plan-secondary:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
+    /* ── Comparison Table ── */
+    .compare-section {
+      padding: 72px 0;
+      background: rgba(13,13,26,.6);
+    }
+    .section-label {
+      font-family: var(--font-mono);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--blue);
+      margin-bottom: 14px;
+      text-align: center;
+    }
+    .section-title {
+      font-size: clamp(24px, 3vw, 34px);
+      font-weight: 700;
+      letter-spacing: -.02em;
+      color: var(--text-primary);
+      line-height: 1.2;
+      margin-bottom: 40px;
+      text-align: center;
+    }
+    .compare-table-wrap {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 16px;
+      overflow: hidden;
+    }
+    .compare-table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    .compare-table thead th {
+      padding: 20px 18px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      text-align: center;
+      border-bottom: 1px solid var(--border-default);
+      background: var(--bg-elevated);
+    }
+    .compare-table thead th:first-child {
+      text-align: left;
+      width: 38%;
+      color: var(--text-muted);
+    }
+    .compare-table thead th.col-free  { color: var(--text-muted); }
+    .compare-table thead th.col-pro   { color: var(--blue); }
+    .compare-table thead th.col-elite { color: var(--purple); }
+    .compare-table tbody tr {
+      border-bottom: 1px solid var(--border-subtle);
+      transition: background var(--t);
+    }
+    .compare-table tbody tr:last-child { border-bottom: none; }
+    .compare-table tbody tr:hover { background: rgba(255,255,255,.015); }
+    .compare-table tbody tr.group-divider td {
+      padding: 10px 18px 6px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      background: rgba(0,0,0,.15);
+      border-top: 1px solid var(--border-subtle);
+    }
+    .compare-table tbody td {
+      padding: 13px 18px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      vertical-align: middle;
+    }
+    .compare-table tbody td:first-child { color: var(--text-primary); }
+    .compare-table tbody td.val {
+      text-align: center;
+      font-size: 15px;
+    }
+    .check { color: var(--green); font-weight: 700; }
+    .dash  { color: var(--text-muted); }
+    .limited {
+      font-size: 11px;
+      font-family: var(--font-mono);
+      color: var(--yellow);
+      font-weight: 600;
+      letter-spacing: .02em;
+    }
+    /* Highlight the Pro column */
+    .compare-table thead th.col-pro,
+    .compare-table tbody td.col-pro {
+      background: rgba(77,184,255,.03);
+      border-left: 1px solid rgba(77,184,255,.08);
+      border-right: 1px solid rgba(77,184,255,.08);
+    }
+
+    /* ── FAQ ── */
+    .faq-section { padding: 72px 0; }
+    .faq-list {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      max-width: 720px;
+      margin: 0 auto;
+    }
+    .faq-item {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-default);
+      border-radius: 12px;
+      overflow: hidden;
+    }
+    .faq-q {
+      width: 100%;
+      background: none;
+      border: none;
+      padding: 20px 22px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      cursor: pointer;
+      font: inherit;
+      font-size: 14px;
+      font-weight: 600;
+      color: var(--text-primary);
+      text-align: left;
+      transition: var(--t);
+    }
+    .faq-q:hover { color: var(--blue); }
+    .faq-arrow {
+      color: var(--text-muted);
+      font-size: 16px;
+      flex-shrink: 0;
+      transition: transform var(--t);
+    }
+    .faq-item.open .faq-arrow { transform: rotate(45deg); color: var(--blue); }
+    .faq-a {
+      display: none;
+      padding: 16px 22px 20px;
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.75;
+      border-top: 1px solid var(--border-subtle);
+    }
+    .faq-item.open .faq-a { display: block; }
+
+    /* ── Disclaimer ── */
+    .disclaimer-section { padding: 0 0 72px; }
+    .disclaimer-block {
+      background: rgba(245,197,66,.04);
+      border: 1px solid var(--yellow-border);
+      border-radius: 14px;
+      padding: 28px 32px;
+    }
+    .disclaimer-title {
+      font-family: var(--font-mono);
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: .1em;
+      color: var(--yellow);
+      margin-bottom: 12px;
+    }
+    .disclaimer-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.8;
+    }
+
+    /* ── Footer ── */
+    .pub-footer {
+      border-top: 1px solid var(--border-default);
+      padding: 40px 0;
+      background: var(--bg-surface);
+    }
+    .footer-inner {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 20px;
+    }
+    .footer-logo {
+      font-family: var(--font-mono);
+      font-size: 13px;
+      font-weight: 700;
+      text-decoration: none;
+    }
+    .footer-logo .l1 { color: var(--yellow); }
+    .footer-logo .l2 { color: var(--blue); }
+    .footer-copy {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-top: 6px;
+    }
+    .footer-links {
+      display: flex;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .footer-link {
+      font-size: 12px;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: var(--t);
+    }
+    .footer-link:hover { color: var(--text-secondary); }
+
+    /* ── Responsive ── */
+    @media (max-width: 900px) {
+      .pub-nav-links { display: none; }
+      .pub-nav { padding: 0 20px; }
+      .container { padding: 0 20px; }
+      .pricing-grid { grid-template-columns: 1fr; max-width: 440px; margin: 0 auto 56px; }
+      .compare-table { font-size: 12px; }
+      .compare-table thead th,
+      .compare-table tbody td { padding: 12px 12px; }
+      .compare-table tbody td:first-child { font-size: 12px; }
+    }
+    @media (max-width: 640px) {
+      .page-header { padding: 52px 0 40px; }
+      .footer-inner { flex-direction: column; align-items: flex-start; }
+      .compare-table-wrap { overflow-x: auto; }
+      .compare-table { min-width: 560px; }
+    }
+  </style>
+</head>
+<body>
+
+<!-- ── Top Navigation ── -->
+<nav class="pub-nav">
+  <a href="/landing.html" class="pub-nav-logo">
+    <span class="l1">NQ SIGNAL</span>&nbsp;<span class="l2">PRO V3</span>
+  </a>
+  <div class="pub-nav-links">
+    <a href="/landing.html#features" class="pub-nav-link">Features</a>
+    <a href="/landing.html#performance" class="pub-nav-link">Performance</a>
+    <a href="/pricing.html" class="pub-nav-link active">Pricing</a>
+    <a href="/login" class="pub-nav-link">Login</a>
+  </div>
+  <div class="pub-nav-right">
+    <a href="/login" class="nav-login">Login</a>
+    <a href="/register" class="nav-cta">Start Free Trial</a>
+  </div>
+</nav>
+
+<!-- ── Page Header ── -->
+<div class="page-header">
+  <div class="container">
+    <div class="page-header-label">Pricing</div>
+    <h1 class="page-header-title">Choose Your Plan</h1>
+    <p class="page-header-sub">Start with 7 days free. Cancel anytime. No commitments.</p>
+  </div>
+</div>
+
+<!-- ── Billing Toggle ── -->
+<div class="container">
+  <div class="billing-toggle-wrap">
+    <span class="toggle-option active">Monthly</span>
+    <label class="toggle-switch" title="Annual billing coming soon">
+      <input type="checkbox" disabled>
+      <div class="toggle-track"></div>
+      <div class="toggle-thumb"></div>
+    </label>
+    <span class="toggle-option">Annual</span>
+    <span class="annual-badge">Coming soon — 2 months free</span>
+  </div>
+</div>
+
+<!-- ── Pricing Cards ── -->
+<div class="pricing-section">
+  <div class="container">
+    <div class="pricing-grid">
+
+      <!-- Free -->
+      <div class="pricing-card">
+        <div class="pricing-tier">Free</div>
+        <div class="pricing-amount">
+          <span class="pricing-price">$0</span><span class="pricing-per">/mo</span>
+        </div>
+        <p class="pricing-desc">Explore the platform with delayed signal previews. Entry and target details are blurred until you upgrade.</p>
+        <ul class="pricing-features">
+          <li><i class="fi">✓</i> Delayed signal previews</li>
+          <li><i class="fi">✓</i> Basic dashboard access</li>
+          <li class="dim"><i class="fi">—</i> Blurred entry &amp; target details</li>
+          <li class="dim"><i class="fi">—</i> No push notifications</li>
+          <li class="dim"><i class="fi">—</i> No trade journal</li>
+          <li class="dim"><i class="fi">—</i> No performance dashboard</li>
+        </ul>
+        <a href="/register" class="btn-plan btn-plan-secondary">Get Started Free</a>
+      </div>
+
+      <!-- Pro (Most Popular) -->
+      <div class="pricing-card popular">
+        <div class="popular-badge">Most Popular</div>
+        <div class="pricing-tier" style="color: var(--blue);">Pro</div>
+        <div class="pricing-amount">
+          <span class="pricing-price">$29</span><span class="pricing-per">/mo</span>
+        </div>
+        <p class="pricing-desc">Full access to all live signals, exact trade levels, push alerts, and the complete trade journal.</p>
+        <ul class="pricing-features">
+          <li><i class="fi">✓</i> Real-time signal delivery</li>
+          <li><i class="fi">✓</i> Full entry, SL &amp; TP details</li>
+          <li><i class="fi">✓</i> Push alerts to your device</li>
+          <li><i class="fi">✓</i> Trade journal access</li>
+          <li><i class="fi">✓</i> Performance dashboard</li>
+          <li><i class="fi">✓</i> All 5 active strategies</li>
+        </ul>
+        <a href="/register" class="btn-plan btn-plan-primary">Start Free Trial</a>
+      </div>
+
+      <!-- Elite -->
+      <div class="pricing-card">
+        <div class="pricing-tier" style="color: var(--purple);">Elite</div>
+        <div class="pricing-amount">
+          <span class="pricing-price">$59</span><span class="pricing-per">/mo</span>
+        </div>
+        <p class="pricing-desc">Maximum depth for quantitative researchers. Backtest reports, strategy analytics, and priority access.</p>
+        <ul class="pricing-features">
+          <li><i class="fi">✓</i> Everything in Pro</li>
+          <li><i class="fi">✓</i> Backtesting reports</li>
+          <li><i class="fi">✓</i> Strategy analytics breakdown</li>
+          <li><i class="fi">✓</i> Advanced performance metrics</li>
+          <li><i class="fi">✓</i> Priority updates &amp; roadmap</li>
+          <li><i class="fi">✓</i> Priority support channel</li>
+        </ul>
+        <a href="/register" class="btn-plan btn-plan-secondary">Get Elite Access</a>
+      </div>
+
+    </div>
+  </div>
+</div>
+
+<!-- ── Feature Comparison Table ── -->
+<section class="compare-section">
+  <div class="container">
+    <div class="section-label">Full Comparison</div>
+    <h2 class="section-title">What's Included</h2>
+
+    <div class="compare-table-wrap">
+      <table class="compare-table">
+        <thead>
+          <tr>
+            <th>Feature</th>
+            <th class="col-free">Free</th>
+            <th class="col-pro">Pro</th>
+            <th class="col-elite">Elite</th>
+          </tr>
+        </thead>
+        <tbody>
+
+          <!-- Signals -->
+          <tr class="group-divider">
+            <td colspan="4">Signal Access</td>
+          </tr>
+          <tr>
+            <td>Real-time signal delivery</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="check">✓</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Full entry + SL + TP levels</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="check">✓</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Push alert notifications</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="check">✓</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Delayed signal previews</td>
+            <td class="val col-pro"><span class="check">✓</span></td>
+            <td class="val col-pro"><span class="check">✓</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+
+          <!-- Tools -->
+          <tr class="group-divider">
+            <td colspan="4">Platform Tools</td>
+          </tr>
+          <tr>
+            <td>Trade journal</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="check">✓</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Performance dashboard</td>
+            <td class="val col-pro"><span class="limited">Limited</span></td>
+            <td class="val col-pro"><span class="check">✓</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Strategy breakdown</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+
+          <!-- Research -->
+          <tr class="group-divider">
+            <td colspan="4">Research &amp; Analytics</td>
+          </tr>
+          <tr>
+            <td>Backtest reports</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Advanced analytics</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+
+          <!-- Support -->
+          <tr class="group-divider">
+            <td colspan="4">Support</td>
+          </tr>
+          <tr>
+            <td>Priority support</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+          <tr>
+            <td>Roadmap &amp; priority updates</td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val col-pro"><span class="dash">—</span></td>
+            <td class="val"><span class="check">✓</span></td>
+          </tr>
+
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+
+<!-- ── Billing FAQ ── -->
+<section class="faq-section">
+  <div class="container">
+    <div class="section-label">Billing FAQ</div>
+    <h2 class="section-title">Questions About Plans</h2>
+
+    <div class="faq-list">
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          Can I cancel anytime?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          Yes. There are no long-term commitments. Cancel your subscription at any time from your account settings. Your access continues until the end of the current billing period — you will not be charged again after cancellation.
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          What payment methods are accepted?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          We accept all major credit and debit cards (Visa, Mastercard, American Express) processed securely through Stripe. Additional payment methods may be added in the future. We do not store card details on our servers.
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          How does the 7-day free trial work?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          When you start a free trial on Pro or Elite, you get full access for 7 days at no charge. A valid payment method is required to start the trial. If you do not cancel before the trial ends, your subscription will automatically begin at the plan's standard monthly rate. You will receive a reminder email before the trial expires.
+        </div>
+      </div>
+
+      <div class="faq-item">
+        <button class="faq-q" onclick="this.closest('.faq-item').classList.toggle('open')">
+          What is the refund policy?
+          <span class="faq-arrow">+</span>
+        </button>
+        <div class="faq-a">
+          We offer a 7-day money-back guarantee on your first payment if you are not satisfied. After that initial period, subscription payments are non-refundable, but you can cancel to prevent future charges. If you believe there was a billing error, please contact support and we will investigate promptly.
+        </div>
+      </div>
+
+    </div>
+  </div>
+</section>
+
+<!-- ── Risk Disclaimer ── -->
+<section class="disclaimer-section">
+  <div class="container">
+    <div class="disclaimer-block">
+      <div class="disclaimer-title">⚠ RISK DISCLAIMER</div>
+      <p class="disclaimer-text">
+        Trading futures involves substantial risk of loss and is not suitable for all investors. NQ Signal Pro is a market intelligence and research tool — it does not provide financial advice, investment recommendations, or any form of regulated financial services. Past performance, including backtested results, is not indicative of future results. Simulated or hypothetical performance results have inherent limitations and may not reflect actual trading results. You are solely responsible for your trading decisions, risk management, and any losses that result. Never trade with money you cannot afford to lose. Please read and understand all risk disclosures before using any signal research service.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ── Footer ── -->
+<footer class="pub-footer">
+  <div class="container">
+    <div class="footer-inner">
+      <div>
+        <a href="/landing.html" class="footer-logo">
+          <span class="l1">NQ SIGNAL</span> <span class="l2">PRO V3</span>
+        </a>
+        <div class="footer-copy">&copy; 2025 NQ Signal Pro V3. All rights reserved.</div>
+      </div>
+      <div class="footer-links">
+        <a href="/privacy" class="footer-link">Privacy Policy</a>
+        <a href="/terms" class="footer-link">Terms of Service</a>
+        <a href="/pricing.html" class="footer-link">Pricing</a>
+        <a href="/login" class="footer-link">Login</a>
+      </div>
+    </div>
+  </div>
+</footer>
+
+</body>
+</html>

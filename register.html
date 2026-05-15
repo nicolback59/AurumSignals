@@ -1,0 +1,597 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Create Account — NQ Signal Pro</title>
+  <link rel="stylesheet" href="/design-system.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      background: var(--bg-base);
+      color: var(--text-primary);
+      font-family: var(--font-ui);
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Nav ── */
+    .nav {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 32px;
+      height: 60px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(10,10,18,0.95);
+      backdrop-filter: blur(12px);
+      position: sticky;
+      top: 0;
+      z-index: 100;
+    }
+    .nav-logo {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+      text-decoration: none;
+      letter-spacing: -0.02em;
+    }
+    .nav-logo span { color: var(--blue); }
+    .nav-links { display: flex; align-items: center; gap: 24px; }
+    .nav-links a {
+      font-size: 13px;
+      color: var(--text-muted);
+      text-decoration: none;
+      transition: color .15s;
+    }
+    .nav-links a:hover { color: var(--text-primary); }
+
+    /* ── Auth layout ── */
+    .auth-wrapper {
+      flex: 1;
+      display: flex;
+      align-items: flex-start;
+      justify-content: center;
+      padding: 48px 16px 64px;
+      background: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(77,144,255,.06) 0%, transparent 70%);
+    }
+
+    .auth-container {
+      width: 100%;
+      max-width: 440px;
+    }
+
+    .auth-brand {
+      text-align: center;
+      margin-bottom: 32px;
+    }
+    .auth-brand-logo {
+      font-size: 22px;
+      font-weight: 800;
+      color: var(--text-primary);
+      letter-spacing: -0.04em;
+      margin-bottom: 8px;
+    }
+    .auth-brand-logo span { color: var(--blue); }
+    .auth-brand-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+
+    /* Trial badge */
+    .trial-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      background: rgba(77,220,120,.08);
+      border: 1px solid rgba(77,220,120,.25);
+      border-radius: 20px;
+      color: var(--green);
+      font-size: 12px;
+      font-weight: 600;
+      padding: 5px 14px;
+      margin-bottom: 16px;
+    }
+    .trial-badge::before {
+      content: '✓';
+      font-size: 11px;
+    }
+
+    .auth-card {
+      background: var(--bg-card);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      padding: 36px 32px;
+      box-shadow: 0 8px 40px rgba(0,0,0,.4);
+    }
+
+    .auth-title {
+      font-size: 20px;
+      font-weight: 700;
+      color: var(--text-primary);
+      margin-bottom: 4px;
+      letter-spacing: -0.02em;
+    }
+    .auth-sub {
+      font-size: 13px;
+      color: var(--text-muted);
+      margin-bottom: 28px;
+    }
+
+    .form-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 14px;
+    }
+
+    .form-group {
+      margin-bottom: 18px;
+    }
+    .form-label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+      margin-bottom: 7px;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+    }
+    .form-label .optional {
+      font-weight: 400;
+      color: var(--text-muted);
+      text-transform: none;
+      letter-spacing: 0;
+      font-size: 11px;
+    }
+    .form-input {
+      width: 100%;
+      background: var(--bg-base);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      color: var(--text-primary);
+      font-family: var(--font-ui);
+      font-size: 14px;
+      padding: 11px 14px;
+      outline: none;
+      transition: border-color .15s, box-shadow .15s;
+    }
+    .form-input::placeholder { color: var(--text-muted); }
+    .form-input:focus {
+      border-color: var(--blue);
+      box-shadow: 0 0 0 3px rgba(77,144,255,.12);
+    }
+    .form-input.error {
+      border-color: var(--red);
+      box-shadow: 0 0 0 3px rgba(255,80,80,.1);
+    }
+    .form-input.valid {
+      border-color: var(--green);
+    }
+
+    .password-strength {
+      margin-top: 8px;
+      display: none;
+    }
+    .password-strength.visible { display: block; }
+    .strength-bar {
+      height: 3px;
+      border-radius: 2px;
+      background: var(--border);
+      overflow: hidden;
+      margin-bottom: 4px;
+    }
+    .strength-fill {
+      height: 100%;
+      border-radius: 2px;
+      transition: width .3s, background .3s;
+      width: 0%;
+    }
+    .strength-label {
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .btn-submit {
+      width: 100%;
+      background: var(--blue);
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-family: var(--font-ui);
+      font-size: 14px;
+      font-weight: 600;
+      padding: 12px;
+      cursor: pointer;
+      transition: background .15s, box-shadow .15s, transform .1s;
+      margin-top: 4px;
+    }
+    .btn-submit:hover {
+      background: #5ea8ff;
+      box-shadow: 0 4px 20px rgba(77,144,255,.35);
+    }
+    .btn-submit:active { transform: scale(.99); }
+    .btn-submit:disabled { opacity: .5; cursor: not-allowed; }
+
+    .auth-error {
+      background: rgba(255,80,80,.08);
+      border: 1px solid rgba(255,80,80,.3);
+      border-radius: 8px;
+      color: var(--red);
+      font-size: 13px;
+      padding: 10px 14px;
+      margin-bottom: 18px;
+      display: none;
+    }
+    .auth-error.visible { display: block; }
+
+    .auth-terms {
+      font-size: 12px;
+      color: var(--text-muted);
+      line-height: 1.6;
+      margin-top: 16px;
+      margin-bottom: 18px;
+    }
+    .auth-terms a { color: var(--blue); text-decoration: none; }
+    .auth-terms a:hover { text-decoration: underline; }
+
+    .auth-divider {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin: 24px 0;
+    }
+    .auth-divider::before,
+    .auth-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border);
+    }
+    .auth-divider span {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+    }
+
+    .auth-footer {
+      text-align: center;
+      font-size: 13px;
+      color: var(--text-muted);
+    }
+    .auth-footer a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+    .auth-footer a:hover { text-decoration: underline; }
+
+    /* ── Perks list ── */
+    .perks {
+      margin-top: 28px;
+      padding: 20px;
+      background: rgba(77,144,255,.04);
+      border: 1px solid rgba(77,144,255,.12);
+      border-radius: 12px;
+    }
+    .perks-title {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--text-secondary);
+      text-transform: uppercase;
+      letter-spacing: .06em;
+      margin-bottom: 14px;
+    }
+    .perk-row {
+      display: flex;
+      align-items: flex-start;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+    .perk-row:last-child { margin-bottom: 0; }
+    .perk-icon {
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: rgba(77,220,120,.15);
+      border: 1px solid rgba(77,220,120,.3);
+      color: var(--green);
+      font-size: 10px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      margin-top: 1px;
+    }
+    .perk-text {
+      font-size: 13px;
+      color: var(--text-secondary);
+      line-height: 1.4;
+    }
+    .perk-text strong { color: var(--text-primary); }
+
+    /* ── Spinner ── */
+    .spinner {
+      display: inline-block;
+      width: 14px;
+      height: 14px;
+      border: 2px solid rgba(255,255,255,.3);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+      vertical-align: middle;
+      margin-right: 6px;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .disclaimer {
+      text-align: center;
+      font-size: 11px;
+      color: var(--text-muted);
+      margin-top: 24px;
+      line-height: 1.6;
+      padding: 0 8px;
+    }
+    .disclaimer a { color: var(--text-muted); text-decoration: underline; }
+
+    @media (max-width: 480px) {
+      .auth-card { padding: 28px 20px; border-radius: 12px; }
+      .form-row { grid-template-columns: 1fr; gap: 0; }
+      .nav { padding: 0 16px; }
+    }
+  </style>
+</head>
+<body>
+
+  <!-- Nav -->
+  <nav class="nav">
+    <a href="/landing" class="nav-logo">NQ Signal <span>Pro</span></a>
+    <div class="nav-links">
+      <a href="/pricing">Pricing</a>
+      <a href="/login">Sign In</a>
+    </div>
+  </nav>
+
+  <!-- Auth wrapper -->
+  <div class="auth-wrapper">
+    <div class="auth-container">
+
+      <div class="auth-brand">
+        <div class="trial-badge">7-Day Free Trial — No Card Required</div>
+        <div class="auth-brand-logo">NQ Signal <span>Pro</span></div>
+        <div class="auth-brand-sub">Start scanning NQ &amp; MGC signals in seconds</div>
+      </div>
+
+      <div class="auth-card">
+        <div class="auth-title">Create your account</div>
+        <div class="auth-sub">Free plan, upgrade anytime — no commitment</div>
+
+        <div class="auth-error" id="authError"></div>
+
+        <form id="registerForm" novalidate>
+          <div class="form-group">
+            <label class="form-label" for="name">
+              Full Name <span class="optional">(optional)</span>
+            </label>
+            <input
+              class="form-input"
+              type="text"
+              id="name"
+              name="name"
+              placeholder="Your name"
+              autocomplete="name"
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="email">Email Address</label>
+            <input
+              class="form-input"
+              type="email"
+              id="email"
+              name="email"
+              placeholder="you@example.com"
+              autocomplete="email"
+              required
+            />
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="password">Password</label>
+            <input
+              class="form-input"
+              type="password"
+              id="password"
+              name="password"
+              placeholder="At least 8 characters"
+              autocomplete="new-password"
+              required
+            />
+            <div class="password-strength" id="pwStrength">
+              <div class="strength-bar">
+                <div class="strength-fill" id="strengthFill"></div>
+              </div>
+              <div class="strength-label" id="strengthLabel"></div>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label class="form-label" for="confirmPassword">Confirm Password</label>
+            <input
+              class="form-input"
+              type="password"
+              id="confirmPassword"
+              name="confirmPassword"
+              placeholder="Repeat your password"
+              autocomplete="new-password"
+              required
+            />
+          </div>
+
+          <div class="auth-terms">
+            By creating an account you agree to our
+            <a href="#">Terms of Service</a> and <a href="#">Privacy Policy</a>.
+            Trading futures involves substantial risk of loss.
+          </div>
+
+          <button type="submit" class="btn-submit" id="submitBtn">
+            Create Free Account
+          </button>
+        </form>
+
+        <div class="auth-divider"><span>Already have an account?</span></div>
+
+        <div class="auth-footer">
+          <a href="/login">Sign in instead</a>
+        </div>
+      </div>
+
+      <!-- Perks -->
+      <div class="perks">
+        <div class="perks-title">What you get for free</div>
+        <div class="perk-row">
+          <div class="perk-icon">✓</div>
+          <div class="perk-text"><strong>Live signal feed</strong> — limited signals, real-time delivery</div>
+        </div>
+        <div class="perk-row">
+          <div class="perk-icon">✓</div>
+          <div class="perk-text"><strong>Market dashboard</strong> — NQ &amp; MGC price overview</div>
+        </div>
+        <div class="perk-row">
+          <div class="perk-icon">✓</div>
+          <div class="perk-text"><strong>Trade journal</strong> — log your trades and notes</div>
+        </div>
+        <div class="perk-row">
+          <div class="perk-icon">✓</div>
+          <div class="perk-text">Upgrade to <strong>Pro</strong> anytime for full signal access</div>
+        </div>
+      </div>
+
+      <div class="disclaimer">
+        Trading futures involves significant risk. Past performance is not indicative of future results.<br>
+        NQ Signal Pro does not provide financial advice. Trade at your own risk.
+      </div>
+
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      const form    = document.getElementById('registerForm');
+      const btn     = document.getElementById('submitBtn');
+      const errBox  = document.getElementById('authError');
+      const emailEl = document.getElementById('email');
+      const passEl  = document.getElementById('password');
+      const confEl  = document.getElementById('confirmPassword');
+      const pwStr   = document.getElementById('pwStrength');
+      const fill    = document.getElementById('strengthFill');
+      const label   = document.getElementById('strengthLabel');
+
+      function showError(msg) {
+        errBox.textContent = msg;
+        errBox.classList.add('visible');
+        errBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+      }
+      function clearError() { errBox.classList.remove('visible'); }
+      function setLoading(on) {
+        btn.disabled = on;
+        btn.innerHTML = on
+          ? '<span class="spinner"></span>Creating account…'
+          : 'Create Free Account';
+      }
+
+      // Auto-redirect if already logged in
+      fetch('/api/auth/me', { credentials: 'same-origin' })
+        .then(r => r.ok ? r.json() : null)
+        .then(data => { if (data && data.id) window.location.href = '/'; })
+        .catch(() => {});
+
+      // Password strength meter
+      passEl.addEventListener('input', () => {
+        const val = passEl.value;
+        if (!val) { pwStr.classList.remove('visible'); return; }
+        pwStr.classList.add('visible');
+
+        let score = 0;
+        if (val.length >= 8)  score++;
+        if (val.length >= 12) score++;
+        if (/[A-Z]/.test(val)) score++;
+        if (/[0-9]/.test(val)) score++;
+        if (/[^A-Za-z0-9]/.test(val)) score++;
+
+        const levels = [
+          { pct: 20,  color: 'var(--red)',    text: 'Very weak' },
+          { pct: 40,  color: '#f59e0b',       text: 'Weak' },
+          { pct: 60,  color: 'var(--yellow)', text: 'Fair' },
+          { pct: 80,  color: '#60a5fa',       text: 'Good' },
+          { pct: 100, color: 'var(--green)',  text: 'Strong' },
+        ];
+        const lvl = levels[Math.min(score, 4)];
+        fill.style.width    = lvl.pct + '%';
+        fill.style.background = lvl.color;
+        label.textContent   = lvl.text;
+        label.style.color   = lvl.color;
+      });
+
+      form.addEventListener('submit', async (e) => {
+        e.preventDefault();
+        clearError();
+
+        const name     = document.getElementById('name').value.trim();
+        const email    = emailEl.value.trim();
+        const password = passEl.value;
+        const confirm  = confEl.value;
+
+        if (!email) {
+          showError('Please enter your email address.');
+          emailEl.classList.add('error'); emailEl.focus(); return;
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+          showError('Please enter a valid email address.');
+          emailEl.classList.add('error'); emailEl.focus(); return;
+        }
+        if (!password || password.length < 8) {
+          showError('Password must be at least 8 characters.');
+          passEl.classList.add('error'); passEl.focus(); return;
+        }
+        if (password !== confirm) {
+          showError('Passwords do not match.');
+          confEl.classList.add('error'); confEl.focus(); return;
+        }
+
+        setLoading(true);
+        try {
+          const res = await fetch('/api/auth/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            credentials: 'same-origin',
+            body: JSON.stringify({ email, password, name: name || undefined }),
+          });
+          const data = await res.json();
+
+          if (!res.ok) {
+            showError(data.error || 'Registration failed. Please try again.');
+          } else {
+            // Success — redirect to dashboard
+            window.location.href = '/';
+          }
+        } catch (err) {
+          showError('Network error. Please check your connection and try again.');
+        } finally {
+          setLoading(false);
+        }
+      });
+
+      // Clear error on input
+      [emailEl, passEl, confEl].forEach(el => {
+        el.addEventListener('input', () => {
+          el.classList.remove('error');
+          clearError();
+        });
+      });
+    })();
+  </script>
+
+</body>
+</html>
