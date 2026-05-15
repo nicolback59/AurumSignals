@@ -98,7 +98,7 @@
       letter-spacing: .04em;
       border: 1px solid;
     }
-    .status-pill.active { background: var(--blue-glow); color: var(--blue); border-color: var(--blue-border); animation: statusPulse 3s infinite; }
+    .status-pill.active { background: var(--yellow-glow); color: var(--yellow); border-color: var(--yellow-border); animation: statusPulse 3s infinite; }
     @keyframes statusPulse { 0%,100%{opacity:1} 50%{opacity:.6} }
     .status-pill.win  { background: var(--green-glow);  color: var(--green);  border-color: var(--green-border); }
     .status-pill.loss { background: var(--red-glow);    color: var(--red);    border-color: var(--red-border); }
@@ -856,8 +856,8 @@ function renderPerfChart(journalSigs) {
   }
 
   const finalVal = data[data.length - 1] ?? 0;
-  const lineColor = finalVal >= 0 ? '#1dbe86' : '#e04545';
-  const fillColor = finalVal >= 0 ? 'rgba(29,190,134,.08)' : 'rgba(224,69,69,.08)';
+  const lineColor = finalVal >= 0 ? '#2e9e6a' : '#a03838';
+  const fillColor = finalVal >= 0 ? 'rgba(46,158,106,.08)' : 'rgba(160,56,56,.08)';
 
   const ctx = document.getElementById('perfChart').getContext('2d');
   if (perfChart) perfChart.destroy();

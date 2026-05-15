@@ -396,11 +396,11 @@ function renderPnlChart(signals) {
     cum += s.pnl_pts;
     labels.push(hhmm(s.received_at));
     data.push(+cum.toFixed(1));
-    ptColors.push(cum >= 0 ? '#00d4a0' : '#ff3d5a');
+    ptColors.push(cum >= 0 ? '#2e9e6a' : '#a03838');
   }
   const finalVal  = data[data.length - 1] ?? 0;
-  const lineColor = finalVal >= 0 ? '#00d4a0' : '#ff3d5a';
-  const fillColor = finalVal >= 0 ? 'rgba(0,212,160,.08)' : 'rgba(255,61,90,.08)';
+  const lineColor = finalVal >= 0 ? '#2e9e6a' : '#a03838';
+  const fillColor = finalVal >= 0 ? 'rgba(46,158,106,.08)' : 'rgba(160,56,56,.08)';
 
   const ctx = el.getContext('2d');
   if (pnlChart) pnlChart.destroy();
@@ -438,14 +438,14 @@ function renderDonut(w, l, be) {
     data: {
       labels: ['Win', 'Loss', 'BE'],
       datasets: [{ data: [w, l, be],
-        backgroundColor: ['rgba(0,212,160,.7)', 'rgba(255,61,90,.7)', 'rgba(249,115,22,.7)'],
-        borderColor:     ['#00d4a0', '#ff3d5a', '#f97316'],
+        backgroundColor: ['rgba(46,158,106,.7)', 'rgba(160,56,56,.7)', 'rgba(176,120,40,.7)'],
+        borderColor:     ['#2e9e6a', '#a03838', '#b07828'],
         borderWidth: 2 }],
     },
     options: {
       responsive: true, maintainAspectRatio: false, cutout: '65%',
       plugins: {
-        legend: { position: 'bottom', labels: { color: '#8888aa', font: { size: 10 }, padding: 14 } },
+        legend: { position: 'bottom', labels: { color: '#a89070', font: { size: 10 }, padding: 14 } },
       },
     },
   });

@@ -275,15 +275,15 @@ function buildWinRateChart(inst) {
   const datasets = [];
   if (inst === 'MNQ' || inst === 'ALL') datasets.push({
     label: 'MNQ Win %',
-    borderColor: '#3d9ec8',
-    backgroundColor: 'rgba(61,158,200,.07)',
+    borderColor: '#d4982e',
+    backgroundColor: 'rgba(212,152,46,.07)',
     pointRadius: 3, pointHoverRadius: 5, tension: 0.3, fill: true,
     data: mnqRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
   });
   if (inst === 'MGC' || inst === 'ALL') datasets.push({
     label: 'MGC Win %',
-    borderColor: '#c89022',
-    backgroundColor: 'rgba(200,144,34,.06)',
+    borderColor: '#9a7850',
+    backgroundColor: 'rgba(154,120,80,.06)',
     pointRadius: 3, pointHoverRadius: 5, tension: 0.3,
     data: mgcRuns.map(r => ({ x: r.run_at.slice(0,16).replace('T',' '), y: +(r.win_rate*100).toFixed(1) })),
   });
@@ -297,7 +297,7 @@ function buildWinRateChart(inst) {
       plugins: {
         ...CHART_OPTS.plugins,
         annotation: { annotations: {
-          target: { type:'line', yMin:50, yMax:50, borderColor:'rgba(29,190,134,.2)', borderWidth:1, borderDash:[4,4] },
+          target: { type:'line', yMin:50, yMax:50, borderColor:'rgba(46,158,106,.2)', borderWidth:1, borderDash:[4,4] },
         }},
       },
       scales: {
@@ -320,8 +320,8 @@ function buildActivityChart() {
       labels: recent.map(r => r.run_at.slice(5,16).replace('T',' ')),
       datasets: [{
         label: 'Trades Tested',
-        backgroundColor: recent.map(r => r.instrument === 'MNQ' ? 'rgba(61,158,200,.4)' : 'rgba(200,144,34,.38)'),
-        borderColor:      recent.map(r => r.instrument === 'MNQ' ? '#3d9ec8' : '#c89022'),
+        backgroundColor: recent.map(r => r.instrument === 'MNQ' ? 'rgba(212,152,46,.4)' : 'rgba(154,120,80,.38)'),
+        borderColor:      recent.map(r => r.instrument === 'MNQ' ? '#d4982e' : '#9a7850'),
         borderWidth: 1,
         borderRadius: 3,
         data: recent.map(r => r.trades_found),

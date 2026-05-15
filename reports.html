@@ -37,7 +37,7 @@
       transition: color .15s, border-color .15s;
     }
     .tab-btn:hover  { color: rgba(237,231,217,.75); }
-    .tab-btn.active { color: var(--text-primary); border-bottom-color: var(--accent, #7a62e8); }
+    .tab-btn.active { color: var(--text-primary); border-bottom-color: var(--accent, #c8902a); }
 
     .tab-panel { display: none; }
     .tab-panel.active { display: block; }
@@ -56,7 +56,7 @@
       font-weight: 700;
       letter-spacing: .06em;
       text-transform: uppercase;
-      color: var(--accent, #7a62e8);
+      color: var(--accent, #c8902a);
     }
     .report-pre {
       font: 12px/1.65 var(--font-mono, monospace);
@@ -65,11 +65,11 @@
       word-break: break-word;
       margin: 0;
     }
-    .report-pre .hi-green  { color: #1dbe86; }
-    .report-pre .hi-red    { color: #e04545; }
-    .report-pre .hi-yellow { color: #c89022; }
-    .report-pre .hi-blue   { color: #3d9ec8; }
-    .report-pre .hi-purple { color: #a882e8; }
+    .report-pre .hi-green  { color: #2e9e6a; }
+    .report-pre .hi-red    { color: #a03838; }
+    .report-pre .hi-yellow { color: #c8902a; }
+    .report-pre .hi-blue   { color: #5a8a9e; }
+    .report-pre .hi-purple { color: #9a7a5a; }
 
     /* ── Section grids ── */
     .metrics-grid {
@@ -95,9 +95,9 @@
       font: 700 20px/1 var(--font-display, sans-serif);
       color: var(--text-primary);
     }
-    .metric-box .val.green  { color: #1dbe86; }
-    .metric-box .val.red    { color: #e04545; }
-    .metric-box .val.yellow { color: #c89022; }
+    .metric-box .val.green  { color: #2e9e6a; }
+    .metric-box .val.red    { color: #a03838; }
+    .metric-box .val.yellow { color: #c8902a; }
 
     /* ── Session table ── */
     .data-table {
@@ -129,11 +129,11 @@
       font-weight: 700;
       letter-spacing: .05em;
     }
-    .badge-green  { background: rgba(29,190,134,.12);  color: #1dbe86; }
-    .badge-red    { background: rgba(224,69,69,.12);   color: #e04545; }
-    .badge-yellow { background: rgba(200,144,34,.12);  color: #c89022; }
+    .badge-green  { background: rgba(46,158,106,.12);  color: #2e9e6a; }
+    .badge-red    { background: rgba(160,56,56,.12);   color: #a03838; }
+    .badge-yellow { background: rgba(200,144,42,.12);  color: #c8902a; }
     .badge-gray   { background: rgba(220,200,170,.08); color: rgba(237,231,217,.5); }
-    .badge-purple { background: rgba(168,130,232,.12); color: #a882e8; }
+    .badge-purple { background: rgba(154,122,90,.12);  color: #9a7a5a; }
 
     /* ── Controls ── */
     .controls-row {
@@ -152,19 +152,19 @@
       padding: 7px 12px;
     }
     .btn-sm {
-      background: rgba(122,98,232,.15);
-      border: 1px solid rgba(122,98,232,.3);
+      background: rgba(200,144,42,.15);
+      border: 1px solid rgba(200,144,42,.3);
       border-radius: 6px;
-      color: #a882e8;
+      color: #c8902a;
       font: 600 12px var(--font-ui, sans-serif);
       padding: 7px 14px;
       cursor: pointer;
       transition: background .15s;
     }
-    .btn-sm:hover { background: rgba(122,98,232,.25); }
+    .btn-sm:hover { background: rgba(200,144,42,.25); }
 
     .loading-msg { color: rgba(237,231,217,.35); font: 13px var(--font-ui, sans-serif); padding: 24px 0; }
-    .error-msg   { color: #e04545; font: 13px var(--font-ui, sans-serif); padding: 24px 0; }
+    .error-msg   { color: #a03838; font: 13px var(--font-ui, sans-serif); padding: 24px 0; }
 
     .divider { border: none; border-top: 1px solid rgba(220,200,170,.07); margin: 20px 0; }
 
@@ -183,8 +183,8 @@
     .oc-box .oc-session { font: 700 11px var(--font-mono, monospace); letter-spacing: .06em; text-transform: uppercase; color: var(--text-muted); margin-bottom: 8px; }
     .oc-box .oc-bias    { font: 700 15px var(--font-display, sans-serif); margin-bottom: 6px; }
     .oc-box .oc-stats   { font: 12px var(--font-mono, monospace); color: var(--text-secondary); }
-    .bull  { color: #1dbe86; }
-    .bear  { color: #e04545; }
+    .bull  { color: #2e9e6a; }
+    .bear  { color: #a03838; }
     .neut  { color: rgba(237,231,217,.4); }
   </style>
 </head>
@@ -285,9 +285,9 @@ const fmtTs = ts => ts ? new Date(ts).toLocaleString() : '—';
 
 function colorWR(wr) {
   if (wr == null) return 'inherit';
-  if (wr >= 0.65) return '#1dbe86';
-  if (wr >= 0.55) return '#c89022';
-  return '#e04545';
+  if (wr >= 0.65) return '#2e9e6a';
+  if (wr >= 0.55) return '#c8902a';
+  return '#a03838';
 }
 function badgeWR(wr) {
   if (wr == null) return `<span class="badge badge-gray">—</span>`;
@@ -355,7 +355,7 @@ function renderMidweek(d) {
   if (d.warnings?.length) {
     sections.push(`<div class="report-card">
       <h3>Warnings</h3>
-      ${d.warnings.map(w => `<div style="color:#c89022;font:12px var(--font-ui,sans-serif);margin-bottom:6px">• ${w}</div>`).join('')}
+      ${d.warnings.map(w => `<div style="color:#c8902a;font:12px var(--font-ui,sans-serif);margin-bottom:6px">• ${w}</div>`).join('')}
     </div>`);
   }
 
@@ -363,7 +363,7 @@ function renderMidweek(d) {
   if (d.recommendations?.length) {
     sections.push(`<div class="report-card">
       <h3>Recommendations</h3>
-      ${d.recommendations.map(w => `<div style="color:#a882e8;font:12px var(--font-ui,sans-serif);margin-bottom:6px">→ ${w}</div>`).join('')}
+      ${d.recommendations.map(w => `<div style="color:#9a7a5a;font:12px var(--font-ui,sans-serif);margin-bottom:6px">→ ${w}</div>`).join('')}
     </div>`);
   }
 
@@ -483,9 +483,9 @@ function renderWeekly(d, weekFilter) {
   const es = d.edge_strengths;
   if (es?.strengths?.length || es?.weaknesses?.length) {
     const strengthRows = (es.strengths ?? []).map(s =>
-      `<div style="color:#1dbe86;font:12px var(--font-ui,sans-serif);margin-bottom:5px">+ ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
+      `<div style="color:#2e9e6a;font:12px var(--font-ui,sans-serif);margin-bottom:5px">+ ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
     const weakRows = (es.weaknesses ?? []).map(s =>
-      `<div style="color:#e04545;font:12px var(--font-ui,sans-serif);margin-bottom:5px">- ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
+      `<div style="color:#a03838;font:12px var(--font-ui,sans-serif);margin-bottom:5px">- ${s.label} — WR ${(s.wr * 100).toFixed(0)}% (${s.n} trades)</div>`).join('');
     if (strengthRows || weakRows) {
       sections.push(`<div class="report-card">
         ${strengthRows ? `<h3>Edge Strengths</h3>${strengthRows}` : ''}
@@ -512,13 +512,13 @@ function renderWeekly(d, weekFilter) {
 
 function renderLearningCards(rows) {
   const stratOrder = ['MNQ_INTRADAY','MNQ_SWING','MNQ_50PT','MGC_SCALP','MGC_INTRADAY'];
-  const stratColors = { MNQ_INTRADAY:'#2ab8a2', MNQ_SWING:'#3d9ec8', MNQ_50PT:'#a882e8', MGC_SCALP:'#cb7828', MGC_INTRADAY:'#c89022' };
+  const stratColors = { MNQ_INTRADAY:'#2e9e6a', MNQ_SWING:'#d4982e', MNQ_50PT:'#9a7a5a', MGC_SCALP:'#b07828', MGC_INTRADAY:'#c8902a' };
   const sorted = [...rows].sort((a, b) => stratOrder.indexOf(a.strategy_key) - stratOrder.indexOf(b.strategy_key));
 
   const cards = sorted.map(s => {
     const color  = stratColors[s.strategy_key] || 'rgba(237,231,217,.4)';
     const wr     = s.win_rate != null ? s.win_rate.toFixed(1) + '%' : '—';
-    const wrColor = s.win_rate == null ? 'rgba(237,231,217,.4)' : s.win_rate >= 55 ? '#1dbe86' : s.win_rate >= 45 ? '#c89022' : '#e04545';
+    const wrColor = s.win_rate == null ? 'rgba(237,231,217,.4)' : s.win_rate >= 55 ? '#2e9e6a' : s.win_rate >= 45 ? '#c8902a' : '#a03838';
 
     const sectionBlock = (title, content, accent) => {
       if (!content) return '';
@@ -527,7 +527,7 @@ function renderLearningCards(rows) {
         const ci = l.indexOf(':');
         if (ci > 0 && ci < 40) {
           const key = l.slice(0, ci), val = l.slice(ci + 1).trim();
-          const kc = key.startsWith('REPEAT') || key.startsWith('ESCALATED') ? '#e04545' : key.startsWith('NO_') || key.startsWith('MAINTAIN') ? '#1dbe86' : accent;
+          const kc = key.startsWith('REPEAT') || key.startsWith('ESCALATED') ? '#a03838' : key.startsWith('NO_') || key.startsWith('MAINTAIN') ? '#2e9e6a' : accent;
           return `<div style="margin-bottom:5px;font-size:12px;line-height:1.5">
             <span style="font:700 10px monospace;color:${kc};margin-right:6px">[${escH(key)}]</span>
             <span style="color:rgba(237,231,217,.75)">${escH(val)}</span>
@@ -553,10 +553,10 @@ function renderLearningCards(rows) {
         <span style="font:700 11px monospace;color:${wrColor}">${wr} WR</span>
         <span style="font:10px var(--font-mono,monospace);color:rgba(237,231,217,.4)">${s.total_signals} signals · ${s.wins}W/${s.losses}L/${s.breakevens}BE</span>
       </div>
-      ${sectionBlock('Performance Review', s.performance_review, '#2dd4bf')}
-      ${sectionBlock('Failure Analysis',   s.failure_analysis,   '#e04545')}
-      ${sectionBlock('Corrective Actions', s.corrective_actions, '#c89022')}
-      ${sectionBlock('Pattern Tracking',   s.pattern_tracking,   '#a882e8')}
+      ${sectionBlock('Performance Review', s.performance_review, '#2e9e6a')}
+      ${sectionBlock('Failure Analysis',   s.failure_analysis,   '#a03838')}
+      ${sectionBlock('Corrective Actions', s.corrective_actions, '#c8902a')}
+      ${sectionBlock('Pattern Tracking',   s.pattern_tracking,   '#9a7a5a')}
     </div>`;
   }).join('');
 
@@ -615,7 +615,7 @@ function renderOpeningCandle(d) {
     if (r.sessionSummary?.length) {
       const rows = r.sessionSummary.map(s => {
         const acc = s.accuracy != null ? s.accuracy + '%' : '—';
-        const accColor = s.accuracy >= 60 ? '#1dbe86' : s.accuracy >= 54 ? '#c89022' : '#e04545';
+        const accColor = s.accuracy >= 60 ? '#2e9e6a' : s.accuracy >= 54 ? '#c8902a' : '#a03838';
         const statusBadge = s.active
           ? `<span class="badge badge-green">ACTIVE</span>`
           : s.total >= r.minSampleSize
@@ -661,7 +661,7 @@ function renderEdgeHealth(d) {
   for (const inst of ['MNQ', 'MGC']) {
     const r = d[inst];
     if (!r) continue;
-    const alertColor = r.alert ? '#e04545' : '#1dbe86';
+    const alertColor = r.alert ? '#a03838' : '#2e9e6a';
     const alertLabel = r.alert ? '⚠ DEGRADATION DETECTED' : '✓ EDGE HEALTHY';
     sections.push(`<div class="report-card">
       <h3>${inst} — Edge Status</h3>
@@ -692,7 +692,7 @@ function renderStrategyTable(byStrategy) {
     const wr = s.total > 0 ? s.wins / s.total : null;
     const wrCls = wr == null ? 'badge-gray' : wr >= 0.65 ? 'badge-green' : wr >= 0.55 ? 'badge-yellow' : 'badge-red';
     const wrTxt = wr != null ? (wr * 100).toFixed(1) + '%' : '—';
-    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#1dbe86' : '#e04545';
+    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#2e9e6a' : '#a03838';
     return `<tr>
       <td style="color:#fff;font-weight:700">${s.strategy_name}</td>
       <td style="color:rgba(237,231,217,.55)">${s.instrument ?? '—'}</td>
@@ -718,7 +718,7 @@ function renderSessionTable(bySession) {
     const wr = s.total > 0 ? s.wins / s.total : null;
     const wrCls = wr == null ? 'badge-gray' : wr >= 0.65 ? 'badge-green' : wr >= 0.55 ? 'badge-yellow' : 'badge-red';
     const wrTxt = wr != null ? (wr * 100).toFixed(1) + '%' : '—';
-    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#1dbe86' : '#e04545';
+    const pnlColor = (s.total_pnl ?? 0) >= 0 ? '#2e9e6a' : '#a03838';
     return `<tr>
       <td style="color:#fff">${s.session}</td>
       <td style="color:rgba(237,231,217,.55)">${s.instrument ?? '—'}</td>
