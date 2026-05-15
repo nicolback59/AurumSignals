@@ -122,7 +122,7 @@ class Scanner extends EventEmitter {
       ntfyTopic:       config.ntfyTopic       || process.env.NTFY_TOPIC || '',
       ntfyToken:       config.ntfyToken       || process.env.NTFY_TOKEN || '',
       btIntervalH:     config.btIntervalH     || parseFloat(process.env.BACKTEST_INTERVAL_H  || '0.167'),  // 10 min default
-      btBars:          config.btBars          || parseInt(process.env.BACKTEST_BARS           || '5000'),
+      btBars:          config.btBars          || parseInt(process.env.BACKTEST_BARS           || '2000'),
       btSlippage:      config.btSlippage      || parseFloat(process.env.BT_SLIPPAGE          || '0.5'),
       btTargetTrades:  config.btTargetTrades  || parseInt(process.env.BT_TARGET_TRADES        || '120'),
       optIntervalH:    config.optIntervalH    || parseFloat(process.env.OPTIMIZER_INTERVAL_H  || '12'),
@@ -1409,7 +1409,21 @@ class Scanner extends EventEmitter {
     if (!symbol) return;
 
     try {
-      const heapMB = Math.round(process.memoryUsage().heapUsed / 1_048_576);
+      // Hint V8 to collect garbage before the memory-intensive backtest loop.
+      // --expose-gc flag makes global.gc() available; gracefully skipped if absent.
+      if (typeof global.gc === 'function') global.gc();
+
+      const mem   = process.memoryUsage();
+      const heapMB = Math.round(mem.heapUsed / 1_048_576);
+      const heapTotalMB = Math.round(mem.heapTotal / 1_048_576);
+
+      // Guard: skip if heap is already too full — the O(n²) backtest loop would OOM.
+      // 330 MB leaves ~70 MB headroom under the 400 MB --max-old-space-size limit.
+      if (heapMB > 330) {
+        this._log(`BACKTEST SKIP (${instrument}): heap ${heapMB}/${heapTotalMB}MB too high — will retry next cycle`);
+        return;
+      }
+
       this._log(`BACKTEST START: ${instrument} (${this.cfg.btBars} bars, target ${this.cfg.btTargetTrades} trades) heap=${heapMB}MB`);
 
       // Check for pending shadow revision first
@@ -2211,11 +2225,11 @@ class Scanner extends EventEmitter {
     this.scan();
     this._intervals.push(setInterval(() => this.scan(), fallbackMs));
 
-    // Startup backtests — delayed so the service stabilises and scan traffic settles
-    // before the memory-heavy backtest runs. Staggered 6 min apart to avoid
-    // simultaneous Yahoo Finance requests.
-    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'), 3 * 60_000);    // 3 min
-    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 5 * 60_000);    // 5 min
+    // Startup backtests — delayed so the service stabilises, scan traffic settles,
+    // and the GC has had multiple cycles before the memory-heavy backtest runs.
+    // Previously 3/5 min, which caused OOM crashes on Render starter (512 MB).
+    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'), 10 * 60_000);   // 10 min
+    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 18 * 60_000);   // 18 min
 
     // Startup optimizers (after backtests finish)
     setTimeout(() => this.runOptimizerCycle('MNQ'), 45 * 60_000);
