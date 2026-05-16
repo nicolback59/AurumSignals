@@ -1510,18 +1510,28 @@ class Scanner extends EventEmitter {
       }
 
       // ── Duplicate run guard ───────────────────────────────────────────────────
-      // If the last run for this instrument has identical win_rate, trades_found,
-      // and profit_factor, the data window hasn't meaningfully changed — skip.
-      const _lastRun = this.db.prepare(
-        `SELECT win_rate, trades_found, profit_factor FROM backtest_runs WHERE instrument=? ORDER BY run_at DESC LIMIT 1`
+      // Use a data-window fingerprint (first+last bar timestamp + trade count) so
+      // we never store two runs built from the exact same Yahoo Finance response.
+      // This is immune to Infinity profit_factor (stored as NULL by SQLite) and
+      // any floating-point precision edge cases.
+      const _dwFirst = bars1m[0]?.timestamp ?? '';
+      const _dwLast  = bars1m[bars1m.length - 1]?.timestamp ?? '';
+      const _dataWindowKey = `${_dwFirst}|${_dwLast}|${metrics.tradeCount ?? 0}`;
+
+      const _lastRunRow = this.db.prepare(
+        `SELECT params_json FROM backtest_runs WHERE instrument=? ORDER BY run_at DESC LIMIT 1`
       ).get(instrument);
-      if (_lastRun &&
-          Math.abs((_lastRun.win_rate      ?? 0) - (metrics.winRate      ?? 0)) < 0.001 &&
-          _lastRun.trades_found === (metrics.tradeCount ?? 0) &&
-          Math.abs((_lastRun.profit_factor ?? 0) - (metrics.profitFactor ?? 0)) < 0.01) {
-        this._log(`BACKTEST SKIP SAVE (${instrument}): duplicate of last run — skipped`);
-        return;
+      if (_lastRunRow) {
+        let _lastKey = '';
+        try { _lastKey = JSON.parse(_lastRunRow.params_json ?? '{}')._dataWindowKey ?? ''; } catch {}
+        if (_lastKey && _lastKey === _dataWindowKey) {
+          this._log(`BACKTEST SKIP SAVE (${instrument}): same data window as last run — skipped`);
+          return;
+        }
       }
+
+      // Embed fingerprint so the NEXT run can compare against it
+      params._dataWindowKey = _dataWindowKey;
 
       const runId = saveBacktestRun(this.db, instrument, params, metrics, triggeredBy);
 
