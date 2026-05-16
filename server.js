@@ -86,6 +86,19 @@ function applyMigrations() {
       db.exec("ALTER TABLE backtest_trades ADD COLUMN pnl_pts REAL");
       console.log('[migration] Added pnl_pts to backtest_trades');
     }
+    // Backfill pnl_pts for historical rows that have entry/tp1/sl but no pnl_pts
+    db.exec(`
+      UPDATE backtest_trades
+      SET pnl_pts = CASE
+        WHEN outcome = 'BE'   THEN 0
+        WHEN outcome = 'WIN'  AND direction = 'LONG'  AND tp1 IS NOT NULL AND entry IS NOT NULL THEN ROUND(tp1 - entry, 2)
+        WHEN outcome = 'WIN'  AND direction = 'SHORT' AND tp1 IS NOT NULL AND entry IS NOT NULL THEN ROUND(entry - tp1, 2)
+        WHEN outcome = 'LOSS' AND direction = 'LONG'  AND sl  IS NOT NULL AND entry IS NOT NULL THEN ROUND(sl  - entry, 2)
+        WHEN outcome = 'LOSS' AND direction = 'SHORT' AND sl  IS NOT NULL AND entry IS NOT NULL THEN ROUND(entry - sl,  2)
+        ELSE NULL
+      END
+      WHERE pnl_pts IS NULL AND outcome IN ('WIN','LOSS','BE') AND entry IS NOT NULL
+    `);
   }
 }
 applyMigrations();
