@@ -8,8 +8,8 @@ const {
 
 const THRESHOLDS = {
   MNQ_INTRADAY: 65,  // raised from 60 — require stronger HTF+VWAP confluence
-  MNQ_SWING:    60,  // raised from 55 — tighter confirmation candle + ADX gate
-  MNQ_50PT:     58,  // raised from 42 — require clean breakout + room to target
+  MNQ_SWING:    55,  // lowered from 60 — more signal frequency with new archetypes
+  MNQ_50PT:     55,  // lowered from 58 — more signal frequency with new archetypes
   MGC_SCALP:    55,  // raised from 45 — tighter confluence gate for backtest-quality signals
   MGC_INTRADAY: 60,  // keep
 };
