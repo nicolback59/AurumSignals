@@ -412,13 +412,17 @@ function renderRunsTable() {
   // Only show runs that produced trades — zero-signal runs are diagnostic-only
   const validRuns = allRuns.filter(r => (r.trades_found ?? 0) > 0).slice(0, 50);
   tbody.innerHTML = validRuns.map(r => {
-    const wr   = (r.win_rate * 100).toFixed(1);
-    const cls  = wrClass(r.win_rate);
+    const wr      = (r.win_rate * 100).toFixed(1);
+    const cls     = wrClass(r.win_rate);
+    const isHist  = r.triggered_by === 'historical_5m';
     const inst = r.instrument === 'MNQ'
       ? `<span style="color:var(--mnq);font-weight:700">MNQ</span>`
       : `<span style="color:var(--mgc);font-weight:700">MGC</span>`;
     const shortId = `#${String(r.id).slice(-4).padStart(4,'0')}`;
-    return `<tr>
+    const trigBadge = isHist
+      ? `<span style="background:rgba(212,175,55,0.18);color:#d4af37;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700">60d HIST</span>`
+      : `<span style="color:var(--text-muted);font-size:10px">${r.triggered_by ?? '—'}</span>`;
+    return `<tr${isHist ? ' style="background:rgba(212,175,55,0.04)"' : ''}>
       <td style="color:var(--text-muted);font-family:var(--font-mono);font-size:10px">${shortId}</td>
       <td>${inst}</td>
       <td style="color:var(--text-secondary)">${r.run_at.slice(0,16).replace('T',' ')}</td>
@@ -427,7 +431,7 @@ function renderRunsTable() {
       <td class="${cls}">${wr}%</td>
       <td>${r.sharpe ?? '—'}</td>
       <td>${r.profit_factor ?? '—'}</td>
-      <td style="color:var(--text-muted)">${r.triggered_by ?? '—'}</td>
+      <td>${trigBadge}</td>
     </tr>`;
   }).join('');
 }
