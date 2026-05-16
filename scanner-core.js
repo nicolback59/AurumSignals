@@ -21,6 +21,7 @@ const EventEmitter = require('events');
 
 const { evaluateAll, STRATEGY_META } = require('./strategy-engine');
 const {
+  aggregate1mTo5m,
   aggregate5mTo15m,
   aggregate5mTo30m,
   aggregate5mTo45m,
@@ -1421,6 +1422,14 @@ class Scanner extends EventEmitter {
     const symbol = this.cfg.btSymbols[instrument];
     if (!symbol) return;
 
+    // Skip resource-intensive backtest when futures market is closed.
+    // Manual/midweek_trigger calls pass a non-'scheduled' triggeredBy so they
+    // can bypass this guard (e.g. server startup warm-up runs).
+    if (triggeredBy === 'scheduled' && !this._isMarketOpen()) {
+      this._log(`BACKTEST SKIP (${instrument}): market closed`);
+      return;
+    }
+
     try {
       // Hint V8 to collect garbage before the memory-intensive backtest loop.
       // --expose-gc flag makes global.gc() available; gracefully skipped if absent.
@@ -1465,6 +1474,14 @@ class Scanner extends EventEmitter {
       }
 
       this._savePrice(symbol, bars1m);
+
+      // Seed the 5m chart cache from the 1m bars so the homepage charts always
+      // have data after the first backtest cycle, even before a scan cycle runs.
+      const bt5m = aggregate1mTo5m(bars1m);
+      if (bt5m.length > 0) {
+        if (instrument === 'MNQ') this._lastGoodBars.mnq5m = bt5m;
+        else if (instrument === 'MGC') this._lastGoodBars.mgc5m = bt5m;
+      }
 
       const params = getParams(this.db, instrument);
       const result = runBacktest(bars1m, params, {
