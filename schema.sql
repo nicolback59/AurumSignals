@@ -312,6 +312,23 @@ CREATE TABLE IF NOT EXISTS password_reset_tokens (
 CREATE INDEX IF NOT EXISTS idx_reset_tokens_user    ON password_reset_tokens(user_id);
 CREATE INDEX IF NOT EXISTS idx_reset_tokens_expires ON password_reset_tokens(expires_at);
 
+-- Historical OHLCV bar archive — accumulates over time as backtest cycles run.
+-- 1m bars are saved on every regular backtest fetch; 5m bars are saved during
+-- deep historical backtest runs. Both are keyed by (symbol, interval, timestamp)
+-- so INSERT OR IGNORE is safe and idempotent.
+CREATE TABLE IF NOT EXISTS historical_bars (
+  symbol    TEXT NOT NULL,
+  interval  TEXT NOT NULL,  -- '1m' | '5m' | '1h'
+  timestamp TEXT NOT NULL,
+  open      REAL NOT NULL,
+  high      REAL NOT NULL,
+  low       REAL NOT NULL,
+  close     REAL NOT NULL,
+  volume    REAL DEFAULT 0,
+  PRIMARY KEY (symbol, interval, timestamp)
+);
+CREATE INDEX IF NOT EXISTS idx_hist_bars ON historical_bars(symbol, interval, timestamp DESC);
+
 -- These are handled via the migration runner in server.js startup instead of
 -- raw SQL here, since SQLite does not support IF NOT EXISTS on ALTER TABLE.
 -- See server.js applyMigrations() for the actual column additions.

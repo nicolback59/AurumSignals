@@ -51,7 +51,7 @@ const {
 const {
   generateMidWeekReport, generateWeeklyDeepReport,
 } = require('./performance-reporter');
-const { runBacktest, runSwingBacktest1h, calcEnhancedMetrics } = require('./backtest-engine');
+const { runBacktest, runBacktest5m, runSwingBacktest1h, calcEnhancedMetrics } = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
   proposeRevision, evaluateShadow, multiObjectiveScore,
@@ -297,6 +297,18 @@ class Scanner extends EventEmitter {
       dailySignalCount: db.prepare(
         `SELECT COUNT(*) cnt FROM signals WHERE instrument=? AND date(received_at)=date('now')`
       ),
+
+      insertHistBar: db.prepare(`
+        INSERT OR IGNORE INTO historical_bars (symbol, interval, timestamp, open, high, low, close, volume)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `),
+
+      loadHistBars: db.prepare(`
+        SELECT timestamp, open, high, low, close, volume
+        FROM historical_bars
+        WHERE symbol = ? AND interval = ?
+        ORDER BY timestamp ASC
+      `),
     };
   }
 
@@ -537,6 +549,37 @@ class Scanner extends EventEmitter {
     const high  = Math.max(...bars.map(b => b.high));
     const low   = Math.min(...bars.map(b => b.low));
     this._stmts.upsertPrice.run(symbol, last.close, first.open, +chg.toFixed(3), high, low);
+  }
+
+  // ── Historical bar archive ────────────────────────────────────────────────────
+
+  _saveHistoricalBars(symbol, bars, interval = '1m') {
+    if (!bars || bars.length === 0) return;
+    const ins = this._stmts.insertHistBar;
+    this.db.transaction(() => {
+      for (const b of bars) {
+        if (b.open == null || b.close == null) continue;
+        ins.run(symbol, interval, b.timestamp, b.open, b.high, b.low, b.close, b.volume ?? 0);
+      }
+    })();
+  }
+
+  _loadHistoricalBars(symbol, interval = '1m') {
+    return this._stmts.loadHistBars.all(symbol, interval);
+  }
+
+  // Merge two bar arrays by timestamp — prefer bars from `a` on collision.
+  _mergeBarsByTimestamp(a, b) {
+    const seen = new Set(a.map(bar => bar.timestamp));
+    const merged = [...a];
+    for (const bar of b) {
+      if (!seen.has(bar.timestamp)) {
+        seen.add(bar.timestamp);
+        merged.push(bar);
+      }
+    }
+    merged.sort((x, y) => (x.timestamp < y.timestamp ? -1 : x.timestamp > y.timestamp ? 1 : 0));
+    return merged;
   }
 
   // ── ntfy push ────────────────────────────────────────────────────────────────
@@ -1483,8 +1526,20 @@ class Scanner extends EventEmitter {
         else if (instrument === 'MGC') this._lastGoodBars.mgc5m = bt5m;
       }
 
+      // ── Archive 1m bars for growing historical dataset ───────────────────────
+      // Each cycle saves the fetched bars (INSERT OR IGNORE keeps deduplication
+      // safe). Over days/weeks this builds up a 30-day+ 1m bar archive that
+      // feeds progressively richer backtests.
+      this._saveHistoricalBars(symbol, bars1m, '1m');
+
+      // Load full accumulated 1m history and merge with the current fetch so the
+      // backtest window grows over time rather than being capped at 7 days.
+      const storedBars = this._loadHistoricalBars(symbol, '1m');
+      const allBars1m  = this._mergeBarsByTimestamp(storedBars, bars1m);
+      this._log(`BACKTEST HISTORY: ${instrument} using ${allBars1m.length} 1m bars (stored: ${storedBars.length} + fresh: ${bars1m.length})`);
+
       const params = getParams(this.db, instrument);
-      const result = runBacktest(bars1m, params, {
+      const result = runBacktest(allBars1m, params, {
         instrument,
         targetTrades: this.cfg.btTargetTrades,
         slippage:     this.cfg.btSlippage,
@@ -1531,8 +1586,8 @@ class Scanner extends EventEmitter {
       // we never store two runs built from the exact same Yahoo Finance response.
       // This is immune to Infinity profit_factor (stored as NULL by SQLite) and
       // any floating-point precision edge cases.
-      const _dwFirst = bars1m[0]?.timestamp ?? '';
-      const _dwLast  = bars1m[bars1m.length - 1]?.timestamp ?? '';
+      const _dwFirst = allBars1m[0]?.timestamp ?? '';
+      const _dwLast  = allBars1m[allBars1m.length - 1]?.timestamp ?? '';
       const _dataWindowKey = `${_dwFirst}|${_dwLast}|${metrics.tradeCount ?? 0}`;
 
       const _lastRunRow = this.db.prepare(
@@ -1716,6 +1771,113 @@ class Scanner extends EventEmitter {
       this._log(`BACKTEST END: ${instrument} heap=${heapMB}MB rss=${rssMB}MB`);
       // Nudge GC if available (node --expose-gc) to free backtest arrays immediately
       if (typeof global.gc === 'function') { try { global.gc(); } catch {} }
+    }
+  }
+
+  // ── Deep historical backtest (60-day 5m bars) ─────────────────────────────────
+
+  /**
+   * Fetch 60 days of 5m bars from Yahoo Finance and run a full backtest.
+   *
+   * This gives ~8× more bar history than the regular 7-day 1m backtest and
+   * produces statistically stronger win-rate estimates. Results are saved to
+   * backtest_runs with triggered_by='historical_5m' so the dashboard can
+   * distinguish them. Runs automatically at startup and weekly thereafter.
+   */
+  async runDeepHistoricalBacktest(instrument) {
+    const symbol = this.cfg.btSymbols[instrument];
+    if (!symbol) return;
+
+    try {
+      this._log(`DEEP HIST BT START: ${instrument} — fetching 60d of 5m bars`);
+
+      const bars5m = await this._fetchYahooBars(symbol, '5m', '60d');
+      if (bars5m.length < 200) {
+        this._log(`DEEP HIST BT SKIP (${instrument}): insufficient 5m bars (${bars5m.length})`);
+        return;
+      }
+
+      this._log(`DEEP HIST BT: ${instrument} — ${bars5m.length} 5m bars fetched`);
+
+      // Persist 5m bars so subsequent runs can load them without re-fetching
+      this._saveHistoricalBars(symbol, bars5m, '5m');
+
+      // Also update chart cache with these fresh 5m bars
+      if (instrument === 'MNQ') this._lastGoodBars.mnq5m = bars5m;
+      else if (instrument === 'MGC') this._lastGoodBars.mgc5m = bars5m;
+
+      const params = getParams(this.db, instrument);
+      const result = runBacktest5m(bars5m, params, {
+        instrument,
+        slippage:    this.cfg.btSlippage,
+        walkForward: true,
+        nWindows:    5,
+        minBars:     200,
+      });
+
+      const { metrics } = result;
+      metrics.barsScanned = bars5m.length;
+
+      if ((metrics.tradeCount ?? 0) === 0) {
+        this._log(`DEEP HIST BT SKIP SAVE (${instrument}): zero trades found`);
+        return;
+      }
+
+      this._log(
+        `DEEP HIST BT END: ${instrument} | trades=${metrics.tradeCount} ` +
+        `WR=${(metrics.winRate * 100).toFixed(1)}% PF=${metrics.profitFactor?.toFixed(2) ?? 'N/A'}`
+      );
+
+      // Tag params so dashboard can identify historical runs
+      params._dataWindowKey  = `5m|${bars5m[0]?.timestamp ?? ''}|${bars5m[bars5m.length - 1]?.timestamp ?? ''}|${metrics.tradeCount}`;
+      params._baseInterval   = '5m';
+      params._histDays       = 60;
+
+      const runId = saveBacktestRun(this.db, instrument, params, metrics, 'historical_5m');
+
+      // Store up to 500 trades from the deep backtest (larger window = more trades)
+      const allTrades = (result.signalLog ?? []).slice(0, 500);
+      if (allTrades.length > 0) {
+        const insTrade = this.db.prepare(`
+          INSERT INTO backtest_trades
+            (run_id, instrument, bar_idx, timestamp, direction, setup, strategy_name,
+             trade_style, regime, entry, sl, tp1, outcome, score, confidence, pnl_pts)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        this.db.transaction(() => {
+          for (const t of allTrades) {
+            let pnl_pts = null;
+            if (t.outcome === 'WIN' && t.entry != null && t.tp1 != null) {
+              pnl_pts = t.direction === 'LONG' ? +(t.tp1 - t.entry).toFixed(2) : +(t.entry - t.tp1).toFixed(2);
+            } else if (t.outcome === 'LOSS' && t.entry != null && t.sl != null) {
+              pnl_pts = t.direction === 'LONG' ? +(t.sl - t.entry).toFixed(2) : +(t.entry - t.sl).toFixed(2);
+            } else if (t.outcome === 'BE') {
+              pnl_pts = 0;
+            }
+            insTrade.run(runId, instrument, t.bar ?? null, t.timestamp ?? null,
+              t.direction, t.setup ?? null, t.strategy_name ?? null,
+              t.trade_style ?? null, t.regime ?? null,
+              t.entry ?? null, t.sl ?? null, t.tp1 ?? null,
+              t.outcome, t.score ?? null, t.confidence ?? null, pnl_pts);
+          }
+        })();
+      }
+
+      saveBacktestDetails(this.db, runId, {
+        byRegime:    metrics.byRegime,
+        byStyle:     metrics.byStyle ?? metrics.byStrategy,
+        bySetup:     metrics.bySetup,
+        walkForwardConsistency: result.walkForward?.consistency,
+        maxWinStreak:  metrics.maxWinStreak,
+        maxLossStreak: metrics.maxLossStreak,
+        slippageUsed:  result.slippageUsed,
+        cooldownUsed:  result.cooldownUsed,
+        multiObjScore: null,
+      });
+
+      this.emit('backtest', { instrument, runId, metrics, deep: true });
+    } catch (err) {
+      this._err(`DEEP HIST BT ERROR (${instrument})`, err);
     }
   }
 
@@ -2339,6 +2501,19 @@ class Scanner extends EventEmitter {
     // Storage cleanup
     setTimeout(() => this.runStorageCleanup(), 15_000);
     this._intervals.push(setInterval(() => this.runStorageCleanup(), 24 * 3_600_000));
+
+    // Deep historical backtest (60-day 5m bars from Yahoo Finance).
+    // Runs once at startup (after 25 min to avoid heap contention with normal backtests)
+    // then weekly on Sundays. This gives ~8× more history than the 7-day 1m backtest.
+    setTimeout(() => this.runDeepHistoricalBacktest('MNQ'), 25 * 60_000);
+    setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 30 * 60_000);
+    this._intervals.push(setInterval(() => {
+      const now = new Date();
+      if (now.getDay() === 0 && now.getHours() >= 18) {  // Sunday 18:00+ local (futures re-open)
+        this.runDeepHistoricalBacktest('MNQ');
+        setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 8 * 60_000);
+      }
+    }, 60 * 60_000)); // check every hour
 
     // Periodic backtests — same interval for both instruments; MGC offset by 4 min
     // so they never run at the same time and compete for rate-limit budget.

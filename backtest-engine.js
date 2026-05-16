@@ -266,7 +266,9 @@ function _runBacktest(bars1m, instrument, opts = {}) {
   const cooldown5m = opts.cooldown5m ?? 2;
 
   // ── Pre-aggregate all timeframes once ───────────────────────────────────────
-  const bars5m  = aggregate1mTo5m(bars1m);
+  // When bars are already at 5m resolution (e.g. deep historical backtest from
+  // 60-day Yahoo fetch), skip the 1m→5m step so time ratios stay correct.
+  const bars5m  = opts.alreadyAggregated5m ? bars1m : aggregate1mTo5m(bars1m);
   const bars15m = aggregate5mTo15m(bars5m);
   const bars30m = aggregate5mTo30m(bars5m);  // MGC confluence layer
   const bars45m = aggregate5mTo45m(bars5m);  // MGC confluence layer
@@ -431,7 +433,7 @@ function runWalkForward(bars1m, instrument, opts = {}) {
     const slice = bars1m.slice(start, end);
     if (slice.length < minBars) continue;
 
-    const { metrics } = _runBacktest(slice, instrument, { slippage });
+    const { metrics } = _runBacktest(slice, instrument, { slippage, alreadyAggregated5m: opts.alreadyAggregated5m });
     windows.push({
       window: w + 1,
       from:   slice[0]?.timestamp,
@@ -505,6 +507,57 @@ function runBacktest(bars1m, params = {}, opts = {}) {
       nWindows: opts.nWindows ?? 5,
       slippage,
       minBars:  opts.minBars ?? 1500,
+    });
+  }
+
+  return result;
+}
+
+// ── Deep historical backtest on pre-fetched 5m bars ─────────────────────────
+
+/**
+ * Run a backtest directly on 60-day 5m bars from Yahoo Finance.
+ *
+ * WHY: Yahoo only serves 7 days of 1m data per request. 5m data covers
+ * 60 days, giving ~8× more bar history and statistically stronger win-rate
+ * estimates. Each 5m bar is used as the base unit; the engine aggregates to
+ * 15m / 30m / 45m / 1h / 4h / daily using the exact same factors.
+ *
+ * @param {object[]} bars5m  - pre-fetched 5m OHLCV bars, oldest first
+ * @param {object}   params  - strategy params (slippage etc.)
+ * @param {object}   opts    - same options as runBacktest()
+ */
+function runBacktest5m(bars5m, params = {}, opts = {}) {
+  const slippage   = opts.slippage ?? params.slippage ?? 0.5;
+  const instrument = opts.instrument ?? params.instrument ?? null;
+  const cooldown5m = opts.cooldown5m ?? 2;
+
+  const result = _runBacktest(bars5m, instrument, {
+    slippage,
+    warmup5m:             opts.warmup5m   ?? 80,
+    maxResolve:           opts.maxResolve ?? 60,
+    cooldown5m,
+    alreadyAggregated5m:  true,
+  });
+
+  result.slippageUsed = slippage;
+  result.cooldownUsed = cooldown5m;
+  result.baseInterval = '5m';
+  result.divergenceAudit = {
+    cooldown5mUsed: result.cooldownUsed,
+    slippageUsed:   slippage,
+    warmup5mUsed:   opts.warmup5m ?? 80,
+    maxResolve:     opts.maxResolve ?? 60,
+    note: 'Deep historical 5m backtest — 60-day window from Yahoo Finance.',
+  };
+
+  if (opts.walkForward) {
+    result.walkForward = runWalkForward(bars5m, instrument, {
+      nWindows: opts.nWindows ?? 5,
+      slippage,
+      // 5m bars: use smaller minimum window (200 bars ≈ 17h of trading)
+      minBars:             opts.minBars ?? 200,
+      alreadyAggregated5m: true,
     });
   }
 
@@ -604,6 +657,7 @@ function runSwingBacktest1h(bars1h, opts = {}) {
 
 module.exports = {
   runBacktest,
+  runBacktest5m,
   runWalkForward,
   runSwingBacktest1h,
   resolveOutcome,

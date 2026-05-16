@@ -482,6 +482,23 @@ app.get('/api/market/candles/:instrument', (req, res) => {
   res.json(out);
 });
 
+// ── HISTORICAL BACKTEST — manual trigger ─────────────────────────────────────
+// POST /api/backtest/historical?instrument=MNQ  →  kicks off 60-day 5m backtest
+app.post('/api/backtest/historical', requireAuth, (req, res) => {
+  const inst    = ((req.query.instrument ?? req.body?.instrument) || '').toUpperCase();
+  const scanner = global._scanner;
+  if (!scanner) return res.status(503).json({ error: 'Scanner not running' });
+  if (!['MNQ', 'MGC', 'BOTH'].includes(inst)) {
+    return res.status(400).json({ error: 'instrument must be MNQ, MGC, or BOTH' });
+  }
+  const run = (i) => scanner.runDeepHistoricalBacktest(i).catch(err =>
+    console.error(`[api] deep historical backtest error (${i}):`, err)
+  );
+  if (inst === 'BOTH') { run('MNQ'); setTimeout(() => run('MGC'), 8 * 60_000); }
+  else run(inst);
+  res.json({ ok: true, instrument: inst, message: 'Deep historical backtest triggered' });
+});
+
 // ── JOURNAL ───────────────────────────────────────────────────────────────────────────────
 
 app.get('/api/journal/signals', (req, res) => {
