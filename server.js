@@ -518,18 +518,18 @@ app.get('/api/journal/signals', (req, res) => {
 app.get('/api/journal/backtest', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 40, 200);
   const inst  = req.query.instrument?.toUpperCase() || null;
-  const sql   = inst
-    ? `SELECT r.*,
-              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND (t.outcome='LOSS' OR t.outcome='BE')) AS loss_count,
-              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.outcome='WIN') AS win_count,
-              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.note IS NOT NULL AND t.note != '') AS noted_count
-       FROM backtest_runs r WHERE r.instrument = ? ORDER BY r.run_at DESC LIMIT ?`
-    : `SELECT r.*,
-              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND (t.outcome='LOSS' OR t.outcome='BE')) AS loss_count,
-              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.outcome='WIN') AS win_count,
-              (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.note IS NOT NULL AND t.note != '') AS noted_count
-       FROM backtest_runs r ORDER BY r.run_at DESC LIMIT ?`;
-  const rows = inst ? db.prepare(sql).all(inst, limit) : db.prepare(sql).all(limit);
+  const baseSQL = `
+    SELECT r.*,
+           (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND (t.outcome='LOSS' OR t.outcome='BE')) AS loss_count,
+           (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.outcome='WIN') AS win_count,
+           (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id AND t.note IS NOT NULL AND t.note != '') AS noted_count
+    FROM backtest_runs r
+    WHERE (
+      (SELECT COUNT(*) FROM backtest_trades t WHERE t.run_id = r.id) > 0
+    )
+    ${inst ? 'AND r.instrument = ?' : ''}
+    ORDER BY r.run_at DESC LIMIT ?`;
+  const rows = inst ? db.prepare(baseSQL).all(inst, limit) : db.prepare(baseSQL).all(limit);
   res.json(rows);
 });
 

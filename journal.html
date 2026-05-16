@@ -389,14 +389,14 @@ function renderBt() {
 
   let html = '';
   for (const r of filtered) {
-    const wr     = (r.win_rate * 100).toFixed(1);
-    const wrCls  = wrClass(r.win_rate);
+    const total  = (r.win_count || 0) + (r.loss_count || 0);
+    const wr     = total > 0 ? ((r.win_count || 0) / total * 100).toFixed(1) : null;
+    const wrCls  = wr != null ? wrClass((r.win_count || 0) / total) : '';
     const isOpen = expandedRuns.has(r.id);
     const dt     = r.run_at.slice(0, 16).replace('T', ' ');
     const inst   = r.instrument?.toLowerCase() || 'mnq';
     const wins   = r.win_count  || 0;
     const losses = r.loss_count || 0;
-    const total  = wins + losses;
     const notedStr = r.noted_count > 0
       ? `<b>${r.noted_count}</b>/${losses} noted`
       : losses > 0 ? `${losses} not noted` : 'no losses';
@@ -406,7 +406,7 @@ function renderBt() {
         <span class="bt-run-caret">›</span>
         <span class="bt-run-inst ${inst}">${r.instrument}</span>
         <span class="bt-run-date">${dt}</span>
-        <span class="bt-run-wr ${wrCls}">${wr}%</span>
+        <span class="bt-run-wr ${wrCls}">${wr != null ? wr + '%' : '—'}</span>
         <span class="bt-run-meta">${total} trades · <span style="color:var(--green)">${wins}W</span> / <em>${losses} L/BE</em></span>
         <span class="bt-run-noted">${notedStr}</span>
       </div>
