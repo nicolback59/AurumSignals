@@ -100,6 +100,52 @@ function applyMigrations() {
       WHERE pnl_pts IS NULL AND outcome IN ('WIN','LOSS','BE') AND entry IS NOT NULL
     `);
   }
+  // ── Deduplicate historical backtest_runs ─────────────────────────────────
+  // Keep only the most recent run per (instrument, win_rate rounded to 3dp,
+  // trades_found) group. Cascades to backtest_trades and backtest_details.
+  const hasBtRuns = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_runs'").get();
+  if (hasBtRuns) {
+    const hasCascadeDelete = db.prepare(`
+      SELECT 1 FROM sqlite_master
+      WHERE type='trigger' AND name='_dedup_cascade_bt_trades'
+    `).get();
+
+    // Only run dedup once at startup (idempotent — safe to re-run but slow on large DBs)
+    const dupCount = db.prepare(`
+      SELECT COUNT(*) AS n FROM backtest_runs
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM backtest_runs
+        GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
+      )
+    `).get()?.n ?? 0;
+
+    if (dupCount > 0) {
+      console.log(`[migration] Removing ${dupCount} duplicate backtest_runs rows...`);
+      // Remove orphaned trades first (no FK cascade in SQLite unless PRAGMA foreign_keys=ON)
+      db.exec(`
+        DELETE FROM backtest_trades
+        WHERE run_id NOT IN (
+          SELECT MAX(id) FROM backtest_runs
+          GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
+        )
+      `);
+      db.exec(`
+        DELETE FROM backtest_details
+        WHERE run_id NOT IN (
+          SELECT MAX(id) FROM backtest_runs
+          GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
+        )
+      `);
+      db.exec(`
+        DELETE FROM backtest_runs
+        WHERE id NOT IN (
+          SELECT MAX(id) FROM backtest_runs
+          GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
+        )
+      `);
+      console.log('[migration] Duplicate backtest_runs cleanup complete');
+    }
+  }
 }
 applyMigrations();
 
