@@ -484,7 +484,7 @@ app.get('/api/market/candles/:instrument', (req, res) => {
 
 // ── HISTORICAL BACKTEST — manual trigger ─────────────────────────────────────
 // POST /api/backtest/historical?instrument=MNQ  →  kicks off 60-day 5m backtest
-app.post('/api/backtest/historical', requireAuth, (req, res) => {
+app.post('/api/backtest/historical', (req, res) => {
   const inst    = ((req.query.instrument ?? req.body?.instrument) || '').toUpperCase();
   const scanner = global._scanner;
   if (!scanner) return res.status(503).json({ error: 'Scanner not running' });
