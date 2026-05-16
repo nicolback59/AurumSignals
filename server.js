@@ -82,6 +82,23 @@ function applyMigrations() {
       db.exec("ALTER TABLE backtest_trades ADD COLUMN confidence INTEGER");
       console.log('[migration] Added confidence to backtest_trades');
     }
+    if (!btCols.includes('pnl_pts')) {
+      db.exec("ALTER TABLE backtest_trades ADD COLUMN pnl_pts REAL");
+      console.log('[migration] Added pnl_pts to backtest_trades');
+    }
+    // Backfill pnl_pts for historical rows that have entry/tp1/sl but no pnl_pts
+    db.exec(`
+      UPDATE backtest_trades
+      SET pnl_pts = CASE
+        WHEN outcome = 'BE'   THEN 0
+        WHEN outcome = 'WIN'  AND direction = 'LONG'  AND tp1 IS NOT NULL AND entry IS NOT NULL THEN ROUND(tp1 - entry, 2)
+        WHEN outcome = 'WIN'  AND direction = 'SHORT' AND tp1 IS NOT NULL AND entry IS NOT NULL THEN ROUND(entry - tp1, 2)
+        WHEN outcome = 'LOSS' AND direction = 'LONG'  AND sl  IS NOT NULL AND entry IS NOT NULL THEN ROUND(sl  - entry, 2)
+        WHEN outcome = 'LOSS' AND direction = 'SHORT' AND sl  IS NOT NULL AND entry IS NOT NULL THEN ROUND(entry - sl,  2)
+        ELSE NULL
+      END
+      WHERE pnl_pts IS NULL AND outcome IN ('WIN','LOSS','BE') AND entry IS NOT NULL
+    `);
   }
 }
 applyMigrations();
@@ -394,6 +411,29 @@ app.get('/api/market/prices', (req, res) => {
   const result = {};
   for (const row of rows) result[row.symbol] = row;
   res.json(result);
+});
+
+// ── MARKET CANDLES — last N 5m bars from scanner in-memory cache ─────────────
+// Used by homepage MNQ/MGC mini-charts. Returns empty array if scanner has no data yet.
+app.get('/api/market/candles/:instrument', (req, res) => {
+  const inst  = (req.params.instrument ?? '').toUpperCase();
+  const limit = Math.min(Number(req.query.limit) || 60, 200);
+  const scanner = global._scanner;
+  let bars = [];
+  if (scanner?._lastGoodBars) {
+    if (inst === 'MNQ') bars = scanner._lastGoodBars.mnq5m ?? [];
+    else if (inst === 'MGC') bars = scanner._lastGoodBars.mgc5m ?? [];
+  }
+  // Return last `limit` bars with OHLCV fields only
+  const out = bars.slice(-limit).map(b => ({
+    t: b.timestamp,
+    o: b.open,
+    h: b.high,
+    l: b.low,
+    c: b.close,
+    v: b.volume ?? 0,
+  }));
+  res.json(out);
 });
 
 // ── JOURNAL ───────────────────────────────────────────────────────────────────────────────

@@ -269,8 +269,9 @@ function buildWinRateChart(inst) {
   const ctx = document.getElementById('winRateChart').getContext('2d');
   if (winRateChart) winRateChart.destroy();
 
-  const mnqRuns = allRuns.filter(r => r.instrument === 'MNQ').slice(-40).reverse();
-  const mgcRuns = allRuns.filter(r => r.instrument === 'MGC').slice(-40).reverse();
+  // Filter zero-trade runs — they produce no meaningful win rate data point
+  const mnqRuns = allRuns.filter(r => r.instrument === 'MNQ' && (r.trades_found ?? 0) > 0).slice(-40).reverse();
+  const mgcRuns = allRuns.filter(r => r.instrument === 'MGC' && (r.trades_found ?? 0) > 0).slice(-40).reverse();
 
   const datasets = [];
   if (inst === 'MNQ' || inst === 'ALL') datasets.push({
@@ -313,7 +314,7 @@ function buildActivityChart() {
   const ctx = document.getElementById('activityChart').getContext('2d');
   if (activityChart) activityChart.destroy();
 
-  const recent = [...allRuns].reverse().slice(-30);
+  const recent = [...allRuns].filter(r => (r.trades_found ?? 0) > 0).reverse().slice(-30);
   activityChart = new Chart(ctx, {
     type: 'bar',
     data: {
@@ -408,14 +409,17 @@ function renderRunsTable() {
     tbody.innerHTML = '<tr><td colspan="9"><div class="empty-state" style="padding:20px"><div class="empty-state-desc">No runs yet</div></div></td></tr>';
     return;
   }
-  tbody.innerHTML = allRuns.slice(0, 50).map(r => {
+  // Only show runs that produced trades — zero-signal runs are diagnostic-only
+  const validRuns = allRuns.filter(r => (r.trades_found ?? 0) > 0).slice(0, 50);
+  tbody.innerHTML = validRuns.map(r => {
     const wr   = (r.win_rate * 100).toFixed(1);
     const cls  = wrClass(r.win_rate);
     const inst = r.instrument === 'MNQ'
       ? `<span style="color:var(--mnq);font-weight:700">MNQ</span>`
       : `<span style="color:var(--mgc);font-weight:700">MGC</span>`;
+    const shortId = `#${String(r.id).slice(-4).padStart(4,'0')}`;
     return `<tr>
-      <td style="color:var(--text-muted)">${r.id}</td>
+      <td style="color:var(--text-muted);font-family:var(--font-mono);font-size:10px">${shortId}</td>
       <td>${inst}</td>
       <td style="color:var(--text-secondary)">${r.run_at.slice(0,16).replace('T',' ')}</td>
       <td>${(r.bars_tested||0).toLocaleString()}</td>
@@ -431,9 +435,9 @@ function renderRunsTable() {
 // ── Strategy metadata (versions, thresholds, descriptions) ───────────────────
 const STRAT_META = {
   MNQ_INTRADAY: { label: 'MNQ Intraday',  ver: 'v2.1', threshold: 65, inst: 'MNQ' },
-  MNQ_SWING:    { label: 'MNQ Swing',     ver: 'v2.1', threshold: 55, inst: 'MNQ' },
+  MNQ_SWING:    { label: 'MNQ Swing',     ver: 'v2.1', threshold: 60, inst: 'MNQ' },
   MNQ_50PT:     { label: 'MNQ 50-Point',  ver: 'v2.1', threshold: 58, inst: 'MNQ' },
-  MGC_SCALP:    { label: 'MGC Scalp',     ver: 'v4.2', threshold: 45, inst: 'MGC' },
+  MGC_SCALP:    { label: 'MGC Scalp',     ver: 'v4.2', threshold: 55, inst: 'MGC' },
   MGC_INTRADAY: { label: 'MGC Intraday',  ver: 'v1.0', threshold: 60, inst: 'MGC' },
 };
 

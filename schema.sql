@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
   sl             REAL,
   tp1            REAL,
   outcome        TEXT,    -- WIN | LOSS | BE
+  pnl_pts        REAL,    -- realized P&L in points (positive=win, negative=loss, 0=BE)
   score          INTEGER,
   confidence     INTEGER, -- 0–100 from new engine
   note           TEXT,

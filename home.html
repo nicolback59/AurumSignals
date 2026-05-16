@@ -345,6 +345,7 @@
       .levels-row { grid-template-columns: repeat(3, 1fr); }
       .stat-tile-val { font-size: 22px; }
       .record-tile-val { font-size: 16px; }
+      #priceChartGrid { grid-template-columns: 1fr !important; }
     }
     @media (max-width: 340px) {
       .stats-grid { grid-template-columns: 1fr; }
@@ -485,6 +486,49 @@
     <span id="activeSigs" style="display:none"></span>
   </div>
 
+  <!-- ── MNQ + MGC Price Charts ───────────────────────── -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" id="priceChartGrid">
+    <div class="section-card" style="margin-bottom:0">
+      <div class="section-card-header">
+        <span class="section-card-title" style="font-family:var(--font-mono);font-size:12px">MNQ <span style="color:var(--text-muted);font-weight:400">/ Micro E-mini NQ</span></span>
+        <span id="mnqChartMeta" style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">—</span>
+      </div>
+      <div class="section-card-body" style="padding:10px 14px 12px">
+        <div style="position:relative;height:110px" id="mnqChartWrap">
+          <canvas id="mnqChart"></canvas>
+          <div id="mnqChartEmpty" style="display:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-muted);text-align:center;line-height:1.5">
+            Chart data unavailable.<br>Waiting for market feed.
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px">
+          <span id="mnqChartLow"  style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">L —</span>
+          <span id="mnqChartLast" style="font-family:var(--font-mono);font-size:11px;color:var(--text-primary);font-weight:600">—</span>
+          <span id="mnqChartHigh" style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">H —</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-card" style="margin-bottom:0">
+      <div class="section-card-header">
+        <span class="section-card-title" style="font-family:var(--font-mono);font-size:12px">MGC <span style="color:var(--text-muted);font-weight:400">/ Micro Gold</span></span>
+        <span id="mgcChartMeta" style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">—</span>
+      </div>
+      <div class="section-card-body" style="padding:10px 14px 12px">
+        <div style="position:relative;height:110px" id="mgcChartWrap">
+          <canvas id="mgcChart"></canvas>
+          <div id="mgcChartEmpty" style="display:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-muted);text-align:center;line-height:1.5">
+            Chart data unavailable.<br>Waiting for market feed.
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px">
+          <span id="mgcChartLow"  style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">L —</span>
+          <span id="mgcChartLast" style="font-family:var(--font-mono);font-size:11px;color:var(--text-primary);font-weight:600">—</span>
+          <span id="mgcChartHigh" style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">H —</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Mini P&L Chart ──────────────────────────────── -->
   <div class="section-card" style="margin-bottom:14px">
     <div class="section-card-header">
@@ -572,6 +616,156 @@
 'use strict';
 
 let perfChart = null;
+let _mnqChart = null, _mgcChart = null;
+
+/* ── MNQ / MGC OHLC candlestick charts ───────────────── */
+// Pure Chart.js floating-bar candlesticks — no plugin required.
+// Two overlapping bar datasets per chart:
+//   1. Wick  (thin)  — [low,  high]  — same color as body, lower opacity
+//   2. Body  (wide)  — [min(o,c), max(o,c)] — bull=green, bear=red
+
+const BULL_BODY = 'rgba(46,158,106,.85)';
+const BEAR_BODY = 'rgba(160,56,56,.85)';
+const BULL_WICK = 'rgba(46,158,106,.45)';
+const BEAR_WICK = 'rgba(160,56,56,.45)';
+
+function _candlestickTooltip(dp) {
+  return `O ${dp.o?.toFixed(2)}  H ${dp.h?.toFixed(2)}  L ${dp.l?.toFixed(2)}  C ${dp.c?.toFixed(2)}`;
+}
+
+function buildCandlestickChart(canvasId, bars, decimals = 2) {
+  const ctx = document.getElementById(canvasId)?.getContext('2d');
+  if (!ctx) return null;
+
+  // Use last 50 bars — enough context without crowding the mini chart
+  const data   = bars.slice(-50);
+  const labels = data.map(b => b.t ? b.t.slice(11, 16) : '');
+  const isBull = data.map(b => b.c >= b.o);
+
+  // Wick: full [low, high] range
+  const wickData = data.map(b => [b.l, b.h]);
+  // Body: [min(open,close), max(open,close)] — add 0.001 so doji still renders
+  const bodyData = data.map(b => {
+    const lo = Math.min(b.o, b.c);
+    const hi = Math.max(b.o, b.c);
+    return lo === hi ? [lo - 0.001, hi + 0.001] : [lo, hi];
+  });
+
+  const fmt = v => v?.toLocaleString('en-US', { minimumFractionDigits: decimals });
+
+  return new Chart(ctx, {
+    type: 'bar',
+    data: {
+      labels,
+      datasets: [
+        {
+          label: 'wick',
+          data:            wickData,
+          backgroundColor: isBull.map(b => b ? BULL_WICK : BEAR_WICK),
+          borderWidth:     0,
+          barPercentage:   0.10,  // thin wick
+          categoryPercentage: 1.0,
+          grouped: false,
+        },
+        {
+          label: 'body',
+          data:            bodyData,
+          backgroundColor: isBull.map(b => b ? BULL_BODY : BEAR_BODY),
+          borderWidth:     0,
+          barPercentage:   0.55,  // wide body over the wick
+          categoryPercentage: 1.0,
+          grouped: false,
+        },
+      ],
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      datasets: { bar: { grouped: false } },  // all datasets share same x position
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          mode: 'index', intersect: false,
+          filter: item => item.datasetIndex === 1, // show tooltip only from body dataset
+          callbacks: {
+            title: items => labels[items[0]?.dataIndex] ?? '',
+            label: item => {
+              const b = data[item.dataIndex];
+              return b ? `  O ${b.o?.toFixed(decimals)}  H ${b.h?.toFixed(decimals)}  L ${b.l?.toFixed(decimals)}  C ${b.c?.toFixed(decimals)}` : '';
+            },
+          },
+          backgroundColor: 'rgba(18,15,12,.94)',
+          titleColor: '#8a7a6a', bodyColor: '#d4c8b8',
+          borderColor: 'rgba(200,144,42,.25)', borderWidth: 1,
+          padding: 8,
+        },
+      },
+      scales: {
+        x: { display: false },
+        y: {
+          position: 'right',
+          ticks: {
+            color: '#5a5046',
+            font: { size: 9, family: 'JetBrains Mono, Consolas' },
+            maxTicksLimit: 4,
+            callback: v => v.toLocaleString('en-US', { minimumFractionDigits: 0 }),
+          },
+          grid: { color: 'rgba(220,200,170,.04)' },
+        },
+      },
+    },
+  });
+}
+
+function _updateChartMeta(inst, bars, decimals) {
+  const last = bars[bars.length - 1];
+  const hi   = Math.max(...bars.map(b => b.h));
+  const lo   = Math.min(...bars.map(b => b.l));
+  const fmt  = (v, d) => v?.toLocaleString('en-US', { minimumFractionDigits: d ?? decimals });
+  const instL = inst.toLowerCase();
+  const intDec = decimals === 0 ? 0 : decimals;
+  document.getElementById(`${instL}ChartLast`).textContent = fmt(last.c, decimals);
+  document.getElementById(`${instL}ChartHigh`).textContent = 'H ' + hi.toFixed(intDec);
+  document.getElementById(`${instL}ChartLow`).textContent  = 'L ' + lo.toFixed(intDec);
+  const ts = last.t ? last.t.slice(0, 16).replace('T', ' ') + ' UTC' : '';
+  document.getElementById(`${instL}ChartMeta`).textContent = ts ? `5m · ${ts}` : '5m bars';
+}
+
+function _showEmptyChart(inst) {
+  const instL = inst.toLowerCase();
+  document.getElementById(`${instL}Chart`).style.display = 'none';
+  document.getElementById(`${instL}ChartEmpty`).style.display = 'flex';
+}
+
+async function loadPriceCharts() {
+  try {
+    const [mnqBars, mgcBars] = await Promise.all([
+      fetch('/api/market/candles/MNQ?limit=60').then(r => r.json()).catch(() => []),
+      fetch('/api/market/candles/MGC?limit=60').then(r => r.json()).catch(() => []),
+    ]);
+
+    if (mnqBars.length > 1) {
+      document.getElementById('mnqChartEmpty').style.display = 'none';
+      document.getElementById('mnqChart').style.display = '';
+      if (_mnqChart) _mnqChart.destroy();
+      _mnqChart = buildCandlestickChart('mnqChart', mnqBars, 0);
+      _updateChartMeta('MNQ', mnqBars, 0);
+    } else {
+      _showEmptyChart('MNQ');
+    }
+
+    if (mgcBars.length > 1) {
+      document.getElementById('mgcChartEmpty').style.display = 'none';
+      document.getElementById('mgcChart').style.display = '';
+      if (_mgcChart) _mgcChart.destroy();
+      _mgcChart = buildCandlestickChart('mgcChart', mgcBars, 2);
+      _updateChartMeta('MGC', mgcBars, 2);
+    } else {
+      _showEmptyChart('MGC');
+    }
+  } catch { /* never crash the page */ }
+}
 
 /* ── Market status (NY time) ─────────────────────────── */
 function getMarketContext() {
@@ -780,6 +974,8 @@ function connectSSE() {
       const d = JSON.parse(e.data);
       _scanCount = d.scanCount ?? _scanCount;
       _applyBotStatus(true, `scan #${_scanCount} — ${d.instrument ?? ''} ${d.fired ? '▲ signal fired' : 'watching…'}`, 'LIVE');
+      // Refresh candle charts when fresh bar data arrives
+      if (_scanCount % 3 === 0) loadPriceCharts(); // every 3 scans (~15 min) to avoid thrashing
     } catch { /* ignore */ }
   });
 
@@ -1075,6 +1271,7 @@ async function load() {
     renderIntel(learning, prices);
     renderCalendar(journal);
     renderBotStatus();
+    loadPriceCharts(); // non-blocking — fetches MNQ/MGC candles independently
 
     document.getElementById('refreshLbl').textContent = 'Updated ' + now.toLocaleTimeString();
   } catch (e) {

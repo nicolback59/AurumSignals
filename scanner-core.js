@@ -1501,6 +1501,28 @@ class Scanner extends EventEmitter {
       const { metrics } = result;
       metrics.barsScanned = bars1m.length;
 
+      // ── No-signal run guard ───────────────────────────────────────────────────
+      // Do not save runs that produced zero trades — they pollute the chart and
+      // inflate total_runs counts without contributing meaningful performance data.
+      if ((metrics.tradeCount ?? 0) === 0) {
+        this._log(`BACKTEST SKIP SAVE (${instrument}): zero trades found — not storing empty run`);
+        return;
+      }
+
+      // ── Duplicate run guard ───────────────────────────────────────────────────
+      // If the last run for this instrument has identical win_rate, trades_found,
+      // and profit_factor, the data window hasn't meaningfully changed — skip.
+      const _lastRun = this.db.prepare(
+        `SELECT win_rate, trades_found, profit_factor FROM backtest_runs WHERE instrument=? ORDER BY run_at DESC LIMIT 1`
+      ).get(instrument);
+      if (_lastRun &&
+          Math.abs((_lastRun.win_rate      ?? 0) - (metrics.winRate      ?? 0)) < 0.001 &&
+          _lastRun.trades_found === (metrics.tradeCount ?? 0) &&
+          Math.abs((_lastRun.profit_factor ?? 0) - (metrics.profitFactor ?? 0)) < 0.01) {
+        this._log(`BACKTEST SKIP SAVE (${instrument}): duplicate of last run — skipped`);
+        return;
+      }
+
       const runId = saveBacktestRun(this.db, instrument, params, metrics, triggeredBy);
 
       // Store up to 200 trades per run (WIN + LOSS + BE)
@@ -1509,8 +1531,8 @@ class Scanner extends EventEmitter {
         const insTrade = this.db.prepare(`
           INSERT INTO backtest_trades
             (run_id, instrument, bar_idx, timestamp, direction, setup, strategy_name,
-             trade_style, regime, entry, sl, tp1, outcome, score, confidence)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             trade_style, regime, entry, sl, tp1, outcome, score, confidence, pnl_pts)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const updNote = this.db.prepare(
           `UPDATE backtest_trades SET note = ?, noted_at = datetime('now') WHERE id = ?`
@@ -1518,11 +1540,21 @@ class Scanner extends EventEmitter {
 
         this.db.transaction(() => {
           for (const t of allTrades) {
+            // Compute realized pnl_pts from outcome for profit-factor calculation
+            let pnl_pts = null;
+            if (t.outcome === 'WIN' && t.entry != null && t.tp1 != null) {
+              pnl_pts = t.direction === 'LONG' ? +(t.tp1 - t.entry).toFixed(2) : +(t.entry - t.tp1).toFixed(2);
+            } else if (t.outcome === 'LOSS' && t.entry != null && t.sl != null) {
+              pnl_pts = t.direction === 'LONG' ? +(t.sl - t.entry).toFixed(2) : +(t.entry - t.sl).toFixed(2);
+            } else if (t.outcome === 'BE') {
+              pnl_pts = 0;
+            }
+
             const info = insTrade.run(runId, instrument, t.bar ?? null, t.timestamp ?? null,
               t.direction, t.setup ?? null, t.strategy_name ?? null,
               t.trade_style ?? null, t.regime ?? null,
               t.entry ?? null, t.sl ?? null, t.tp1 ?? null,
-              t.outcome, t.score ?? null, t.confidence ?? null);
+              t.outcome, t.score ?? null, t.confidence ?? null, pnl_pts);
 
             // Auto-generate deep learning notes for ALL trades (WIN/LOSS/BE)
             try {
@@ -1535,7 +1567,7 @@ class Scanner extends EventEmitter {
 
       saveBacktestDetails(this.db, runId, {
         byRegime:               metrics.byRegime,
-        byStyle:                JSON.stringify(metrics.byStrategy ?? metrics.byStyle ?? {}),
+        byStyle:                metrics.byStrategy ?? metrics.byStyle ?? {},
         bySetup:                metrics.bySetup,
         walkForwardConsistency: result.walkForward?.consistency ?? null,
         walkForwardAvgWR:       result.walkForward?.avgWinRate  ?? null,
