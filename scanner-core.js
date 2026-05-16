@@ -233,6 +233,19 @@ class Scanner extends EventEmitter {
         ORDER BY s.received_at ASC
       `),
 
+      getAllPendingSignals: db.prepare(`
+        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
+               s.trade_style, s.strategy_name, s.session, s.setup,
+               s.win_prob_tp1
+        FROM   signals s
+        LEFT JOIN outcomes o ON o.signal_id = s.id
+        WHERE  o.id IS NULL
+          AND  s.entry IS NOT NULL AND s.sl IS NOT NULL AND s.tp1 IS NOT NULL
+          AND  s.received_at <= datetime('now', '-3 minutes')
+          AND  (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
+        ORDER BY s.received_at ASC
+      `),
+
       updateTradeStatus: db.prepare(`
         UPDATE signals SET trade_status = ? WHERE id = ?
       `),
@@ -952,6 +965,45 @@ class Scanner extends EventEmitter {
 
       // Recompute adaptive overrides after new outcomes arrive
       try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
+    }
+  }
+
+  // ── Timer-based expiry sweep ──────────────────────────────────────────────────
+  // Runs every 5 min regardless of market hours or bars availability.
+  // Expires ACTIVE signals that have exceeded their max hold time so signals
+  // don't stay open indefinitely if the scanner was down or bars were unavailable.
+
+  _sweepExpiredSignals() {
+    try {
+      const pending = this._stmts.getAllPendingSignals.all();
+      if (!pending.length) return;
+      const now = new Date();
+      let swept = 0;
+
+      for (const sig of pending) {
+        if (!shouldExpire(sig, now)) continue;
+
+        this._stmts.insertOutcome.run(
+          sig.id, 'EXPIRED', sig.entry,
+          now.toISOString(),
+          0
+        );
+        this._stmts.updateTradeStatus.run(STATES.EXPIRED, sig.id);
+
+        this._log(
+          `SWEEP-EXPIRE #${sig.id} ${sig.instrument}: ${sig.direction} ` +
+          `${sig.trade_style ?? 'intraday'} open since ${sig.received_at}`,
+          'signal'
+        );
+        swept++;
+      }
+
+      if (swept > 0) {
+        this._log(`Signal expiry sweep: closed ${swept} overdue signal(s)`);
+        try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
+      }
+    } catch (err) {
+      this._err('_sweepExpiredSignals error', err);
     }
   }
 
@@ -2501,6 +2553,11 @@ class Scanner extends EventEmitter {
     // Storage cleanup
     setTimeout(() => this.runStorageCleanup(), 15_000);
     this._intervals.push(setInterval(() => this.runStorageCleanup(), 24 * 3_600_000));
+
+    // Expiry sweep — runs every 5 min, wall-clock based, market-agnostic.
+    // Ensures ACTIVE signals are closed even if scanner was down when they expired.
+    setTimeout(() => this._sweepExpiredSignals(), 60_000); // 1 min after startup
+    this._intervals.push(setInterval(() => this._sweepExpiredSignals(), 5 * 60_000));
 
     // Deep historical backtest (60-day 5m bars from Yahoo Finance).
     // Runs once at startup (after 25 min to avoid heap contention with normal backtests)
