@@ -53,7 +53,7 @@ const TRANSITIONS = {
 // Max hold durations in milliseconds per trade style
 const MAX_HOLD_MS = {
   scalp:    2  * 60 * 60 * 1000,   //  2 hours
-  intraday: 4  * 60 * 60 * 1000,   //  4 hours
+  intraday: 6  * 60 * 60 * 1000,   //  6 hours
   swing:    72 * 60 * 60 * 1000,   // 72 hours
 };
 const DEFAULT_HOLD_MS = MAX_HOLD_MS.intraday;
