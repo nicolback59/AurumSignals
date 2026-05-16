@@ -479,15 +479,16 @@ function runBacktest(bars1m, params = {}, opts = {}) {
   const slippage   = opts.slippage ?? params.slippage ?? 0.5;
   const instrument = opts.instrument ?? params.instrument ?? null;
 
+  const cooldown5m = opts.cooldown5m ?? 2;  // 2 bars = 10 min — matches live default
   const result = _runBacktest(bars1m, instrument, {
     slippage,
     warmup5m:   opts.warmup5m   ?? 80,
     maxResolve: opts.maxResolve ?? 60,
-    cooldown5m: opts.cooldown5m ?? 1,
+    cooldown5m: cooldown5m,
   });
 
   result.slippageUsed = slippage;
-  result.cooldownUsed = opts.cooldown5m ?? 2;
+  result.cooldownUsed = cooldown5m;
   // Audit fields: surfaced in reports to explain live/backtest divergence
   result.divergenceAudit = {
     cooldown5mUsed: result.cooldownUsed,

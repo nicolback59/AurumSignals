@@ -345,6 +345,7 @@
       .levels-row { grid-template-columns: repeat(3, 1fr); }
       .stat-tile-val { font-size: 22px; }
       .record-tile-val { font-size: 16px; }
+      #priceChartGrid { grid-template-columns: 1fr !important; }
     }
     @media (max-width: 340px) {
       .stats-grid { grid-template-columns: 1fr; }
@@ -485,6 +486,49 @@
     <span id="activeSigs" style="display:none"></span>
   </div>
 
+  <!-- ── MNQ + MGC Price Charts ───────────────────────── -->
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:14px" id="priceChartGrid">
+    <div class="section-card" style="margin-bottom:0">
+      <div class="section-card-header">
+        <span class="section-card-title" style="font-family:var(--font-mono);font-size:12px">MNQ <span style="color:var(--text-muted);font-weight:400">/ Micro E-mini NQ</span></span>
+        <span id="mnqChartMeta" style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">—</span>
+      </div>
+      <div class="section-card-body" style="padding:10px 14px 12px">
+        <div style="position:relative;height:110px" id="mnqChartWrap">
+          <canvas id="mnqChart"></canvas>
+          <div id="mnqChartEmpty" style="display:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-muted);text-align:center;line-height:1.5">
+            Chart data unavailable.<br>Waiting for market feed.
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px">
+          <span id="mnqChartLow"  style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">L —</span>
+          <span id="mnqChartLast" style="font-family:var(--font-mono);font-size:11px;color:var(--text-primary);font-weight:600">—</span>
+          <span id="mnqChartHigh" style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">H —</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="section-card" style="margin-bottom:0">
+      <div class="section-card-header">
+        <span class="section-card-title" style="font-family:var(--font-mono);font-size:12px">MGC <span style="color:var(--text-muted);font-weight:400">/ Micro Gold</span></span>
+        <span id="mgcChartMeta" style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">—</span>
+      </div>
+      <div class="section-card-body" style="padding:10px 14px 12px">
+        <div style="position:relative;height:110px" id="mgcChartWrap">
+          <canvas id="mgcChart"></canvas>
+          <div id="mgcChartEmpty" style="display:none;position:absolute;inset:0;display:flex;align-items:center;justify-content:center;font-size:11px;color:var(--text-muted);text-align:center;line-height:1.5">
+            Chart data unavailable.<br>Waiting for market feed.
+          </div>
+        </div>
+        <div style="display:flex;justify-content:space-between;margin-top:6px">
+          <span id="mgcChartLow"  style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">L —</span>
+          <span id="mgcChartLast" style="font-family:var(--font-mono);font-size:11px;color:var(--text-primary);font-weight:600">—</span>
+          <span id="mgcChartHigh" style="font-family:var(--font-mono);font-size:9px;color:var(--text-muted)">H —</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ── Mini P&L Chart ──────────────────────────────── -->
   <div class="section-card" style="margin-bottom:14px">
     <div class="section-card-header">
@@ -572,6 +616,102 @@
 'use strict';
 
 let perfChart = null;
+let _mnqChart = null, _mgcChart = null;
+
+/* ── MNQ / MGC mini price charts ─────────────────────── */
+const PRICE_CHART_OPTS = {
+  responsive: true,
+  maintainAspectRatio: false,
+  animation: false,
+  plugins: { legend: { display: false }, tooltip: {
+    mode: 'index', intersect: false,
+    callbacks: { label: ctx => ' ' + ctx.parsed.y.toLocaleString('en-US', { minimumFractionDigits: 2 }) },
+    backgroundColor: 'rgba(18,15,12,.92)',
+    titleColor: '#8a7a6a', bodyColor: '#d4c8b8',
+    borderColor: 'rgba(200,144,42,.25)', borderWidth: 1,
+  }},
+  scales: {
+    x: { display: false },
+    y: {
+      position: 'right',
+      ticks: { color: '#5a5046', font: { size: 9, family: 'JetBrains Mono, Consolas' }, maxTicksLimit: 4,
+               callback: v => v.toLocaleString('en-US', { minimumFractionDigits: 0 }) },
+      grid: { color: 'rgba(220,200,170,.04)' },
+    },
+  },
+};
+
+function buildPriceChart(canvasId, bars, color) {
+  const ctx = document.getElementById(canvasId)?.getContext('2d');
+  if (!ctx) return null;
+  const labels = bars.map(b => b.t ? b.t.slice(11, 16) : '');
+  const closes = bars.map(b => b.c);
+  const first  = closes[0] ?? 0;
+  const last   = closes[closes.length - 1] ?? 0;
+  const isUp   = last >= first;
+  const lineColor = isUp ? '#2e9e6a' : '#a03838';
+  const fillColor = isUp ? 'rgba(46,158,106,.06)' : 'rgba(160,56,56,.06)';
+  return new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels,
+      datasets: [{
+        data: closes,
+        borderColor: lineColor,
+        backgroundColor: fillColor,
+        borderWidth: 1.5,
+        pointRadius: 0, pointHoverRadius: 3,
+        tension: 0.2, fill: true,
+      }],
+    },
+    options: PRICE_CHART_OPTS,
+  });
+}
+
+async function loadPriceCharts() {
+  try {
+    const [mnqBars, mgcBars] = await Promise.all([
+      fetch('/api/market/candles/MNQ?limit=60').then(r => r.json()).catch(() => []),
+      fetch('/api/market/candles/MGC?limit=60').then(r => r.json()).catch(() => []),
+    ]);
+
+    // MNQ chart
+    if (mnqBars.length > 1) {
+      document.getElementById('mnqChartEmpty').style.display = 'none';
+      if (_mnqChart) _mnqChart.destroy();
+      _mnqChart = buildPriceChart('mnqChart', mnqBars, '#d4982e');
+      const last = mnqBars[mnqBars.length - 1];
+      const hi   = Math.max(...mnqBars.map(b => b.h));
+      const lo   = Math.min(...mnqBars.map(b => b.l));
+      document.getElementById('mnqChartLast').textContent = last.c?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
+      document.getElementById('mnqChartHigh').textContent = 'H ' + hi.toFixed(0);
+      document.getElementById('mnqChartLow').textContent  = 'L ' + lo.toFixed(0);
+      const ts = last.t ? last.t.slice(0, 16).replace('T', ' ') + ' UTC' : '';
+      document.getElementById('mnqChartMeta').textContent = ts ? `5m · ${ts}` : '5m bars';
+    } else {
+      document.getElementById('mnqChart').style.display = 'none';
+      document.getElementById('mnqChartEmpty').style.display = 'flex';
+    }
+
+    // MGC chart
+    if (mgcBars.length > 1) {
+      document.getElementById('mgcChartEmpty').style.display = 'none';
+      if (_mgcChart) _mgcChart.destroy();
+      _mgcChart = buildPriceChart('mgcChart', mgcBars, '#c8902a');
+      const last = mgcBars[mgcBars.length - 1];
+      const hi   = Math.max(...mgcBars.map(b => b.h));
+      const lo   = Math.min(...mgcBars.map(b => b.l));
+      document.getElementById('mgcChartLast').textContent = last.c?.toLocaleString('en-US', { minimumFractionDigits: 2 }) ?? '—';
+      document.getElementById('mgcChartHigh').textContent = 'H ' + hi.toFixed(2);
+      document.getElementById('mgcChartLow').textContent  = 'L ' + lo.toFixed(2);
+      const ts = last.t ? last.t.slice(0, 16).replace('T', ' ') + ' UTC' : '';
+      document.getElementById('mgcChartMeta').textContent = ts ? `5m · ${ts}` : '5m bars';
+    } else {
+      document.getElementById('mgcChart').style.display = 'none';
+      document.getElementById('mgcChartEmpty').style.display = 'flex';
+    }
+  } catch { /* never crash the page */ }
+}
 
 /* ── Market status (NY time) ─────────────────────────── */
 function getMarketContext() {
@@ -1075,6 +1215,7 @@ async function load() {
     renderIntel(learning, prices);
     renderCalendar(journal);
     renderBotStatus();
+    loadPriceCharts(); // non-blocking — fetches MNQ/MGC candles independently
 
     document.getElementById('refreshLbl').textContent = 'Updated ' + now.toLocaleTimeString();
   } catch (e) {
