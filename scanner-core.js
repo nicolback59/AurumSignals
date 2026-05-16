@@ -1210,10 +1210,13 @@ class Scanner extends EventEmitter {
 
   // ── Market hours check ────────────────────────────────────────────────────────
   // Delegated to clock/market-clock.js (America/Los_Angeles timezone).
-  // Blackout: Fri 13:00 PT → Sun 15:00 PT + Mon–Fri 13:00–14:59 PT maintenance.
+  // Blackout: Fri 13:00 PT → Sun 14:00 PT + Mon–Thu 13:00–13:59 PT maintenance. OVERNIGHT also skipped.
 
   _isMarketOpen() {
-    return !isBlackout();
+    if (isBlackout()) return false;
+    const { meta } = classifyNow();
+    if (meta.minTier === 'IGNORE') return false; // skip OVERNIGHT — no signals can fire
+    return true;
   }
 
   /** Returns the current session name for logging (e.g. 'NY_OPEN', 'MIDDAY'). */

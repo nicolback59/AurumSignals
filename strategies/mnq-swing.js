@@ -73,7 +73,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const adx     = adxArr[n];
   const diPlus  = diPlusArr?.[n];
   const diMinus = diMinusArr?.[n];
-  if (adx != null && adx < 14) return null; // flat chop — swing has no edge below ADX 14
+  if (adx != null && adx < 16) return null; // flat chop — raised from 14, require real trend
 
   // ── Market structure on 1h ───────────────────────────────────────────────────
   const struct = detectMarketStructure(bars, 30);
@@ -114,10 +114,9 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     if (isBull  && diPlus != null && diMinus != null && diPlus  < diMinus)  continue;
     if (!isBull && diPlus != null && diMinus != null && diMinus < diPlus)   continue;
 
-    // ── Price in value zone — 3 ATR radius (tightened from 5) ───────────────
-    // Wide value zones allow entries too far from structure; 3 ATR is enough.
-    const nearEma21 = Math.abs(last.close - ema21) < 3.0 * atr;
-    const nearVwap  = Math.abs(last.close - vwap)  < 3.0 * atr;
+    // ── Price in value zone — 2.5 ATR radius (tightened from 3.0) ───────────
+    const nearEma21 = Math.abs(last.close - ema21) < 2.5 * atr;
+    const nearVwap  = Math.abs(last.close - vwap)  < 2.5 * atr;
     if (!nearEma21 && !nearVwap) continue;
 
     // ── Retest holds — block breaks beyond 1.5 ATR (tightened from 2.0) ─────
@@ -125,8 +124,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     if (isBull && recentSlice.some(b => b.close < ema21 - 1.5 * atr)) continue;
     if (!isBull && recentSlice.some(b => b.close > ema21 + 1.5 * atr)) continue;
 
-    // ── Confirmation candle — 15% body threshold for higher signal frequency ─
-    if (!(isBull ? isBullishCandle(last, 0.15) : isBearishCandle(last, 0.15))) continue;
+    // ── Confirmation candle — 20% body threshold for higher quality signals ──
+    if (!(isBull ? isBullishCandle(last, 0.20) : isBearishCandle(last, 0.20))) continue;
 
     // ── Momentum — RSI extreme filter only (MACD removed to maximise frequency) ─
     const rsiArr = calcRsi(closes, 14);

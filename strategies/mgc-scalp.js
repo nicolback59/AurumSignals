@@ -46,7 +46,7 @@ const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-s
 
 const STRATEGY_VERSION = '4.2';
 
-const ATR_MIN_PTS = 1.5;
+const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
 const MIN_BAR_GAP = 1;          // 1-bar spam guard — adaptive-cooldown.js handles strategy timing
 const TP = [10, 14, 20, 25];    // fixed MGC take-profit levels in points
 
@@ -234,7 +234,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
 
   // ── Session gate — lower threshold to include more sessions ─────────────────
   const sess = getSessionInfoCompat(last.timestamp);
-  if (sess.isBlackout || sess.quality < 0.20) return null;
+  if (sess.isBlackout || sess.quality < 0.40) return null;
 
   // ── Core indicators ─────────────────────────────────────────────────────────
   const closes  = exec.map(b => b.close);
@@ -314,9 +314,9 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   const presentLayers  = htfLayers.filter(l => l.present);
   const agreedLayers   = presentLayers.filter(l => l.bias === expectedBias);
   const conflictLayers = presentLayers.filter(l => l.bias !== 0 && l.bias !== expectedBias);
-  const minAgree = 1; // require at least 1 TF in agreement
+  const minAgree = 2; // require at least 2 TFs in agreement — matches backtest quality gate
   if (agreedLayers.length < minAgree) return null;
-  // Only block when all non-neutral layers conflict (overwhelming disagreement)
+  // Also block when all non-neutral layers conflict
   if (conflictLayers.length >= presentLayers.length) return null;
 
   const confluenceBonus = (agreedLayers.length - minAgree) * 4;

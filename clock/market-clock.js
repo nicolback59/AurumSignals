@@ -4,8 +4,8 @@
  * MARKET CLOCK — Pacific-time market hours + session classification
  *
  * All logic is America/Los_Angeles (PT). Times shown are PT:
- *   Weekly blackout  : Fri 13:00 → Sun 15:00  (CME Globex weekend close)
- *   Daily blackout   : Mon–Fri 13:00–14:59     (CME daily maintenance window)
+ *   Weekly blackout  : Fri 13:00 → Sun 14:00  (CME Globex weekend close)
+ *   Daily blackout   : Mon–Thu 13:00–13:59     (CME daily maintenance window)
  *
  * Session windows (all PT):
  *   ASIAN       : 18:00–22:59 (prior day)
@@ -105,11 +105,11 @@ function isBlackout(dt) {
   if (dow === 5 && hm >= 13 * 60) return true;
   // Weekly: Saturday all day
   if (dow === 6) return true;
-  // Weekly: Sunday before 15:00 PT
-  if (dow === 7 && hm < 15 * 60) return true;
+  // Weekly: Sunday before 14:00 PT (Globex reopens 4PM CT = 14:00 PT)
+  if (dow === 7 && hm < 14 * 60) return true;
 
-  // Daily maintenance: Mon–Thu 13:00–14:59 PT
-  if (dow >= 1 && dow <= 4 && hm >= 13 * 60 && hm < 15 * 60) return true;
+  // Daily maintenance: Mon–Thu 13:00–13:59 PT (CME 1-hour maintenance window)
+  if (dow >= 1 && dow <= 4 && hm >= 13 * 60 && hm < 14 * 60) return true;
   // Friday maintenance: 13:00+ already covered by weekly blackout above
 
   return false;

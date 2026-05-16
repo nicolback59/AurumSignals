@@ -103,8 +103,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     // ── Pullback detection ──────────────────────────────────────────────────
     // Price must have recently touched the VWAP, EMA9, or EMA21 zone.
-    // Wider lookback (15 bars = 75 min) and tolerance (0.7 ATR) for more signals.
-    const tolerance = 0.7 * atr;
+    const tolerance = 0.55 * atr;  // tightened from 0.7 — require tighter pullback
     const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 15);
     const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 15);
     const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 15);
@@ -119,15 +118,15 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     }
 
     // ── Confirmation candle ─────────────────────────────────────────────────
-    const confirmed = isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25);
+    const confirmed = isBull ? isBullishCandle(last, 0.30) : isBearishCandle(last, 0.30);  // raised from 0.25
     if (!confirmed) continue;
 
     // ── RSI filter ──────────────────────────────────────────────────────────
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
     if (rsi != null) {
-      if (isBull  && rsi >= 72) continue; // overbought — avoid chasing
-      if (!isBull && rsi <= 28) continue; // oversold — avoid chasing
+      if (isBull  && rsi >= 70) continue; // overbought — avoid chasing
+      if (!isBull && rsi <= 30) continue; // oversold — avoid chasing
     }
 
     // ── MACD momentum alignment (soft filter) ───────────────────────────────
