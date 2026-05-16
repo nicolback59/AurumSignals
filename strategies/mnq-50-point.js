@@ -79,11 +79,10 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // ── Volume spike (bonus but not required) ─────────────────────────────────────
   const volSpike = hasVolumeSpike(bars, 20, 1.3);
 
-  // ── Breakout check — accept near-breakout (within 0.75 ATR of range edge) ────
-  // Tightened from 1.0 ATR: entries more than 0.75 ATR inside the range are still
-  // in consolidation and have lower probability of immediate follow-through.
-  const breakoutLong  = last.close > rangeHigh - 0.75 * atr;
-  const breakoutShort = last.close < rangeLow  + 0.75 * atr;
+  // ── Breakout check — accept near-breakout (within 0.50 ATR of range edge) ────
+  // Tightened from 0.75 ATR: require price to be firmly at/through the breakout level.
+  const breakoutLong  = last.close > rangeHigh - 0.50 * atr;
+  const breakoutShort = last.close < rangeLow  + 0.50 * atr;
   const vwapAligned   = (breakoutLong && last.close > vwap) || (breakoutShort && last.close < vwap);
 
   // Also accept: retest of breakout level (lookback extended to 6 bars)
@@ -97,8 +96,8 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   for (const dir of directions) {
     const isBull = dir === 'LONG';
 
-    // ── Candle close strength — 15% body for higher signal frequency ─────────
-    if (!(isBull ? isBullishCandle(last, 0.15) : isBearishCandle(last, 0.15))) continue;
+    // ── Candle close strength — 20% body required for conviction ─────────────
+    if (!(isBull ? isBullishCandle(last, 0.20) : isBearishCandle(last, 0.20))) continue;
 
     // ── Minimum momentum (RSI not extreme) ──────────────────────────────────
     const rsiArr = calcRsi(closes, 14);
