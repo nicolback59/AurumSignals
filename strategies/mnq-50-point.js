@@ -29,7 +29,7 @@ const STRATEGY_VERSION = '2.1';
 
 const TARGET_PTS  = 50;   // fixed primary target
 const PARTIAL_PTS = 25;   // partial exit
-const ATR_MIN_PTS = 10;   // minimum 5m ATR for move to be plausible
+const ATR_MIN_PTS = 8;    // minimum 5m ATR for move to be plausible
 const MIN_BAR_GAP = 1;    // 1 × 5m = 5 min spam guard — adaptive-cooldown.js handles strategy timing
 
 let lastSignalBar = -999;
@@ -67,11 +67,11 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // ── HTF bias (15m) ────────────────────────────────────────────────────────────
   const htfBias = calcHtfBias(htfBars, 9, 21);
 
-  // ── Consolidation detection — reject chop/expansion (atrRatio ≥ 2.0) ────────
-  // Tightened from 2.5: a breakout from a messy range has much lower follow-through.
+  // ── Consolidation detection — reject chop/expansion (atrRatio ≥ 2.5) ────────
+  // Allow slightly noisier pre-breakout ranges for more signal frequency.
   const priorBars = bars.slice(0, -1); // exclude current bar
   const consol = detectConsolidation(priorBars, 12, 14);
-  if (consol.atrRatio >= 2.0) return null;
+  if (consol.atrRatio >= 2.5) return null;
 
   const consolAtrRatio = consol.atrRatio;
   const { rangeHigh, rangeLow, curAtr: consolAtr } = consol;
@@ -79,10 +79,10 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // ── Volume spike (bonus but not required) ─────────────────────────────────────
   const volSpike = hasVolumeSpike(bars, 20, 1.3);
 
-  // ── Breakout check — accept near-breakout (within 0.50 ATR of range edge) ────
-  // Tightened from 0.75 ATR: require price to be firmly at/through the breakout level.
-  const breakoutLong  = last.close > rangeHigh - 0.50 * atr;
-  const breakoutShort = last.close < rangeLow  + 0.50 * atr;
+  // ── Breakout check — accept near-breakout (within 0.65 ATR of range edge) ────
+  // Widened to catch near-breakout entries earlier.
+  const breakoutLong  = last.close > rangeHigh - 0.65 * atr;
+  const breakoutShort = last.close < rangeLow  + 0.65 * atr;
   const vwapAligned   = (breakoutLong && last.close > vwap) || (breakoutShort && last.close < vwap);
 
   // Also accept: retest of breakout level (lookback extended to 6 bars)
@@ -197,6 +197,151 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
       timestamp:    last.timestamp,
       trade_status: 'PENDING',
     };
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 2: VWAP Momentum Breakout
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.25) {
+      const prevBar = bars[n - 1];
+      const rsiArr2 = calcRsi(closes, 14);
+      const rsi2    = rsiArr2[n];
+
+      // LONG: fresh cross above VWAP, bullish candle, RSI 40-70, htfBias >= 0
+      const longVwapMom = (
+        last.close > vwap && prevBar && prevBar.close <= vwap &&
+        isBullishCandle(last, 0.25) &&
+        htfBias >= 0 &&
+        rsi2 != null && rsi2 >= 40 && rsi2 <= 70
+      );
+      // SHORT: fresh cross below VWAP
+      const shortVwapMom = (
+        last.close < vwap && prevBar && prevBar.close >= vwap &&
+        isBearishCandle(last, 0.25) &&
+        htfBias <= 0 &&
+        rsi2 != null && rsi2 >= 30 && rsi2 <= 60
+      );
+
+      for (const dir of (longVwapMom ? ['LONG'] : []).concat(shortVwapMom ? ['SHORT'] : [])) {
+        const isBull = dir === 'LONG';
+        const entry  = last.close;
+
+        const tp0v = isBull ? entry + PARTIAL_PTS : entry - PARTIAL_PTS;
+        const tp1v = isBull ? entry + TARGET_PTS  : entry - TARGET_PTS;
+        const tp3v = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
+
+        // S/R check to target
+        const srDistV = srDistanceAtr(tp1v, bars, atr, 50);
+        if (srDistV < 0.8) continue;
+
+        let sl, rawRisk;
+        if (isBull) { sl = vwap - 1.2 * atr; rawRisk = entry - sl; }
+        else         { sl = vwap + 1.2 * atr; rawRisk = sl - entry; }
+        if (rawRisk < 2 || rawRisk > TARGET_PTS * 1.2) continue;
+
+        const rrV = TARGET_PTS / rawRisk;
+        const confidence = scoreSignal({
+          direction: dir, bars, htfBias, htf2Bias: 0, hasHtf2: false,
+          vwapVal: vwap, emaStackVal: 1,
+          atr, atrMin: ATR_MIN_PTS, rr: rrV, srDistanceAtr: srDistV,
+          timestamp: last.timestamp,
+        });
+        if (confidence < THRESHOLDS.MNQ_50PT) continue;
+
+        lastSignalBar = curIdx;
+        const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+        return {
+          instrument: 'MNQ', strategy_name: 'MNQ_50PT', trade_style: 'intraday', timeframe: '5m',
+          direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+          tp1: +tp0v.toFixed(2), tp2: +tp1v.toFixed(2), tp3: +tp3v.toFixed(2),
+          rr: +rrV.toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+          score: Math.round(confidence / 4),
+          setup: 'VWAP Momentum', strategy_version: STRATEGY_VERSION,
+          htf_bias: htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+          session: sess.name,
+          trigger_reason: `VWAP momentum cross ${isBull ? 'above' : 'below'} — fresh cross with displacement candle, 50-pt target clear`,
+          indicators: {
+            atr: +atr.toFixed(2), vwap: +vwap.toFixed(2),
+            rangeHigh: +rangeHigh.toFixed(2), rangeLow: +rangeLow.toFixed(2),
+            consolAtrRatio: +consolAtrRatio.toFixed(2),
+            volSpike, rsi: rsi2 != null ? +rsi2.toFixed(1) : null, htfBias,
+          },
+          timestamp: last.timestamp, trade_status: 'PENDING',
+        };
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 3: Opening Drive Continuation
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.90) {
+      // Require at least 6 bars for a drive measurement
+      if (n >= 6) {
+        const driveStart = bars[n - 6];
+        const netMove    = last.close - driveStart.close;
+        const isDriveLong  = netMove > 2 * atr && htfBias >= 0 && last.close > vwap;
+        const isDriveShort = netMove < -2 * atr && htfBias <= 0 && last.close < vwap;
+
+        // Pullback/pause: last bar not extending — within 1 ATR of bars[n-2].close
+        const prevClose2 = bars[n - 2]?.close;
+        const isPause    = prevClose2 != null && Math.abs(last.close - prevClose2) <= atr;
+
+        for (const dir of (isDriveLong && isPause ? ['LONG'] : []).concat(isDriveShort && isPause ? ['SHORT'] : [])) {
+          const isBull = dir === 'LONG';
+          const entry  = last.close;
+          let sl, rawRisk;
+          if (isBull) {
+            sl      = driveStart.low - 0.5 * atr;
+            rawRisk = entry - sl;
+          } else {
+            sl      = driveStart.high + 0.5 * atr;
+            rawRisk = sl - entry;
+          }
+          // Only if rawRisk < 60 pts
+          if (rawRisk >= 60 || rawRisk < 2) continue;
+
+          const tp0d = isBull ? entry + PARTIAL_PTS : entry - PARTIAL_PTS;
+          const tp1d = isBull ? entry + TARGET_PTS  : entry - TARGET_PTS;
+          const tp3d = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
+          const rrD  = TARGET_PTS / rawRisk;
+
+          const srDistD = srDistanceAtr(tp1d, bars, atr, 50);
+          if (srDistD < 1.0) continue;
+
+          const confidence = scoreSignal({
+            direction: dir, bars, htfBias, htf2Bias: 0, hasHtf2: false,
+            vwapVal: vwap, emaStackVal: 1,
+            atr, atrMin: ATR_MIN_PTS, rr: rrD, srDistanceAtr: srDistD,
+            timestamp: last.timestamp,
+          });
+          if (confidence < THRESHOLDS.MNQ_50PT) continue;
+
+          lastSignalBar = curIdx;
+          const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+          return {
+            instrument: 'MNQ', strategy_name: 'MNQ_50PT', trade_style: 'intraday', timeframe: '5m',
+            direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+            tp1: +tp0d.toFixed(2), tp2: +tp1d.toFixed(2), tp3: +tp3d.toFixed(2),
+            rr: +rrD.toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+            score: Math.round(confidence / 4),
+            setup: 'Opening Drive', strategy_version: STRATEGY_VERSION,
+            htf_bias: htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+            session: sess.name,
+            trigger_reason: `Opening drive continuation ${isBull ? 'long' : 'short'} — ${Math.abs(netMove).toFixed(1)} pt drive with pause, HTF aligned`,
+            indicators: {
+              atr: +atr.toFixed(2), vwap: +vwap.toFixed(2),
+              rangeHigh: +rangeHigh.toFixed(2), rangeLow: +rangeLow.toFixed(2),
+              consolAtrRatio: +consolAtrRatio.toFixed(2),
+              volSpike, rsi: null, htfBias,
+            },
+            timestamp: last.timestamp, trade_status: 'PENDING',
+          };
+        }
+      }
+    }
   }
 
   return null;
