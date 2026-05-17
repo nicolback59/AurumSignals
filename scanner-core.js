@@ -253,6 +253,27 @@ class Scanner extends EventEmitter {
         UPDATE signals SET trade_status = ? WHERE id = ?
       `),
 
+      updateSigExpReason: db.prepare(`
+        UPDATE signals SET expiration_reason = ? WHERE id = ?
+      `),
+
+      updateOutExpReason: db.prepare(`
+        UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?
+      `),
+
+      getAllActiveSignals: db.prepare(`
+        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
+               s.trade_style, s.strategy_name, s.session, s.setup,
+               s.win_prob_tp1
+        FROM   signals s
+        LEFT JOIN outcomes o ON o.signal_id = s.id
+        WHERE  o.id IS NULL
+          AND  s.entry IS NOT NULL
+          AND  s.received_at <= datetime('now', '-3 minutes')
+          AND  (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
+        ORDER BY s.received_at ASC
+      `),
+
       insertTpHit: db.prepare(`
         INSERT OR IGNORE INTO tp_hits (signal_id, tp_level, hit_at, pnl_pts)
         VALUES (?, ?, ?, ?)
@@ -1040,75 +1061,77 @@ class Scanner extends EventEmitter {
 
   _sweepExpiredSignals() {
     try {
-      const pending = this._stmts.getAllPendingSignals.all();
-      if (!pending.length) return;
+      // Use getAllActiveSignals (no sl/tp1 requirement) so signals that lack
+      // price levels are not silently skipped by this sweep.
+      const pending = this._stmts.getAllActiveSignals.all();
       const now = new Date();
+
+      console.log(`[${now.toISOString()}] [sweep] checking ${pending.length} active signal(s)`);
+      if (!pending.length) return;
+
       let swept = 0;
 
-      // Determine market-close conditions in PT timezone
-      const nowPt  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
-      const ptHour = nowPt.getHours();
-      const ptMin  = nowPt.getMinutes();
-      const ptHm   = ptHour * 60 + ptMin;
-      const ptDow  = nowPt.getDay(); // 0=Sun,1=Mon,...,5=Fri,6=Sat
-
-      // Forced market-close: Mon-Fri 13:00-13:59 PT (daily maintenance/lunch window)
-      const isWeekdayMarketClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60 && ptHm < 14 * 60;
+      // PT timezone context
+      const nowPt = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+      const ptHm  = nowPt.getHours() * 60 + nowPt.getMinutes();
+      const ptDow = nowPt.getDay(); // 0=Sun,1=Mon,...,5=Fri,6=Sat
+      const ptDateStr = `${nowPt.getFullYear()}-${String(nowPt.getMonth()+1).padStart(2,'0')}-${String(nowPt.getDate()).padStart(2,'0')}`;
 
       // Weekend forced close: Fri 13:00 PT onward, all day Sat, Sun before 14:00 PT
-      const isFridayClose   = ptDow === 5 && ptHm >= 13 * 60;
-      const isWeekend       = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
-      const isWeekendClose  = isFridayClose || isWeekend;
+      const isFridayClose  = ptDow === 5 && ptHm >= 13 * 60;
+      const isWeekend      = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
+      const isWeekendClose = isFridayClose || isWeekend;
 
-      // Pre-compiled statements for use inside the per-signal loop (avoids re-preparing each iteration)
-      const stmtSigReason = this.db.prepare('UPDATE signals  SET expiration_reason = ? WHERE id = ?');
-      const stmtOutReason = this.db.prepare('UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?');
+      // Weekday after maintenance close: any time on a weekday at or past 13:00 PT.
+      // We check the SIGNAL's creation time (in PT) against the daily 13:00 close so
+      // that a server restart at 14:30 PT still expires signals created before 13:00 PT.
+      const pastDailyClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60;
 
-      // Local helper to expire a signal with a specific reason
       const expireSignal = (sig, reason) => {
         this._stmts.insertOutcome.run(sig.id, 'EXPIRED', sig.entry, now.toISOString(), 0);
         this._stmts.updateTradeStatus.run(STATES.EXPIRED, sig.id);
         try {
-          stmtSigReason.run(reason, sig.id);
-          stmtOutReason.run(reason, sig.id);
+          this._stmts.updateSigExpReason.run(reason, sig.id);
+          this._stmts.updateOutExpReason.run(reason, sig.id);
         } catch { /* ignore */ }
-        this._log(
-          `SWEEP-EXPIRE #${sig.id} ${sig.instrument}: ${sig.direction} reason=${reason}`,
-          'signal'
-        );
+        console.log(`[sweep] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason} age=${Math.round((now - new Date(sig.received_at)) / 60000)}m`);
       };
 
       for (const sig of pending) {
-        // Forced weekend close: all non-swing trades expire if isWeekendClose
-        if (isWeekendClose) {
-          const stratCfg = STRATEGY_CONFIG[sig.strategy_name] || {};
-          if (!stratCfg.allowHoldWeekend) {
-            expireSignal(sig, 'EXPIRED_WEEKEND_CLOSE');
-            swept++;
-            continue;
-          }
+        const stratCfg = STRATEGY_CONFIG[sig.strategy_name] || {};
+
+        // RULE D: Weekend forced close
+        if (isWeekendClose && !stratCfg.allowHoldWeekend) {
+          expireSignal(sig, 'EXPIRED_WEEKEND_CLOSE');
+          swept++;
+          continue;
         }
 
-        // Forced market close: intraday/scalp expire at 1:00 PM PT on weekdays
-        if (isWeekdayMarketClose) {
-          const stratCfg = STRATEGY_CONFIG[sig.strategy_name] || {};
-          if (!stratCfg.allowHoldOvernight) {
+        // RULE C: Weekday market close (expanded — catches restarts after the 1-2 PM window)
+        // Expire any non-overnight signal that was created before today's 13:00 PT
+        // and it is now at or past 13:00 PT on the same or a later day.
+        if (pastDailyClose && !stratCfg.allowHoldOvernight) {
+          const sigPt    = new Date(new Date(sig.received_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+          const sigDateStr = `${sigPt.getFullYear()}-${String(sigPt.getMonth()+1).padStart(2,'0')}-${String(sigPt.getDate()).padStart(2,'0')}`;
+          const sigHm    = sigPt.getHours() * 60 + sigPt.getMinutes();
+          // Signal was created before today's 13:00 PT, or was created on a prior calendar day
+          if (sigDateStr < ptDateStr || (sigDateStr === ptDateStr && sigHm < 13 * 60)) {
             expireSignal(sig, 'EXPIRED_MARKET_CLOSE');
             swept++;
             continue;
           }
         }
 
-        // Max hold time check (new return format: { expire, reason })
+        // RULE B: Max hold time exceeded
         const expResult = shouldExpire(sig, now);
         if (expResult.expire) {
-          expireSignal(sig, expResult.reason || 'MAX_HOLD_TIME');
+          expireSignal(sig, expResult.reason || 'EXPIRED_MAX_HOLD');
           swept++;
         }
       }
 
       if (swept > 0) {
-        this._log(`Signal expiry sweep: closed ${swept} overdue signal(s)`);
+        console.log(`[sweep] closed ${swept} signal(s)`);
         try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
       }
     } catch (err) {
@@ -1120,7 +1143,7 @@ class Scanner extends EventEmitter {
 
   _fixStuckTrades() {
     try {
-      // Fetch all ACTIVE/NULL signals with no outcome (any age)
+      // Fetch ALL ACTIVE/NULL signals with no outcome (no age cutoff — any age)
       const stuckSignals = this.db.prepare(`
         SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
                s.trade_style, s.strategy_name, s.session, s.setup
@@ -1131,51 +1154,62 @@ class Scanner extends EventEmitter {
           AND (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
       `).all();
 
+      const now = new Date();
+      console.log(`[${now.toISOString()}] [fixStuck] found ${stuckSignals.length} unresolved signal(s)`);
       if (!stuckSignals.length) return;
 
-      const now      = new Date();
-      const nowPt    = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
-      const ptHm     = nowPt.getHours() * 60 + nowPt.getMinutes();
-      const ptDow    = nowPt.getDay();
-      const isFriClose  = ptDow === 5 && ptHm >= 13 * 60;
-      const isWeekend   = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
+      const nowPt      = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+      const ptHm       = nowPt.getHours() * 60 + nowPt.getMinutes();
+      const ptDow      = nowPt.getDay();
+      const ptDateStr  = `${nowPt.getFullYear()}-${String(nowPt.getMonth()+1).padStart(2,'0')}-${String(nowPt.getDate()).padStart(2,'0')}`;
+
+      const isFriClose     = ptDow === 5 && ptHm >= 13 * 60;
+      const isWeekend      = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
       const isWeekendClose = isFriClose || isWeekend;
-      const isWeekdayClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60 && ptHm < 14 * 60;
+      // Expanded: any weekday time at or past 13:00 PT (not just the 1-hour maintenance window)
+      const pastDailyClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60;
 
       let fixed = 0;
-      const setSigReason = this.db.prepare('UPDATE signals  SET expiration_reason = ? WHERE id = ?');
-      const setOutReason = this.db.prepare('UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?');
 
       for (const sig of stuckSignals) {
         try {
-          const stratCfg  = STRATEGY_CONFIG[sig.strategy_name] || {};
-          const maxMs     = MAX_HOLD_MS_BY_STRATEGY[sig.strategy_name]
+          const stratCfg = STRATEGY_CONFIG[sig.strategy_name] || {};
+          const maxMs    = MAX_HOLD_MS_BY_STRATEGY[sig.strategy_name]
             ?? (sig.trade_style === 'swing' ? 72*3600000 : sig.trade_style === 'scalp' ? 2*3600000 : 6*3600000);
-          const ageMs     = now.getTime() - new Date(sig.received_at).getTime();
-          const overHold  = ageMs > maxMs;
-          const weekendExp = isWeekendClose && !stratCfg.allowHoldWeekend;
-          const marketExp  = isWeekdayClose && !stratCfg.allowHoldOvernight;
+          const ageMs    = now.getTime() - new Date(sig.received_at).getTime();
 
-          // Determine the most specific expiration reason
           let reason = null;
-          if (weekendExp)      reason = 'EXPIRED_WEEKEND_CLOSE';
-          else if (marketExp)  reason = 'EXPIRED_MARKET_CLOSE';
-          else if (overHold)   reason = ageMs > 3 * 24 * 3600000 ? 'EXPIRED_STUCK_TRADE' : 'EXPIRED_MAX_HOLD';
 
-          if (!reason) continue; // still within valid hold window
+          if (isWeekendClose && !stratCfg.allowHoldWeekend) {
+            reason = 'EXPIRED_WEEKEND_CLOSE';
+          } else if (pastDailyClose && !stratCfg.allowHoldOvernight) {
+            // Signal was created before today's 13:00 PT, or on a prior calendar day
+            const sigPt      = new Date(new Date(sig.received_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+            const sigDateStr  = `${sigPt.getFullYear()}-${String(sigPt.getMonth()+1).padStart(2,'0')}-${String(sigPt.getDate()).padStart(2,'0')}`;
+            const sigHm       = sigPt.getHours() * 60 + sigPt.getMinutes();
+            if (sigDateStr < ptDateStr || (sigDateStr === ptDateStr && sigHm < 13 * 60)) {
+              reason = 'EXPIRED_MARKET_CLOSE';
+            }
+          }
+
+          if (!reason && ageMs > maxMs) {
+            reason = ageMs > 3 * 24 * 3600000 ? 'EXPIRED_STUCK_TRADE' : 'EXPIRED_MAX_HOLD';
+          }
+
+          if (!reason) continue;
 
           this._stmts.insertOutcome.run(sig.id, 'EXPIRED', sig.entry, now.toISOString(), 0);
           this._stmts.updateTradeStatus.run(STATES.EXPIRED, sig.id);
           try {
-            setSigReason.run(reason, sig.id);
-            setOutReason.run(reason, sig.id);
+            this._stmts.updateSigExpReason.run(reason, sig.id);
+            this._stmts.updateOutExpReason.run(reason, sig.id);
           } catch { /* ignore */ }
-          this._log(`FIX-STUCK #${sig.id} ${sig.instrument}: ${sig.direction} reason=${reason} age=${Math.round(ageMs/3600000)}h`, 'signal');
+          console.log(`[fixStuck] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason} age=${Math.round(ageMs/3600000)}h`);
           fixed++;
         } catch { /* never crash per-signal */ }
       }
       if (fixed > 0) {
-        this._log(`Fixed ${fixed} stuck trade(s) with per-strategy expiration logic`);
+        console.log(`[fixStuck] expired ${fixed} stuck trade(s)`);
         try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
       }
     } catch (err) {
@@ -2875,13 +2909,14 @@ class Scanner extends EventEmitter {
     // This catches any stale trades left by a server restart or previous downtime.
     this._fixStuckTrades();
 
-    // Expiry sweep — runs immediately, then every 5 min.
-    // Ensures ACTIVE signals expire even if scanner was down when they should have expired.
-    this._sweepExpiredSignals(); // run immediately at startup
-    this._intervals.push(setInterval(() => this._sweepExpiredSignals(), 5 * 60_000));
+    // Expiry sweep — runs immediately at startup, then every 60 seconds.
+    // Uses getAllActiveSignals (no tp1/sl requirement) to catch all open signals.
+    this._sweepExpiredSignals();
+    this._intervals.push(setInterval(() => this._sweepExpiredSignals(), 60_000));
 
-    // Also re-run _fixStuckTrades every 15 min to catch any edge cases the sweep misses.
-    this._intervals.push(setInterval(() => this._fixStuckTrades(), 15 * 60_000));
+    // _fixStuckTrades runs at startup (above) and every 5 min as a belt-and-suspenders
+    // catch for anything the sweep might miss (signals without entry, etc.).
+    this._intervals.push(setInterval(() => this._fixStuckTrades(), 5 * 60_000));
 
     // Deep historical backtest (60-day 5m bars from Yahoo Finance).
     // Runs once at startup (after 25 min to avoid heap contention with normal backtests)

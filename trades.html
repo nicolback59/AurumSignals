@@ -558,8 +558,11 @@ function applyFiltersAndRender() {
     const instMatch = instFilter === 'ALL' ||
       t.instrument === instFilter ||
       (t.ticker || '').includes(instFilter);
+    // OPEN: no resolved outcome AND trade_status is ACTIVE/null (not EXPIRED, WIN, LOSS, BE)
+    const isGenuinelyOpen = !t.result && (t.trade_status === 'ACTIVE' || t.trade_status == null)
+      && t.trade_status !== 'EXPIRED';
     const resMatch = resultFilter === 'ALL'  ? true
-      : resultFilter === 'OPEN' ? (!t.result && t.trade_status !== 'EXPIRED')
+      : resultFilter === 'OPEN' ? isGenuinelyOpen
       : t.result === resultFilter;
     return instMatch && resMatch;
   });
