@@ -3017,7 +3017,7 @@ class Scanner extends EventEmitter {
       setTimeout(() => {
         try {
           const STARTUP_KEY  = '__startup_ntfy';
-          const THROTTLE_MS  = 2 * 60 * 60 * 1000; // 2 hours
+          const THROTTLE_MS  = 20 * 60 * 1000; // 20 min — suppress crash-loop spam but allow redeploys
           const row = this.db.prepare(
             `SELECT params_json FROM strategy_params WHERE instrument = ?`
           ).get(STARTUP_KEY);
