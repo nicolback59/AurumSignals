@@ -26,7 +26,7 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '2.1';
+const STRATEGY_VERSION = '3.0';
 
 const ATR_MIN_PTS = 15; // minimum 1h ATR in MNQ points
 const MIN_BAR_GAP = 1;  // 1 × 1h = 1h spam guard — adaptive-cooldown.js handles strategy timing
@@ -445,6 +445,369 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
             },
             timestamp: last.timestamp, trade_status: 'PENDING',
           };
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 5: HTF Trend Continuation (4H pullback to 4H EMA21)
+  // Fires when 4H is trending and price pulls back to the 4H EMA21 zone on 1h
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (htfBars && htfBars.length >= 21 && atr >= ATR_MIN_PTS && sess.quality >= 0.25) {
+      const htfCloses = htfBars.map(b => b.close);
+      const htfEma21Arr = ema(htfCloses, 21);
+      const htfN       = htfCloses.length - 1;
+      const htfEma21   = htfEma21Arr[htfN];
+      const htfClose   = htfBars[htfN].close;
+
+      if (htfEma21 != null) {
+        const nearHtfEma21 = Math.abs(last.close - htfEma21) < 1.5 * atr;
+        const htfTrendBull = htfClose > htfEma21 && htfBias === 1;
+        const htfTrendBear = htfClose < htfEma21 && htfBias === -1;
+
+        for (const dir of (htfTrendBull && nearHtfEma21 && isBullishCandle(last, 0.20) ? ['LONG'] : [])
+                          .concat(htfTrendBear && nearHtfEma21 && isBearishCandle(last, 0.20) ? ['SHORT'] : [])) {
+          const isBull = dir === 'LONG';
+          const entry  = last.close;
+          const swLow  = recentSwingLow(bars, 12);
+          const swHigh = recentSwingHigh(bars, 12);
+          let sl, rawRisk;
+          if (isBull) {
+            sl      = Math.min(swLow, htfEma21) - 1.0 * atr;
+            rawRisk = entry - sl;
+          } else {
+            sl      = Math.max(swHigh, htfEma21) + 1.0 * atr;
+            rawRisk = sl - entry;
+          }
+          if (rawRisk > atr) { sl = isBull ? entry - atr : entry + atr; rawRisk = atr; }
+          if (rawRisk < 10) continue;
+
+          const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
+          const tp2 = isBull ? entry + 2.5 * rawRisk : entry - 2.5 * rawRisk;
+          const tp3 = isBull ? entry + 3.0 * rawRisk : entry - 3.0 * rawRisk;
+          const srDist = srDistanceAtr(entry, bars, atr, 60);
+          if (srDist < 0.15) continue;
+
+          const confidence = scoreSignal({
+            direction: dir, bars, htfBias, htf2Bias, hasHtf2: true,
+            vwapVal: vwap, emaStackVal: emaStackScore(closes, 9, 21, 21, dir),
+            atr, atrMin: ATR_MIN_PTS, rr: 2.0, srDistanceAtr: srDist,
+            timestamp: last.timestamp,
+          });
+          if (confidence < THRESHOLDS.MNQ_SWING) continue;
+
+          lastSignalBar = curIdx;
+          const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+          return {
+            instrument: 'MNQ', strategy_name: 'MNQ_SWING', trade_style: 'swing', timeframe: '1h',
+            direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+            tp1: +tp1.toFixed(2), tp2: +tp2.toFixed(2), tp3: +tp3.toFixed(2),
+            rr: +(2.0).toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+            score: Math.round(confidence / 4),
+            setup: 'HTF Trend Continuation', strategy_version: STRATEGY_VERSION,
+            htf_bias: htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
+            session: sess.name,
+            trigger_reason: `4H EMA21 pullback continuation — 4H trending ${isBull ? 'bull' : 'bear'}, price returned to 4H EMA21 zone`,
+            indicators: {
+              atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), ema9: +ema9.toFixed(2), ema21: +ema21.toFixed(2),
+              htfEma21: +htfEma21.toFixed(2), adx: adx != null ? +adx.toFixed(1) : null,
+              dly21: dly21 != null ? +dly21.toFixed(2) : null, struct: detectMarketStructure(bars, 30), htfBias, htf2Bias,
+            },
+            timestamp: last.timestamp, trade_status: 'PENDING',
+          };
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 6: Prior Day High Reclaim / Prior Day Low Rejection
+  // Price reclaims prior day high → bullish continuation
+  // Price rejects prior day low → bearish continuation
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (htf2Bars && htf2Bars.length >= 2 && atr >= ATR_MIN_PTS && sess.quality >= 0.30) {
+      const prevDayBar = htf2Bars[htf2Bars.length - 2];
+      const pdHigh = prevDayBar.high;
+      const pdLow  = prevDayBar.low;
+
+      // Reclaim: price was below pdHigh, now above; bullish candle; 4H aligned
+      const reclaimLong  = last.close > pdHigh && bars[n - 1]?.close <= pdHigh &&
+                           isBullishCandle(last, 0.20) && htfBias >= 0 && ema9 > ema21;
+      // Reject: price was above pdLow, now below; bearish candle; 4H aligned
+      const rejectShort  = last.close < pdLow  && bars[n - 1]?.close >= pdLow  &&
+                           isBearishCandle(last, 0.20) && htfBias <= 0 && ema9 < ema21;
+
+      for (const dir of (reclaimLong ? ['LONG'] : []).concat(rejectShort ? ['SHORT'] : [])) {
+        const isBull = dir === 'LONG';
+        const entry  = last.close;
+        const level  = isBull ? pdHigh : pdLow;
+        let sl, rawRisk;
+        if (isBull) {
+          sl      = level - 1.0 * atr;
+          rawRisk = entry - sl;
+        } else {
+          sl      = level + 1.0 * atr;
+          rawRisk = sl - entry;
+        }
+        if (rawRisk > atr * 1.5) { sl = isBull ? entry - atr : entry + atr; rawRisk = atr; }
+        if (rawRisk < 10) continue;
+
+        const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
+        const tp2 = isBull ? entry + 2.5 * rawRisk : entry - 2.5 * rawRisk;
+        const tp3 = isBull ? entry + 3.0 * rawRisk : entry - 3.0 * rawRisk;
+        const srDist = srDistanceAtr(entry, bars, atr, 60);
+        if (srDist < 0.15) continue;
+
+        const confidence = scoreSignal({
+          direction: dir, bars, htfBias, htf2Bias, hasHtf2: true,
+          vwapVal: vwap, emaStackVal: emaStackScore(closes, 9, 21, 21, dir),
+          atr, atrMin: ATR_MIN_PTS, rr: 2.0, srDistanceAtr: srDist,
+          timestamp: last.timestamp,
+        });
+        if (confidence < THRESHOLDS.MNQ_SWING) continue;
+
+        lastSignalBar = curIdx;
+        const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+        return {
+          instrument: 'MNQ', strategy_name: 'MNQ_SWING', trade_style: 'swing', timeframe: '1h',
+          direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+          tp1: +tp1.toFixed(2), tp2: +tp2.toFixed(2), tp3: +tp3.toFixed(2),
+          rr: +(2.0).toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+          score: Math.round(confidence / 4),
+          setup: isBull ? 'Prior Day High Reclaim' : 'Prior Day Low Rejection',
+          strategy_version: STRATEGY_VERSION,
+          htf_bias: htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
+          session: sess.name,
+          trigger_reason: `Prior day ${isBull ? 'high reclaim' : 'low rejection'} — clean level break with HTF alignment`,
+          indicators: {
+            atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), ema9: +ema9.toFixed(2), ema21: +ema21.toFixed(2),
+            pdHigh: +pdHigh.toFixed(2), pdLow: +pdLow.toFixed(2),
+            dly21: dly21 != null ? +dly21.toFixed(2) : null, htfBias, htf2Bias,
+          },
+          timestamp: last.timestamp, trade_status: 'PENDING',
+        };
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 7: VWAP Rejection Continuation
+  // Price tests VWAP from the continuation side, fails to cross, resumes trend
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.30) {
+      const recentBars4 = bars.slice(-5, -1);
+
+      // LONG: price above VWAP, dipped close to VWAP (within 0.5 ATR) but held above, now bullish candle
+      const testVwapLong  = recentBars4.some(b => b.low < vwap + 0.5 * atr && b.low > vwap - 0.3 * atr);
+      const longReject    = testVwapLong && last.close > vwap + 0.2 * atr &&
+                            isBullishCandle(last, 0.20) && htfBias >= 0 && ema9 > ema21;
+
+      // SHORT: price below VWAP, bounced to VWAP but failed, now bearish candle
+      const testVwapShort = recentBars4.some(b => b.high > vwap - 0.5 * atr && b.high < vwap + 0.3 * atr);
+      const shortReject   = testVwapShort && last.close < vwap - 0.2 * atr &&
+                            isBearishCandle(last, 0.20) && htfBias <= 0 && ema9 < ema21;
+
+      for (const dir of (longReject ? ['LONG'] : []).concat(shortReject ? ['SHORT'] : [])) {
+        const isBull = dir === 'LONG';
+        const entry  = last.close;
+        const swLow  = recentSwingLow(bars, 10);
+        const swHigh = recentSwingHigh(bars, 10);
+        let sl, rawRisk;
+        if (isBull) {
+          sl      = Math.min(swLow, vwap) - 0.8 * atr;
+          rawRisk = entry - sl;
+        } else {
+          sl      = Math.max(swHigh, vwap) + 0.8 * atr;
+          rawRisk = sl - entry;
+        }
+        if (rawRisk > atr) { sl = isBull ? entry - atr : entry + atr; rawRisk = atr; }
+        if (rawRisk < 10) continue;
+
+        const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
+        const tp2 = isBull ? entry + 2.5 * rawRisk : entry - 2.5 * rawRisk;
+        const tp3 = isBull ? entry + 3.0 * rawRisk : entry - 3.0 * rawRisk;
+        const srDist = srDistanceAtr(entry, bars, atr, 60);
+        if (srDist < 0.15) continue;
+
+        const confidence = scoreSignal({
+          direction: dir, bars, htfBias, htf2Bias, hasHtf2: true,
+          vwapVal: vwap, emaStackVal: emaStackScore(closes, 9, 21, 21, dir),
+          atr, atrMin: ATR_MIN_PTS, rr: 2.0, srDistanceAtr: srDist,
+          timestamp: last.timestamp,
+        });
+        if (confidence < THRESHOLDS.MNQ_SWING) continue;
+
+        lastSignalBar = curIdx;
+        const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+        return {
+          instrument: 'MNQ', strategy_name: 'MNQ_SWING', trade_style: 'swing', timeframe: '1h',
+          direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+          tp1: +tp1.toFixed(2), tp2: +tp2.toFixed(2), tp3: +tp3.toFixed(2),
+          rr: +(2.0).toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+          score: Math.round(confidence / 4),
+          setup: 'VWAP Rejection', strategy_version: STRATEGY_VERSION,
+          htf_bias: htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
+          session: sess.name,
+          trigger_reason: `VWAP rejection ${isBull ? 'long' : 'short'} — price tested VWAP from ${isBull ? 'above' : 'below'}, failed to cross, trend resumes`,
+          indicators: {
+            atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), ema9: +ema9.toFixed(2), ema21: +ema21.toFixed(2),
+            dly21: dly21 != null ? +dly21.toFixed(2) : null, htfBias, htf2Bias,
+          },
+          timestamp: last.timestamp, trade_status: 'PENDING',
+        };
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 8: Daily Bias Continuation with 1H Structure Confirmation
+  // Price on correct side of daily EMA21, 1H structure supports, 1H pullback held
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (htf2Bars && htf2Bars.length >= 10 && dly21 != null && atr >= ATR_MIN_PTS && sess.quality >= 0.25) {
+      const dlyClose   = htf2Bars[htf2Bars.length - 1].close;
+      const dailyBull  = dlyClose > dly21 && htf2Bias === 1;
+      const dailyBear  = dlyClose < dly21 && htf2Bias === -1;
+
+      // 1H structure confirms: higher lows (bull) or lower highs (bear) in last 6 bars
+      const struct1h = detectMarketStructure(bars, 30);
+      const structOk = (dailyBull && struct1h === 'BULL') || (dailyBear && struct1h === 'BEAR');
+
+      if (structOk) {
+        // Price in pullback zone — pulled back to within 2 ATR of 1H EMA21
+        const pullbackZone = Math.abs(last.close - ema21) < 2.0 * atr;
+
+        for (const dir of (dailyBull && pullbackZone && ema9 > ema21 && isBullishCandle(last, 0.20) ? ['LONG'] : [])
+                          .concat(dailyBear && pullbackZone && ema9 < ema21 && isBearishCandle(last, 0.20) ? ['SHORT'] : [])) {
+          const isBull = dir === 'LONG';
+          const entry  = last.close;
+          const swLow  = recentSwingLow(bars, 12);
+          const swHigh = recentSwingHigh(bars, 12);
+          let sl, rawRisk;
+          if (isBull) {
+            sl      = Math.min(swLow, ema21) - 0.8 * atr;
+            rawRisk = entry - sl;
+          } else {
+            sl      = Math.max(swHigh, ema21) + 0.8 * atr;
+            rawRisk = sl - entry;
+          }
+          if (rawRisk > atr) { sl = isBull ? entry - atr : entry + atr; rawRisk = atr; }
+          if (rawRisk < 10) continue;
+
+          const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
+          const tp2 = isBull ? entry + 2.5 * rawRisk : entry - 2.5 * rawRisk;
+          const tp3 = isBull ? entry + 3.0 * rawRisk : entry - 3.0 * rawRisk;
+          const srDist = srDistanceAtr(entry, bars, atr, 60);
+          if (srDist < 0.15) continue;
+
+          const confidence = scoreSignal({
+            direction: dir, bars, htfBias, htf2Bias, hasHtf2: true,
+            vwapVal: vwap, emaStackVal: emaStackScore(closes, 9, 21, 21, dir),
+            atr, atrMin: ATR_MIN_PTS, rr: 2.0, srDistanceAtr: srDist,
+            timestamp: last.timestamp,
+          });
+          if (confidence < THRESHOLDS.MNQ_SWING) continue;
+
+          lastSignalBar = curIdx;
+          const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+          return {
+            instrument: 'MNQ', strategy_name: 'MNQ_SWING', trade_style: 'swing', timeframe: '1h',
+            direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+            tp1: +tp1.toFixed(2), tp2: +tp2.toFixed(2), tp3: +tp3.toFixed(2),
+            rr: +(2.0).toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+            score: Math.round(confidence / 4),
+            setup: 'Daily Bias Continuation', strategy_version: STRATEGY_VERSION,
+            htf_bias: htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
+            session: sess.name,
+            trigger_reason: `Daily EMA21 ${isBull ? 'bull' : 'bear'} bias with 1H ${isBull ? 'HH/HL' : 'LH/LL'} structure — pullback held, continuation entry`,
+            indicators: {
+              atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), ema9: +ema9.toFixed(2), ema21: +ema21.toFixed(2),
+              dly21: +dly21.toFixed(2), struct: struct1h, htfBias, htf2Bias,
+            },
+            timestamp: last.timestamp, trade_status: 'PENDING',
+          };
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 9: Overnight Level Sweep + NY Open Continuation
+  // Price swept an overnight high/low early in NY session, reversed, now continues
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.35) {
+      const isNyOpen = sess.name === 'NY Open' || sess.name === 'NY Morning';
+
+      if (isNyOpen && bars.length >= 6) {
+        // Compute overnight range: bars from prior session (rough proxy: bars 4h ago)
+        const overnightSlice = bars.slice(-8, -4);
+        if (overnightSlice.length >= 2) {
+          const ovHigh = Math.max(...overnightSlice.map(b => b.high));
+          const ovLow  = Math.min(...overnightSlice.map(b => b.low));
+
+          // LONG: price swept below ovLow (stop hunt), now closed back above ovLow + bullish candle
+          const longNySweep = bars[n - 1]?.low < ovLow - 0.1 * atr &&
+                              last.close > ovLow && isBullishCandle(last, 0.25) &&
+                              htfBias >= 0;
+          // SHORT: swept above ovHigh, now closed back below
+          const shortNySweep = bars[n - 1]?.high > ovHigh + 0.1 * atr &&
+                               last.close < ovHigh && isBearishCandle(last, 0.25) &&
+                               htfBias <= 0;
+
+          for (const dir of (longNySweep ? ['LONG'] : []).concat(shortNySweep ? ['SHORT'] : [])) {
+            const isBull = dir === 'LONG';
+            const entry  = last.close;
+            const anchor = isBull ? bars[n - 1].low : bars[n - 1].high;
+            let sl, rawRisk;
+            if (isBull) {
+              sl      = anchor - 0.4 * atr;
+              rawRisk = entry - sl;
+            } else {
+              sl      = anchor + 0.4 * atr;
+              rawRisk = sl - entry;
+            }
+            if (rawRisk > atr * 1.5) { sl = isBull ? entry - atr : entry + atr; rawRisk = atr; }
+            if (rawRisk < 10) continue;
+
+            const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
+            const tp2 = isBull ? entry + 2.5 * rawRisk : entry - 2.5 * rawRisk;
+            const tp3 = isBull ? entry + 3.0 * rawRisk : entry - 3.0 * rawRisk;
+            const srDist = srDistanceAtr(entry, bars, atr, 60);
+            if (srDist < 0.15) continue;
+
+            const confidence = scoreSignal({
+              direction: dir, bars, htfBias, htf2Bias, hasHtf2: true,
+              vwapVal: vwap, emaStackVal: emaStackScore(closes, 9, 21, 21, dir),
+              atr, atrMin: ATR_MIN_PTS, rr: 2.0, srDistanceAtr: srDist,
+              timestamp: last.timestamp,
+            });
+            if (confidence < THRESHOLDS.MNQ_SWING) continue;
+
+            lastSignalBar = curIdx;
+            const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+            return {
+              instrument: 'MNQ', strategy_name: 'MNQ_SWING', trade_style: 'swing', timeframe: '1h',
+              direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+              tp1: +tp1.toFixed(2), tp2: +tp2.toFixed(2), tp3: +tp3.toFixed(2),
+              rr: +(2.0).toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+              score: Math.round(confidence / 4),
+              setup: 'Overnight Sweep NY Continuation', strategy_version: STRATEGY_VERSION,
+              htf_bias: htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
+              session: sess.name,
+              trigger_reason: `Overnight ${isBull ? 'low' : 'high'} sweep at NY open — stop hunt complete, ${isBull ? 'bull' : 'bear'} continuation now with HTF aligned`,
+              indicators: {
+                atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), ema9: +ema9.toFixed(2), ema21: +ema21.toFixed(2),
+                ovHigh: +ovHigh.toFixed(2), ovLow: +ovLow.toFixed(2),
+                dly21: dly21 != null ? +dly21.toFixed(2) : null, htfBias, htf2Bias,
+              },
+              timestamp: last.timestamp, trade_status: 'PENDING',
+            };
+          }
         }
       }
     }

@@ -50,6 +50,7 @@ const {
 } = require('./learning');
 const {
   generateMidWeekReport, generateWeeklyDeepReport,
+  listReports, getReportScheduleStatus,
 } = require('./performance-reporter');
 const { runBacktest, runBacktest5m, runSwingBacktest1h, calcEnhancedMetrics } = require('./backtest-engine');
 const {
@@ -1991,6 +1992,84 @@ class Scanner extends EventEmitter {
     }
   }
 
+  // ── Weekly Deep Dive Report ───────────────────────────────────────────────────
+  // Auto-generated Friday after 14:00 PT (17:00 ET) / after NY market close.
+  // Also catches up Saturday/Sunday if Friday was missed.
+  // Timezone: America/Los_Angeles per product requirement.
+
+  _maybeGenerateWeeklyDeepReport() {
+    try {
+      const now = new Date();
+      const ptParts = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/Los_Angeles',
+        weekday: 'short', hour: 'numeric', minute: 'numeric', hour12: false,
+      }).formatToParts(now);
+      const weekday = ptParts.find(p => p.type === 'weekday').value;
+      const hour    = parseInt(ptParts.find(p => p.type === 'hour').value, 10);
+
+      // Generate on Friday after 14:00 PT (=17:00 ET, after market close) or Sat/Sun as catch-up
+      const isWindow =
+        (weekday === 'Fri' && hour >= 14) ||
+        weekday === 'Sat' ||
+        (weekday === 'Sun' && hour < 20);
+      if (!isWindow) return;
+
+      // Determine Monday of current week
+      const d = new Date(now);
+      const day = d.getDay(); // 0=Sun
+      const diff = day === 0 ? -6 : 1 - day;
+      d.setDate(d.getDate() + diff);
+      const weekStart = d.toISOString().slice(0, 10);
+
+      // Skip if already generated this week
+      const key = `REPORT_WEEKLY_${weekStart}`;
+      const existing = this.db.prepare(
+        'SELECT instrument FROM strategy_params WHERE instrument = ?'
+      ).get(key);
+      if (existing) return;
+
+      this._log(`📋 Generating Weekly Deep Dive report for week of ${weekStart}…`);
+
+      const report = generateWeeklyDeepReport(this.db, weekStart);
+
+      this._log(
+        `📋 Weekly Deep Dive complete — ` +
+        `WR=${report.metrics?.win_rate_pct ?? 'N/A'}% | ` +
+        `PF=${report.metrics?.profit_factor ?? 'N/A'} | ` +
+        `Trades=${report.metrics?.total_trades ?? 0} | ` +
+        `BT runs=${report.backtest?.total_runs ?? 0}`
+      );
+
+      // Surface to ntfy
+      if (this.cfg.ntfyTopic) {
+        const wr  = report.metrics?.win_rate_pct;
+        const n   = report.metrics?.total_trades ?? 0;
+        const pf  = report.metrics?.profit_factor;
+        const btRuns = report.backtest?.valid_runs ?? 0;
+        const lvl = wr != null && wr < 45 ? 'high' : 'default';
+        const btDecl = (report.backtest?.strategies ?? []).filter(s => s.wr_trend === 'declining').length;
+        const headers = {
+          'Content-Type': 'text/plain',
+          'Title': `Weekly Deep Dive — WR=${wr ?? '?'}% (${n} trades)`,
+          'Priority': lvl,
+          'Tags': lvl === 'high' ? 'warning,bar_chart' : 'bar_chart',
+        };
+        if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+        const body = [
+          `📋 Weekly Deep Dive Report — Week of ${weekStart}`,
+          `Live: WR=${wr ?? '?'}% | PF=${pf ?? '?'} | Trades=${n}`,
+          `Backtest: ${btRuns} valid runs | ${btDecl > 0 ? btDecl + ' strategies declining' : 'all stable'}`,
+          `Full report: /reports`,
+        ].join('\n');
+        fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
+          method: 'POST', headers, body,
+        }).catch(() => {});
+      }
+    } catch (err) {
+      this._err('Weekly Deep Dive report error', err);
+    }
+  }
+
   // ── Mid-week intelligence report ─────────────────────────────────────────────
   // Auto-generated Wednesday after 3:00 PM ET. Persisted to strategy_params.
   // Also checks for edge degradation on both instruments after every backtest cycle.
@@ -2595,6 +2674,10 @@ class Scanner extends EventEmitter {
     // Mid-week intelligence report — check every hour; generates once on Wednesday after 15:00 ET
     this._intervals.push(setInterval(() => this._maybeGenerateMidWeekReport(), 60 * 60_000));
     setTimeout(() => this._maybeGenerateMidWeekReport(), 45_000);
+
+    // Weekly Deep Dive report — check every hour; generates Friday after 14:00 PT (17:00 ET) or Sat/Sun catch-up
+    this._intervals.push(setInterval(() => this._maybeGenerateWeeklyDeepReport(), 60 * 60_000));
+    setTimeout(() => this._maybeGenerateWeeklyDeepReport(), 60_000);
 
     // Edge degradation monitoring — runs after each backtest cycle (called inline in runBacktestCycle)
     // Also check once at startup after backtests have run (35 min delay)

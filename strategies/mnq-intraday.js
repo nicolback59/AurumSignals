@@ -26,10 +26,10 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '2.1';
+const STRATEGY_VERSION = '2.2';
 
 // Minimum ATR in MNQ points for intraday to be worth trading
-const ATR_MIN_PTS = 5;  // lowered from 8 — capture moves in moderate-volatility sessions
+const ATR_MIN_PTS = 8;  // restored from 5 — low-ATR sessions have weak follow-through
 // Cooldown: minimum bars between signals on this strategy
 const MIN_BAR_GAP = 2;  // 2 × 5m = 10 min spam guard — adaptive-cooldown.js handles strategy timing
 
@@ -76,7 +76,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const ema50 = ema50Arr[n];
 
   // ── No-trade filters ─────────────────────────────────────────────────────────
-  if (isChoppingAroundVwap(bars, vwapArr, 5, 3)) return null;  // relaxed from (8,4)
+  if (isChoppingAroundVwap(bars, vwapArr, 8, 4)) return null;  // restored — relaxed filter allowed too many chop signals
 
   const sess = getSessionInfo(last.timestamp);
   // Skip low-quality sessions (pre-market, overnight, thin midday)
