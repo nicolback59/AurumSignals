@@ -726,7 +726,7 @@ function generateWeeklyDeepReport(db, weekStart = null) {
     expectancy, maxDD, recoveryFactor, maxLoss, maxWin,
     byStrategy, bySession, bySetup, byDay, byDirection, byGrade,
     falseRatio, signalEff, divergence, edgeStrengths, backtestSection,
-  });
+  }, db);
 
   const report = {
     generated_at: new Date().toISOString(),
@@ -792,7 +792,7 @@ function _analyzeEdgeStrengths(bySession, bySetup, byDay) {
   return edges;
 }
 
-function _buildWeeklyNarrative(d) {
+function _buildWeeklyNarrative(d, db) {
   const { ws, we, wr, prevWR, total, prevTotal, pf, avgWin, avgLoss,
           expectancy, maxDD, recoveryFactor, maxLoss, maxWin,
           byStrategy, bySession, bySetup, byDay, falseRatio, signalEff,
