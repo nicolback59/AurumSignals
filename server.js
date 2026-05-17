@@ -187,6 +187,77 @@ function applyMigrations() {
 }
 applyMigrations();
 
+// ── One-time startup cleanup: expire all stale open trades ────────────────────
+// Runs every time the server starts. Catches any trades left open by downtime,
+// using per-strategy max hold times and PT market-close rules.
+(function cleanupStaleOpenTrades() {
+  try {
+    const MAX_HOLD = {
+      MGC_SCALP:    1  * 3600000,
+      MGC_INTRADAY: 4  * 3600000,
+      MNQ_INTRADAY: 4  * 3600000,
+      MNQ_50PT:     6  * 3600000,
+      MNQ_SWING:    72 * 3600000,
+    };
+    const NO_WEEKEND = new Set(['MGC_SCALP','MGC_INTRADAY','MNQ_INTRADAY','MNQ_50PT']);
+    const NO_OVERNIGHT = NO_WEEKEND;
+
+    const nowMs  = Date.now();
+    const now    = new Date();
+    const nowPt  = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+    const ptHm   = nowPt.getHours() * 60 + nowPt.getMinutes();
+    const ptDow  = nowPt.getDay();
+    const isFriClose    = ptDow === 5 && ptHm >= 13 * 60;
+    const isWeekend     = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
+    const isWeekendClose = isFriClose || isWeekend;
+    const isWeekdayClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60 && ptHm < 14 * 60;
+
+    const stale = db.prepare(`
+      SELECT s.id, s.entry, s.received_at, s.strategy_name, s.trade_style, s.instrument, s.direction
+      FROM signals s
+      LEFT JOIN outcomes o ON o.signal_id = s.id
+      WHERE o.id IS NULL
+        AND s.entry IS NOT NULL
+        AND (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
+    `).all();
+
+    if (!stale.length) return;
+
+    const setStatus  = db.prepare("UPDATE signals SET trade_status = 'EXPIRED' WHERE id = ?");
+    const insOutcome = db.prepare("INSERT OR IGNORE INTO outcomes (signal_id, result, exit_price, exit_at, pnl_pts) VALUES (?,?,?,?,?)");
+    const setReason  = db.prepare("UPDATE signals SET expiration_reason = ? WHERE id = ?");
+
+    let fixed = 0;
+    const nowIso = now.toISOString();
+
+    for (const sig of stale) {
+      try {
+        const maxMs    = MAX_HOLD[sig.strategy_name] ?? (sig.trade_style === 'swing' ? 72*3600000 : 6*3600000);
+        const ageMs    = nowMs - new Date(sig.received_at).getTime();
+        const overHold = ageMs > maxMs;
+        const wkndExp  = isWeekendClose && NO_WEEKEND.has(sig.strategy_name);
+        const mktExp   = isWeekdayClose && NO_OVERNIGHT.has(sig.strategy_name);
+
+        let reason = null;
+        if (wkndExp)       reason = 'EXPIRED_WEEKEND_CLOSE';
+        else if (mktExp)   reason = 'EXPIRED_MARKET_CLOSE';
+        else if (overHold) reason = ageMs > 3 * 24 * 3600000 ? 'EXPIRED_STUCK_TRADE' : 'EXPIRED_MAX_HOLD';
+
+        if (!reason) continue;
+
+        insOutcome.run(sig.id, 'EXPIRED', sig.entry, nowIso, 0);
+        setStatus.run(sig.id);
+        setReason.run(reason, sig.id);
+        fixed++;
+      } catch { /* never crash per-row */ }
+    }
+
+    if (fixed > 0) console.log(`[startup-cleanup] Expired ${fixed} stale open trade(s) at startup`);
+  } catch (err) {
+    console.error('[startup-cleanup] Error during stale trade cleanup:', err.message);
+  }
+})();
+
 db.exec(schema);
 
 // Create new tables added by this release if they don't exist yet (safe no-ops on fresh DBs)

@@ -25,7 +25,7 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '3.0';
+const STRATEGY_VERSION = '3.1';
 
 const TARGET_PTS  = 50;   // fixed primary target
 const PARTIAL_PTS = 25;   // partial exit
@@ -597,6 +597,187 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
           },
           timestamp: last.timestamp, trade_status: 'PENDING',
         };
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 7: 15m Structure Break into 50-Point Expansion
+  // The 15m chart (htfBars for this strategy) prints a clean structure break
+  // (close above prior 15m swing high, or below prior 15m swing low) with
+  // strong candle, while the 5m is in alignment — targets 50-pt expansion.
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.30 && htfBars.length >= 12) {
+      const h15n    = htfBars.length - 1;
+      const h15Last = htfBars[h15n];
+      const h15Closes = htfBars.map(b => b.close);
+      const h15Atr  = calcAtr(htfBars, 14)[h15n];
+
+      if (h15Atr && h15Last) {
+        // 15m swing levels over last 6 15m bars (= last 30m)
+        const swHigh15 = Math.max(...htfBars.slice(-7, -1).map(b => b.high));
+        const swLow15  = Math.min(...htfBars.slice(-7, -1).map(b => b.low));
+
+        // Structure break: 15m bar closed decisively above prior swing high (bull)
+        const breakBull15 = h15Last.close > swHigh15 + 0.1 * h15Atr &&
+                            isBullishCandle(h15Last, 0.30) && htfBias >= 0;
+        const breakBear15 = h15Last.close < swLow15  - 0.1 * h15Atr &&
+                            isBearishCandle(h15Last, 0.30) && htfBias <= 0;
+
+        // 5m must confirm: price above VWAP (bull) or below (bear), recent 5m candle strong
+        const confirmBull = breakBull15 && last.close > vwap && isBullishCandle(last, 0.20);
+        const confirmBear = breakBear15 && last.close < vwap && isBearishCandle(last, 0.20);
+
+        for (const dir of (confirmBull ? ['LONG'] : []).concat(confirmBear ? ['SHORT'] : [])) {
+          const isBull = dir === 'LONG';
+          const entry  = last.close;
+
+          // RSI not extreme
+          const rsi15 = calcRsi(closes, 14)[n];
+          if (rsi15 != null) {
+            if (isBull  && rsi15 >= 78) continue;
+            if (!isBull && rsi15 <= 22) continue;
+          }
+
+          let sl, rawRisk;
+          if (isBull) {
+            // Stop below the 15m structure break level
+            sl      = swHigh15 - 0.5 * atr;
+            rawRisk = entry - sl;
+          } else {
+            sl      = swLow15  + 0.5 * atr;
+            rawRisk = sl - entry;
+          }
+          if (rawRisk < 2 || rawRisk > TARGET_PTS * 1.2) continue;
+          const rrSB = TARGET_PTS / rawRisk;
+
+          const tp0sb = isBull ? entry + PARTIAL_PTS : entry - PARTIAL_PTS;
+          const tp1sb = isBull ? entry + TARGET_PTS  : entry - TARGET_PTS;
+          const tp3sb = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
+
+          const srDistSB = srDistanceAtr(tp1sb, bars, atr, 50);
+          if (srDistSB < 0.8) continue;
+
+          const confidence = scoreSignal({
+            direction: dir, bars, htfBias, htf2Bias: 0, hasHtf2: false,
+            vwapVal: vwap, emaStackVal: 1,
+            atr, atrMin: ATR_MIN_PTS, rr: rrSB, srDistanceAtr: srDistSB,
+            timestamp: last.timestamp,
+          });
+          if (confidence < THRESHOLDS.MNQ_50PT) continue;
+
+          lastSignalBar = curIdx;
+          const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+          return {
+            instrument: 'MNQ', strategy_name: 'MNQ_50PT', trade_style: 'intraday', timeframe: '5m',
+            direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+            tp1: +tp0sb.toFixed(2), tp2: +tp1sb.toFixed(2), tp3: +tp3sb.toFixed(2),
+            rr: +rrSB.toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+            score: Math.round(confidence / 4),
+            setup: '15m Structure Break', strategy_version: STRATEGY_VERSION,
+            htf_bias: htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+            session: sess.name,
+            trigger_reason: `15m structure break ${isBull ? 'above' : 'below'} prior swing ${isBull ? 'high' : 'low'} — clean displacement candle, 5m VWAP aligned, 50-pt expansion targeted`,
+            indicators: {
+              atr: +atr.toFixed(2), vwap: +vwap.toFixed(2),
+              swHigh15: +swHigh15.toFixed(2), swLow15: +swLow15.toFixed(2),
+              h15Atr: h15Atr != null ? +h15Atr.toFixed(2) : null,
+              rsi: rsi15 != null ? +rsi15.toFixed(1) : null, htfBias,
+            },
+            timestamp: last.timestamp, trade_status: 'PENDING',
+          };
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 8: HTF-Aligned Compression Breakout (Multi-TF Confluence)
+  // Tight 5m compression (low ATR ratio) breaks with strong displacement candle
+  // WHILE the 15m is also pointing in the same direction — stronger version of
+  // Archetype 1 with explicit 15m HTF bias confirmation for higher RR setups.
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.35 && htfBars.length >= 8) {
+      // Require tight consolidation: atrRatio below 1.8 (tighter than Archetype 1's 2.5)
+      const consol8 = detectConsolidation(bars.slice(0, -1), 10, 14);
+      if (consol8.atrRatio < 1.8 && consol8.atrRatio >= 0.3) {
+        const rng8H = consol8.rangeHigh;
+        const rng8L = consol8.rangeLow;
+
+        // 15m bias via EMA of htfBars
+        const h15Closes = htfBars.map(b => b.close);
+        const h15Ema9   = ema(h15Closes, 9)[htfBars.length - 1];
+        const h15Ema21  = ema(h15Closes, 21)[htfBars.length - 1];
+        const h15Bull   = h15Ema9 != null && h15Ema21 != null && h15Ema9 > h15Ema21;
+        const h15Bear   = h15Ema9 != null && h15Ema21 != null && h15Ema9 < h15Ema21;
+
+        // Breakout with strong close beyond range and 15m bias aligned
+        const boBull = last.close > rng8H + 0.3 * atr && isBullishCandle(last, 0.30) &&
+                       htfBias >= 0 && h15Bull;
+        const boBear = last.close < rng8L - 0.3 * atr && isBearishCandle(last, 0.30) &&
+                       htfBias <= 0 && h15Bear;
+
+        for (const dir of (boBull ? ['LONG'] : []).concat(boBear ? ['SHORT'] : [])) {
+          const isBull = dir === 'LONG';
+          const entry  = last.close;
+
+          const rsi8 = calcRsi(closes, 14)[n];
+          if (rsi8 != null) {
+            if (isBull  && rsi8 >= 78) continue;
+            if (!isBull && rsi8 <= 22) continue;
+          }
+
+          let sl, rawRisk;
+          if (isBull) {
+            sl      = rng8H - 0.5 * atr;
+            rawRisk = entry - sl;
+          } else {
+            sl      = rng8L + 0.5 * atr;
+            rawRisk = sl - entry;
+          }
+          if (rawRisk < 2 || rawRisk > TARGET_PTS * 1.2) continue;
+          const rr8 = TARGET_PTS / rawRisk;
+
+          const tp08 = isBull ? entry + PARTIAL_PTS : entry - PARTIAL_PTS;
+          const tp18 = isBull ? entry + TARGET_PTS  : entry - TARGET_PTS;
+          const tp38 = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
+
+          const srDist8 = srDistanceAtr(tp18, bars, atr, 50);
+          if (srDist8 < 1.0) continue;
+
+          const confidence = scoreSignal({
+            direction: dir, bars, htfBias, htf2Bias: h15Bull === isBull ? 1 : (h15Bear === !isBull ? -1 : 0), hasHtf2: true,
+            vwapVal: vwap, emaStackVal: (isBull && last.close > vwap) || (!isBull && last.close < vwap) ? 1 : 0,
+            atr, atrMin: ATR_MIN_PTS, rr: rr8, srDistanceAtr: srDist8,
+            timestamp: last.timestamp,
+          });
+          if (confidence < THRESHOLDS.MNQ_50PT) continue;
+
+          lastSignalBar = curIdx;
+          const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+          return {
+            instrument: 'MNQ', strategy_name: 'MNQ_50PT', trade_style: 'intraday', timeframe: '5m',
+            direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+            tp1: +tp08.toFixed(2), tp2: +tp18.toFixed(2), tp3: +tp38.toFixed(2),
+            rr: +rr8.toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+            score: Math.round(confidence / 4),
+            setup: 'HTF-Aligned Compression Breakout', strategy_version: STRATEGY_VERSION,
+            htf_bias: htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+            session: sess.name,
+            trigger_reason: `Tight 5m compression (atrRatio=${consol8.atrRatio.toFixed(2)}) breaks ${isBull ? 'above' : 'below'} with 15m EMA bias confirmed — dual-TF expansion signal`,
+            indicators: {
+              atr: +atr.toFixed(2), vwap: +vwap.toFixed(2),
+              rangeHigh: +rng8H.toFixed(2), rangeLow: +rng8L.toFixed(2),
+              consolAtrRatio: +consol8.atrRatio.toFixed(2),
+              h15Ema9: h15Ema9 != null ? +h15Ema9.toFixed(2) : null,
+              h15Ema21: h15Ema21 != null ? +h15Ema21.toFixed(2) : null,
+              rsi: rsi8 != null ? +rsi8.toFixed(1) : null, htfBias,
+            },
+            timestamp: last.timestamp, trade_status: 'PENDING',
+          };
+        }
       }
     }
   }

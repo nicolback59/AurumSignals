@@ -26,7 +26,7 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '3.0';
+const STRATEGY_VERSION = '3.1';
 
 const ATR_MIN_PTS = 15; // minimum 1h ATR in MNQ points
 const MIN_BAR_GAP = 1;  // 1 × 1h = 1h spam guard — adaptive-cooldown.js handles strategy timing
@@ -810,6 +810,173 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
                 atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), ema9: +ema9.toFixed(2), ema21: +ema21.toFixed(2),
                 ovHigh: +ovHigh.toFixed(2), ovLow: +ovLow.toFixed(2),
                 dly21: dly21 != null ? +dly21.toFixed(2) : null, htfBias, htf2Bias,
+              },
+              timestamp: last.timestamp, trade_status: 'PENDING',
+            };
+          }
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 10: 4H Impulse-Correction Continuation (multi-bar base breakout)
+  // After a strong 4H impulse move, price pulls back into the prior base zone
+  // on 1H, then confirms with a bullish/bearish close. Classic ICT/Wyckoff
+  // re-accumulation pattern that often targets 2–3× the impulse range.
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (htfBars && htfBars.length >= 6 && atr >= ATR_MIN_PTS && sess.quality >= 0.30) {
+      const h4n    = htfBars.length - 1;
+      const h4Last = htfBars[h4n];
+      const h4Prev = htfBars[h4n - 1];
+      const h4Prev2 = htfBars[h4n - 2];
+
+      if (h4Last && h4Prev && h4Prev2) {
+        const h4Atr = Math.abs(h4Prev.close - h4Prev2.close) || atr;
+
+        // Impulse: prev 4H bar was strong directional move (≥ 1.2× 4H range)
+        const h4PrevRange  = h4Prev.high - h4Prev.low;
+        const h4ImpulseBull = h4Prev.close > h4Prev.open && h4PrevRange >= 1.2 * atr && htfBias >= 0;
+        const h4ImpulseBear = h4Prev.close < h4Prev.open && h4PrevRange >= 1.2 * atr && htfBias <= 0;
+
+        // Correction: current 4H bar pulled back into prior bar's body (50–100% retrace)
+        const h4MidPrev    = (h4Prev.open + h4Prev.close) / 2;
+        const correctedBull = h4ImpulseBull && h4Last.low <= h4MidPrev && h4Last.close > h4Prev.open;
+        const correctedBear = h4ImpulseBear && h4Last.high >= h4MidPrev && h4Last.close < h4Prev.open;
+
+        // 1H confirmation: last bar confirms the same direction after the 4H correction
+        const h1ConfirmBull = correctedBull && isBullishCandle(last, 0.25) && ema9 >= ema21 - 0.3 * atr;
+        const h1ConfirmBear = correctedBear && isBearishCandle(last, 0.25) && ema9 <= ema21 + 0.3 * atr;
+
+        for (const dir of (h1ConfirmBull ? ['LONG'] : []).concat(h1ConfirmBear ? ['SHORT'] : [])) {
+          const isBull = dir === 'LONG';
+          const entry  = last.close;
+          const swLow  = recentSwingLow(bars, 10);
+          const swHigh = recentSwingHigh(bars, 10);
+          let sl, rawRisk;
+          if (isBull) {
+            sl      = Math.min(swLow, h4Last.low) - 0.5 * atr;
+            rawRisk = entry - sl;
+          } else {
+            sl      = Math.max(swHigh, h4Last.high) + 0.5 * atr;
+            rawRisk = sl - entry;
+          }
+          if (rawRisk > atr * 1.5) { sl = isBull ? entry - atr : entry + atr; rawRisk = atr; }
+          if (rawRisk < 10) continue;
+
+          const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
+          const tp2 = isBull ? entry + 2.5 * rawRisk : entry - 2.5 * rawRisk;
+          const tp3 = isBull ? entry + 3.0 * rawRisk : entry - 3.0 * rawRisk;
+          const srDist = srDistanceAtr(entry, bars, atr, 60);
+          if (srDist < 0.15) continue;
+
+          const confidence = scoreSignal({
+            direction: dir, bars, htfBias, htf2Bias, hasHtf2: htf2Bars && htf2Bars.length >= 3,
+            vwapVal: vwap, emaStackVal: emaStackScore(closes, 9, 21, 21, dir),
+            atr, atrMin: ATR_MIN_PTS, rr: 2.0, srDistanceAtr: srDist,
+            timestamp: last.timestamp,
+          });
+          if (confidence < THRESHOLDS.MNQ_SWING) continue;
+
+          lastSignalBar = curIdx;
+          const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+          return {
+            instrument: 'MNQ', strategy_name: 'MNQ_SWING', trade_style: 'swing', timeframe: '1h',
+            direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+            tp1: +tp1.toFixed(2), tp2: +tp2.toFixed(2), tp3: +tp3.toFixed(2),
+            rr: +(2.0).toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+            score: Math.round(confidence / 4),
+            setup: '4H Impulse-Correction', strategy_version: STRATEGY_VERSION,
+            htf_bias: htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
+            session: sess.name,
+            trigger_reason: `4H ${isBull ? 'bull' : 'bear'} impulse then correction into base — 1H confirmation candle signals continuation`,
+            indicators: {
+              atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), ema9: +ema9.toFixed(2), ema21: +ema21.toFixed(2),
+              h4PrevRange: +h4PrevRange.toFixed(2),
+              dly21: dly21 != null ? +dly21.toFixed(2) : null, htfBias, htf2Bias,
+            },
+            timestamp: last.timestamp, trade_status: 'PENDING',
+          };
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 11: Session Transition Momentum (London → NY or NY Pre → NY Open)
+  // Strong trend established in one session continues into the next session open.
+  // Requires: clear directional bias in prior session bars, price holds above/below
+  // key level at session transition, confirmation candle at the transition.
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && bars.length >= 6 && sess.quality >= 0.40) {
+      // Detect NY open or London/NY overlap as the transition window
+      const isTransitionWindow = sess.isNYOpen || sess.isLondonNY || sess.isPreMarket;
+
+      if (isTransitionWindow) {
+        // Measure net move over last 4 1H bars as session bias indicator
+        const biasBars   = bars.slice(-5, -1); // 4 bars before current
+        if (biasBars.length >= 4) {
+          const biasOpen  = biasBars[0].open;
+          const biasClose = biasBars[biasBars.length - 1].close;
+          const biasMag   = Math.abs(biasClose - biasOpen);
+          const isBiasLong  = biasClose > biasOpen && biasMag >= 1.5 * atr && htfBias >= 0;
+          const isBiasShort = biasClose < biasOpen && biasMag >= 1.5 * atr && htfBias <= 0;
+
+          // Pullback held: prior bar didn't close beyond EMA21
+          const priorBars2 = bars.slice(-3, -1);
+          const held = priorBars2.length > 0;
+
+          for (const dir of (isBiasLong && held && isBullishCandle(last, 0.20) ? ['LONG'] : [])
+                            .concat(isBiasShort && held && isBearishCandle(last, 0.20) ? ['SHORT'] : [])) {
+            const isBull = dir === 'LONG';
+            if (isBull  && priorBars2.some(b => b.close < ema21 - 0.8 * atr)) continue;
+            if (!isBull && priorBars2.some(b => b.close > ema21 + 0.8 * atr)) continue;
+
+            const entry  = last.close;
+            const swLow  = recentSwingLow(bars, 8);
+            const swHigh = recentSwingHigh(bars, 8);
+            let sl, rawRisk;
+            if (isBull) {
+              sl      = Math.min(swLow, vwap) - 0.6 * atr;
+              rawRisk = entry - sl;
+            } else {
+              sl      = Math.max(swHigh, vwap) + 0.6 * atr;
+              rawRisk = sl - entry;
+            }
+            if (rawRisk > atr * 1.5) { sl = isBull ? entry - atr : entry + atr; rawRisk = atr; }
+            if (rawRisk < 10) continue;
+
+            const tp1 = isBull ? entry + 2.0 * rawRisk : entry - 2.0 * rawRisk;
+            const tp2 = isBull ? entry + 2.5 * rawRisk : entry - 2.5 * rawRisk;
+            const tp3 = isBull ? entry + 3.0 * rawRisk : entry - 3.0 * rawRisk;
+            const srDist = srDistanceAtr(entry, bars, atr, 60);
+            if (srDist < 0.15) continue;
+
+            const confidence = scoreSignal({
+              direction: dir, bars, htfBias, htf2Bias, hasHtf2: htf2Bars && htf2Bars.length >= 3,
+              vwapVal: vwap, emaStackVal: emaStackScore(closes, 9, 21, 21, dir),
+              atr, atrMin: ATR_MIN_PTS, rr: 2.0, srDistanceAtr: srDist,
+              timestamp: last.timestamp,
+            });
+            if (confidence < THRESHOLDS.MNQ_SWING) continue;
+
+            lastSignalBar = curIdx;
+            const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+            return {
+              instrument: 'MNQ', strategy_name: 'MNQ_SWING', trade_style: 'swing', timeframe: '1h',
+              direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+              tp1: +tp1.toFixed(2), tp2: +tp2.toFixed(2), tp3: +tp3.toFixed(2),
+              rr: +(2.0).toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+              score: Math.round(confidence / 4),
+              setup: 'Session Transition Continuation', strategy_version: STRATEGY_VERSION,
+              htf_bias: htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'MIXED',
+              session: sess.name,
+              trigger_reason: `Session transition ${isBull ? 'bull' : 'bear'} continuation — ${Math.round(biasMag)} pt prior-session bias held at transition, confirmation candle`,
+              indicators: {
+                atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), ema9: +ema9.toFixed(2), ema21: +ema21.toFixed(2),
+                biasMag: +biasMag.toFixed(2), htfBias, htf2Bias,
               },
               timestamp: last.timestamp, trade_status: 'PENDING',
             };

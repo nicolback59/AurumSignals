@@ -134,7 +134,7 @@ function shouldExpire(sig, now = new Date()) {
     ?? DEFAULT_HOLD_MS;
   const sigTs = new Date(sig.received_at).getTime();
   const expired = (now.getTime() - sigTs) > maxMs;
-  return { expire: expired, reason: expired ? 'MAX_HOLD_TIME' : null };
+  return { expire: expired, reason: expired ? 'EXPIRED_MAX_HOLD' : null };
 }
 
 /**
