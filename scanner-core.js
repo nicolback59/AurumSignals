@@ -147,6 +147,7 @@ class Scanner extends EventEmitter {
     this._fetchBackoffUntil = 0;   // circuit breaker: epoch ms when backoff expires
     this._intervals         = [];
     this._running           = false;
+    this._lastResearchAt    = 0;   // epoch ms of last research cycle (throttled to 1/hour)
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -979,6 +980,59 @@ class Scanner extends EventEmitter {
     }
   }
 
+  // ── Closed-market research cycle ─────────────────────────────────────────────
+  // Runs at most once per hour during blackout/overnight periods.
+  // Uses accumulated historical bars to run a lightweight backtest and surface
+  // key edge health metrics — no live fetches, no signal emission.
+
+  async _runResearchCycle() {
+    try {
+      const instruments = ['MNQ', 'MGC'];
+      const summary = [];
+
+      for (const instrument of instruments) {
+        const symbol = this.cfg.btSymbols[instrument];
+        if (!symbol) continue;
+
+        const bars1m = this._loadHistoricalBars(symbol, '1m');
+        const bars5m = this._loadHistoricalBars(symbol, '5m');
+
+        // Prefer whichever set has more coverage; need at least 200 bars
+        const bars = bars5m.length >= bars1m.length ? bars5m : bars1m;
+        const interval = bars5m.length >= bars1m.length ? '5m' : '1m';
+        if (bars.length < 200) continue;
+
+        const params = getParams(this.db, instrument);
+        const result = interval === '5m'
+          ? runBacktest5m(bars, params, { instrument, slippage: this.cfg.btSlippage, walkForward: false })
+          : runBacktest(bars, params, { instrument, slippage: this.cfg.btSlippage, walkForward: false });
+
+        const m = result?.metrics;
+        if (!m || (m.tradeCount ?? 0) === 0) continue;
+
+        const dwFirst = bars[0]?.timestamp?.slice(0, 10) ?? '?';
+        const dwLast  = bars[bars.length - 1]?.timestamp?.slice(0, 10) ?? '?';
+        const wrPct   = (m.winRate * 100).toFixed(1);
+        const pf      = m.profitFactor?.toFixed(2) ?? 'N/A';
+
+        summary.push(`${instrument}: WR=${wrPct}% PF=${pf} trades=${m.tradeCount} [${dwFirst}→${dwLast}]`);
+
+        // Update learning state from research backtest (same as live backtest path)
+        try {
+          updateLearningFromLiveSignals(this.db, result.signalLog ?? []);
+          updateSessionBiasFromBacktest(this.db, instrument, result.signalLog ?? []);
+        } catch { /* never crash */ }
+      }
+
+      if (summary.length > 0) {
+        this._log(`🔬 RESEARCH MODE: ${summary.join(' | ')}`);
+        this.emit('research', { at: ts(), summary });
+      }
+    } catch (err) {
+      this._err('_runResearchCycle error', err);
+    }
+  }
+
   // ── Timer-based expiry sweep ──────────────────────────────────────────────────
   // Runs every 5 min regardless of market hours or bars availability.
   // Expires ACTIVE signals that have exceeded their max hold time so signals
@@ -1429,6 +1483,14 @@ class Scanner extends EventEmitter {
         }
       } catch { /* never crash */ }
       this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true, marketMode, feedType: this.feedType, feedConnected: this._feed.isConnected() });
+
+      // Research mode: run a background analysis cycle using historical bars.
+      // Throttled to once per hour so it doesn't compete with startup backtests.
+      const researchIntervalMs = 60 * 60_000;
+      if (Date.now() - this._lastResearchAt > researchIntervalMs) {
+        this._lastResearchAt = Date.now();
+        this._runResearchCycle().catch(e => this._err('Research cycle error', e));
+      }
       return;
     }
 
@@ -1753,7 +1815,17 @@ class Scanner extends EventEmitter {
       // Embed fingerprint so the NEXT run can compare against it
       params._dataWindowKey = _dataWindowKey;
 
-      const runId = saveBacktestRun(this.db, instrument, params, metrics, triggeredBy);
+      const _dwDays = _dwFirst && _dwLast
+        ? Math.max(1, Math.round((new Date(_dwLast) - new Date(_dwFirst)) / 86400000))
+        : 0;
+      const _dataWindow = {
+        sourceStart: _dwFirst,
+        sourceEnd:   _dwLast,
+        label: `${_dwDays}d · ${allBars1m.length.toLocaleString()} 1m bars`,
+        mode: 'LIVE',
+      };
+
+      const runId = saveBacktestRun(this.db, instrument, params, metrics, triggeredBy, _dataWindow);
 
       // Store up to 200 trades per run (WIN + LOSS + BE)
       const allTrades = (result.signalLog ?? []).slice(0, 200);
@@ -1997,11 +2069,23 @@ class Scanner extends EventEmitter {
       );
 
       // Tag params so dashboard can identify historical runs
-      params._dataWindowKey  = `5m|${bars5m[0]?.timestamp ?? ''}|${bars5m[bars5m.length - 1]?.timestamp ?? ''}|${metrics.tradeCount}`;
+      const _dw5mFirst = bars5m[0]?.timestamp ?? '';
+      const _dw5mLast  = bars5m[bars5m.length - 1]?.timestamp ?? '';
+      const _dw5mDays  = _dw5mFirst && _dw5mLast
+        ? Math.max(1, Math.round((new Date(_dw5mLast) - new Date(_dw5mFirst)) / 86400000))
+        : 60;
+      params._dataWindowKey  = `5m|${_dw5mFirst}|${_dw5mLast}|${metrics.tradeCount}`;
       params._baseInterval   = '5m';
-      params._histDays       = 60;
+      params._histDays       = _dw5mDays;
 
-      const runId = saveBacktestRun(this.db, instrument, params, metrics, 'historical_5m');
+      const _deepDataWindow = {
+        sourceStart: _dw5mFirst,
+        sourceEnd:   _dw5mLast,
+        label: `${_dw5mDays}d · ${bars5m.length.toLocaleString()} 5m bars (deep)`,
+        mode: 'LIVE',
+      };
+
+      const runId = saveBacktestRun(this.db, instrument, params, metrics, 'historical_5m', _deepDataWindow);
 
       // Store up to 500 trades from the deep backtest (larger window = more trades)
       const allTrades = (result.signalLog ?? []).slice(0, 500);

@@ -233,11 +233,12 @@ function saveStyleParams(db, instrument, style, params) {
   `).run(key, JSON.stringify(params));
 }
 
-function saveBacktestRun(db, instrument, params, metrics, triggeredBy = 'scheduled') {
+function saveBacktestRun(db, instrument, params, metrics, triggeredBy = 'scheduled', dataWindow = {}) {
   const info = db.prepare(`
     INSERT INTO backtest_runs
-      (instrument, bars_tested, trades_found, win_rate, profit_factor, sharpe, max_drawdown, params_json, triggered_by)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (instrument, bars_tested, trades_found, win_rate, profit_factor, sharpe, max_drawdown,
+       params_json, triggered_by, source_data_start, source_data_end, data_window_label, mode)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `).run(
     instrument,
     metrics.barsScanned ?? 0,
@@ -248,6 +249,10 @@ function saveBacktestRun(db, instrument, params, metrics, triggeredBy = 'schedul
     metrics.maxDrawdown,
     JSON.stringify(params),
     triggeredBy,
+    dataWindow.sourceStart ?? null,
+    dataWindow.sourceEnd   ?? null,
+    dataWindow.label       ?? null,
+    dataWindow.mode        ?? 'LIVE',
   );
   return info.lastInsertRowid;
 }

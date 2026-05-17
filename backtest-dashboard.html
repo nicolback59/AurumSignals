@@ -77,6 +77,10 @@
     <div class="stat-bar-label">Regime</div>
     <div class="stat-bar-value" id="statRegime">—</div>
   </div>
+  <div class="stat-bar-item">
+    <div class="stat-bar-label">Data Window</div>
+    <div class="stat-bar-value" style="font-size:11px;color:var(--text-secondary)" id="statDataWindow">—</div>
+  </div>
 </div>
 
 <!-- ── MAIN LAYOUT ───────────────────────────────────── -->
@@ -144,7 +148,7 @@
       <div style="overflow-x:auto">
         <table class="data-table">
           <thead><tr>
-            <th>#</th><th>Instrument</th><th>Run At</th><th>Bars</th>
+            <th>#</th><th>Instrument</th><th>Run At</th><th>Data Window</th>
             <th>Trades</th><th>Win %</th><th>Sharpe</th><th>P/F</th><th>By</th>
           </tr></thead>
           <tbody id="runsBody">
@@ -354,6 +358,11 @@ function updateStatBar(summary, learning) {
   const regEl  = document.getElementById('statRegime');
   regEl.textContent = regime;
   regEl.style.color = regime === 'trending' ? 'var(--green)' : regime === 'choppy' ? 'var(--orange)' : '';
+
+  // Data window — from the most recent run that has a label
+  const latestWithWindow = allRuns.find(r => r.data_window_label);
+  const dwEl = document.getElementById('statDataWindow');
+  if (dwEl) dwEl.textContent = latestWithWindow?.data_window_label ?? '—';
 }
 
 // ── Revision timeline ────────────────────────────────────────────────────────
@@ -422,11 +431,14 @@ function renderRunsTable() {
     const trigBadge = isHist
       ? `<span style="background:rgba(212,175,55,0.18);color:#d4af37;font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700">60d HIST</span>`
       : `<span style="color:var(--text-muted);font-size:10px">${r.triggered_by ?? '—'}</span>`;
+    const windowLabel = r.data_window_label
+      ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-secondary)">${r.data_window_label}</span>`
+      : `<span style="color:var(--text-muted);font-size:10px">${(r.bars_tested||0).toLocaleString()} bars</span>`;
     return `<tr${isHist ? ' style="background:rgba(212,175,55,0.04)"' : ''}>
       <td style="color:var(--text-muted);font-family:var(--font-mono);font-size:10px">${shortId}</td>
       <td>${inst}</td>
       <td style="color:var(--text-secondary)">${r.run_at.slice(0,16).replace('T',' ')}</td>
-      <td>${(r.bars_tested||0).toLocaleString()}</td>
+      <td>${windowLabel}</td>
       <td>${r.trades_found ?? 0}</td>
       <td class="${cls}">${wr}%</td>
       <td>${r.sharpe ?? '—'}</td>
