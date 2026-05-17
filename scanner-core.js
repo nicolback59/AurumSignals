@@ -1713,10 +1713,20 @@ class Scanner extends EventEmitter {
         multiObjScore:          multiObjectiveScore(metrics),
       });
 
+      // Per-strategy signal count from this run — surface for frequency monitoring
+      const _stratCounts = {};
+      for (const t of (result.signalLog ?? [])) {
+        _stratCounts[t.strategy_name] = (_stratCounts[t.strategy_name] ?? 0) + 1;
+      }
+      const _stratSummary = Object.entries(_stratCounts)
+        .map(([s, c]) => `${s.replace('MNQ_', '').replace('MGC_', '')}=${c}`)
+        .join(' ');
+
       this._log(
         `BACKTEST DONE: ${instrument} | trades=${metrics.tradeCount} | ` +
         `win=${(metrics.winRate * 100).toFixed(1)}% | sharpe=${metrics.sharpe} | ` +
-        `pf=${metrics.profitFactor} | totalReturn=${metrics.totalReturn ?? '?'} | run#${runId}`
+        `pf=${metrics.profitFactor} | run#${runId}` +
+        (_stratSummary ? ` | by-strategy: ${_stratSummary}` : '')
       );
 
       // ── Learning feedback: update thresholds from last 3 backtest runs ─────────
@@ -1738,6 +1748,16 @@ class Scanner extends EventEmitter {
           return f ? `${s}=${f.tradeCount}` : `${s}=0(stale)`;
         }).join(' | ');
         this._log(`📊 BT COVERAGE [${instrument}]: ${freshnessReport}`);
+
+        // Warn if swing specifically has no signals — it depends on 60-day 1h bar cache
+        if (instrument === 'MNQ') {
+          const swingFresh = freshness['MNQ_SWING'];
+          if (!swingFresh || swingFresh.tradeCount === 0) {
+            const h1Len = this._lastGoodBars.mnq1h?.length ?? 0;
+            this._log(`⚠️  MNQ_SWING: 0 backtest trades in last 5 runs. 1h cache size=${h1Len} bars. ` +
+              `Swing requires ≥60 1h bars for dedicated backtest (>3 daily bars for daily bias).`);
+          }
+        }
       } catch (e) {
         this._log(`LEARN ERR: ${e.message}`);
       }

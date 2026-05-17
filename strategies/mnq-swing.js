@@ -528,7 +528,10 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   // Price rejects prior day low → bearish continuation
   // ══════════════════════════════════════════════════════════════════════════
   {
-    if (htf2Bars && htf2Bars.length >= 2 && atr >= ATR_MIN_PTS && sess.quality >= 0.30) {
+    // Require ≥3 daily bars: today, yesterday (the reference level), and at least one prior
+    // for context. With only 2 bars the "prior day" is the first bar of the dataset which
+    // may not represent a real completed trading day in backtest mode.
+    if (htf2Bars && htf2Bars.length >= 3 && atr >= ATR_MIN_PTS && sess.quality >= 0.30) {
       const prevDayBar = htf2Bars[htf2Bars.length - 2];
       const pdHigh = prevDayBar.high;
       const pdLow  = prevDayBar.low;
@@ -741,7 +744,10 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   // ══════════════════════════════════════════════════════════════════════════
   {
     if (atr >= ATR_MIN_PTS && sess.quality >= 0.35) {
-      const isNyOpen = sess.name === 'NY Open' || sess.name === 'NY Morning';
+      // getSessionInfo() returns 'NY Open ★' for 09:30–11:29 ET and 'London/NY Overlap'
+      // for 07:30–09:29 ET. Both are valid early-session windows for post-sweep setups.
+      // Use the boolean flags returned by getSessionInfo() rather than name strings.
+      const isNyOpen = sess.isNYOpen || sess.isLondonNY;
 
       if (isNyOpen && bars.length >= 6) {
         // Compute overnight range: bars from prior session (rough proxy: bars 4h ago)
