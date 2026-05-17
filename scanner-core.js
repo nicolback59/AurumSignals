@@ -1547,9 +1547,12 @@ class Scanner extends EventEmitter {
       };
       if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
       const body = `📈 Market reopening — scanner active\nSession: ${sess}\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY`;
-      this._log(`📈 Market resuming — sending ntfy notification (session=${sess})`);
-      fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body }).catch(() => {});
-    } catch { /* never crash */ }
+      const ntfyUrl = `${cfg.ntfyUrl}/${cfg.ntfyTopic}`;
+      this._log(`📈 Market resuming — sending ntfy notification → ${ntfyUrl} (session=${sess})`);
+      fetch(ntfyUrl, { method: 'POST', headers, body })
+        .then(r => this._log(`[ntfy] market-resume notification sent — HTTP ${r.status}`))
+        .catch(err => this._log(`[ntfy] market-resume notification FAILED: ${err.message}`));
+    } catch (e) { this._log(`[ntfy] market-resume notification error: ${e.message}`); }
   }
 
   // ── Main scan cycle ───────────────────────────────────────────────────────────
@@ -3012,17 +3015,21 @@ class Scanner extends EventEmitter {
     );
     this._log(formatStartupConfig(cfg.duplicateGuardMin));
 
-    // Startup ntfy confirmation — throttled to once per 2 hours to prevent restart spam
+    // Startup ntfy confirmation — throttled to once per 20 min to suppress crash-loop spam
     if (cfg.ntfyTopic) {
       setTimeout(() => {
         try {
           const STARTUP_KEY  = '__startup_ntfy';
-          const THROTTLE_MS  = 20 * 60 * 1000; // 20 min — suppress crash-loop spam but allow redeploys
+          const THROTTLE_MS  = 20 * 60 * 1000;
           const row = this.db.prepare(
             `SELECT params_json FROM strategy_params WHERE instrument = ?`
           ).get(STARTUP_KEY);
           const lastSent = row ? (JSON.parse(row.params_json).lastSent ?? 0) : 0;
-          if (Date.now() - lastSent < THROTTLE_MS) return; // suppress restart spam
+          const agoSec   = Math.round((Date.now() - lastSent) / 1000);
+          if (Date.now() - lastSent < THROTTLE_MS) {
+            this._log(`[ntfy] startup notification suppressed — last sent ${agoSec}s ago (throttle ${THROTTLE_MS/60000}min)`);
+            return;
+          }
 
           this.db.prepare(
             `INSERT INTO strategy_params (instrument, params_json, updated_at) VALUES (?,?,datetime('now'))
@@ -3037,10 +3044,15 @@ class Scanner extends EventEmitter {
           };
           if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
           const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nDuplicate guard: ${cfg.duplicateGuardMin}min | Adaptive cooldown: ENABLED`;
-          fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body })
-            .catch(() => {});
-        } catch { /* never crash startup */ }
+          const ntfyUrl = `${cfg.ntfyUrl}/${cfg.ntfyTopic}`;
+          this._log(`[ntfy] sending startup notification → ${ntfyUrl}`);
+          fetch(ntfyUrl, { method: 'POST', headers, body })
+            .then(r => this._log(`[ntfy] startup notification sent — HTTP ${r.status}`))
+            .catch(err => this._log(`[ntfy] startup notification FAILED: ${err.message}`));
+        } catch (e) { this._log(`[ntfy] startup notification error: ${e.message}`); }
       }, 3_000);
+    } else {
+      this._log('[ntfy] NTFY_TOPIC not configured — startup notification skipped');
     }
 
     return this;
