@@ -148,6 +148,7 @@ class Scanner extends EventEmitter {
     this._intervals         = [];
     this._running           = false;
     this._lastResearchAt    = 0;   // epoch ms of last research cycle (throttled to 1/hour)
+    this._prevMarketOpen    = null; // null = first scan; used to detect closed→open transition
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -1530,14 +1531,41 @@ class Scanner extends EventEmitter {
     return classifyNow().session;
   }
 
+  /** Fires an ntfy push when the market transitions from closed → open. */
+  _notifyMarketResuming() {
+    const cfg = this._cfg;
+    if (!cfg.ntfyTopic) return;
+    try {
+      const sess = classifyNow().session || 'LIVE';
+      const headers = {
+        'Content-Type': 'text/plain',
+        'Title':    'Aurum Signals — Market Resuming',
+        'Priority': 'default',
+        'Tags':     'chart_with_upwards_trend',
+      };
+      if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
+      const body = `📈 Market reopening — scanner active\nSession: ${sess}\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY`;
+      this._log(`📈 Market resuming — sending ntfy notification (session=${sess})`);
+      fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body }).catch(() => {});
+    } catch { /* never crash */ }
+  }
+
   // ── Main scan cycle ───────────────────────────────────────────────────────────
 
   async scan() {
     this._scanCount++;
 
+    const marketIsOpen = this._isMarketOpen();
+
+    // Detect closed → open transition and notify (e.g. Globex reopen after weekend)
+    if (this._prevMarketOpen === false && marketIsOpen) {
+      this._notifyMarketResuming();
+    }
+    this._prevMarketOpen = marketIsOpen;
+
     // Skip signal evaluation entirely when futures markets are closed.
     // Heartbeat is still emitted so the UI knows the scanner process is alive.
-    if (!this._isMarketOpen()) {
+    if (!marketIsOpen) {
       if (this._scanCount % 10 === 0) {
         this._log('⏸️  Market closed — scanner paused until next session opens');
       }
