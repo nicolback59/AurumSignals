@@ -12,7 +12,7 @@
  * Entry:       pullback to VWAP or EMA zone + bullish/bearish confirmation candle
  * SL:          beyond recent swing + 0.5 ATR buffer
  * TP:          1.5R / 2R / 2.5R
- * Min confidence: 70
+ * Min confidence: 65
  */
 
 const {
@@ -26,7 +26,7 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '2.2';
+const STRATEGY_VERSION = '2.3';
 
 // Minimum ATR in MNQ points for intraday to be worth trading
 const ATR_MIN_PTS = 8;  // restored from 5 — low-ATR sessions have weak follow-through
@@ -87,11 +87,13 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   const htf2Bias = htf2Bars && htf2Bars.length >= 21 ? calcHtfBias(htf2Bars, 9, 21) : 0;
 
   // ── Determine direction candidates ───────────────────────────────────────────
-  // Require 5m EMA stack AND at least one of the two HTFs to agree (not just neutral).
-  // Counter-trend entries into mixed HTF environments have historically ~30% WR.
+  // Require 5m EMA stack + both HTFs not conflicting (neutral is allowed).
+  // Hard-blocking when both HTFs agree against direction had ~30% WR; we keep
+  // that block (see HTF conflict check below) but no longer require positive HTF
+  // agreement, which was cutting too many valid neutral-HTF setups.
   const directions = [];
-  if (ema9 > ema21 && htfBias >= 0 && (htfBias === 1 || htf2Bias === 1)) directions.push('LONG');
-  if (ema9 < ema21 && htfBias <= 0 && (htfBias === -1 || htf2Bias === -1)) directions.push('SHORT');
+  if (ema9 > ema21 && htfBias >= 0 && htf2Bias >= 0) directions.push('LONG');
+  if (ema9 < ema21 && htfBias <= 0 && htf2Bias <= 0) directions.push('SHORT');
 
   for (const dir of directions) {
     const isBull = dir === 'LONG';
@@ -103,7 +105,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     // ── Pullback detection ──────────────────────────────────────────────────
     // Price must have recently touched the VWAP, EMA9, or EMA21 zone.
-    const tolerance = 0.55 * atr;  // tightened from 0.7 — require tighter pullback
+    const tolerance = 0.65 * atr;  // relaxed from 0.55 (v2.1) — catches more valid touches
     const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 15);
     const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 15);
     const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 15);
@@ -125,8 +127,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
     if (rsi != null) {
-      if (isBull  && rsi >= 70) continue; // overbought — avoid chasing
-      if (!isBull && rsi <= 30) continue; // oversold — avoid chasing
+      if (isBull  && rsi >= 75) continue; // overbought — avoid chasing (restored from 70)
+      if (!isBull && rsi <= 25) continue; // oversold — avoid chasing (restored from 30)
     }
 
     // ── MACD momentum alignment (soft filter) ───────────────────────────────
@@ -184,7 +186,8 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     if (confidence < THRESHOLDS.MNQ_INTRADAY) continue;
 
     // ── HTF conflict block ───────────────────────────────────────────────────
-    // Both HTFs must not be against us
+    // Both HTFs conflicting against direction is a hard block (already excluded
+    // above by htfBias >= 0 / htf2Bias >= 0 direction filter, kept for safety).
     if (isBull  && htfBias === -1 && htf2Bias === -1) continue;
     if (!isBull && htfBias ===  1 && htf2Bias ===  1) continue;
 
@@ -212,7 +215,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       strategy_version: STRATEGY_VERSION,
       htf_bias:         htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
-      trigger_reason: `EMA9/21 ${dir} (stack=${esScore}), pullback held, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF aligned`,
+      trigger_reason: `EMA9/21 ${dir} (stack=${esScore}), pullback held, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF non-conflicting`,
       indicators: {
         atr:   +atr.toFixed(2),
         vwap:  +vwap.toFixed(2),

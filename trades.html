@@ -215,8 +215,10 @@
     }
     .trade-row.expanded .expand-caret { transform: rotate(90deg); }
 
-    /* Pending badge */
-    .pending-tag { font-size: 10px; color: var(--text-muted); font-family: var(--font-ui); font-style: italic; }
+    /* Status / result badges */
+    .pending-tag  { font-size: 10px; color: var(--text-muted);   font-family: var(--font-ui); font-style: italic; }
+    .active-tag   { font-size: 10px; color: var(--green);         font-family: var(--font-ui); font-weight: 600; letter-spacing: .04em; }
+    .expiry-badge { font-size: 10px; color: var(--text-muted);    font-family: var(--font-ui); font-style: italic; opacity: .8; }
 
     /* ── Load More ────────────────────────────────────── */
     .load-more-row td { border-bottom: none !important; text-align: center; padding: 14px !important; }
@@ -482,6 +484,19 @@
 <script>
 'use strict';
 
+/* Map internal expiration reason codes to human-readable labels */
+function fmtExpiryReason(reason) {
+  const map = {
+    EXPIRED_MAX_HOLD:       'Expired — Max Hold',
+    EXPIRED_MARKET_CLOSE:   'Expired — Market Close',
+    EXPIRED_WEEKEND_CLOSE:  'Expired — Weekend Close',
+    EXPIRED_STUCK_TRADE:    'Expired — Session End',
+    MAX_HOLD_TIME:          'Expired — Max Hold',
+  };
+  if (!reason) return 'Expired';
+  return map[reason] || reason.replace(/_/g, ' ').replace(/^EXPIRED /, 'Expired — ');
+}
+
 let allTrades    = [];
 let filteredList = [];
 let instFilter   = 'ALL';
@@ -614,10 +629,12 @@ function buildRow(t) {
     : '—';
 
   const resultTd = t.result
-    ? (t.result === 'EXPIRED' && t.expiration_reason
-        ? outcomeBadge(t.result) + ` <span class="expiry-tag">${escH(t.expiration_reason.replace(/_/g,' ').toLowerCase())}</span>`
+    ? (t.result === 'EXPIRED'
+        ? `<span class="expiry-badge">${escH(fmtExpiryReason(t.expiration_reason))}</span>`
         : outcomeBadge(t.result))
-    : `<span class="pending-tag">pending</span>`;
+    : (t.trade_status === 'ACTIVE' || !t.trade_status
+        ? `<span class="active-tag">Active</span>`
+        : `<span class="pending-tag">${escH(t.trade_status)}</span>`);
 
   return `<tr class="trade-row${isExp ? ' expanded' : ''}" onclick="toggleDetail(${t.id})">
     <td style="padding-left:12px"><span class="expand-caret">›</span></td>
@@ -671,7 +688,7 @@ function buildDetailPanel(t) {
     { lbl: 'TP2',        val: t.tp2     != null ? fmt(t.tp2)   : null },
     { lbl: 'TP3',        val: t.tp3     != null ? fmt(t.tp3)   : null },
     { lbl: 'Exit Price',     val: t.exit_price != null ? fmt(t.exit_price) : null },
-    { lbl: 'Expiry Reason', val: t.expiration_reason },
+    { lbl: 'Expiry Reason', val: t.expiration_reason ? fmtExpiryReason(t.expiration_reason) : null },
   ].filter(i => i.val != null && i.val !== '');
 
   const probRows = [
@@ -747,7 +764,11 @@ function renderMobileCards() {
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
         <span style="font-size:11px;color:var(--text-secondary)">${escH(t.setup || '—')}</span>
-        ${t.result ? outcomeBadge(t.result) : '<span style="font-size:10px;color:var(--text-muted);font-style:italic">pending</span>'}
+        ${t.result === 'EXPIRED'
+          ? `<span class="expiry-badge">${escH(fmtExpiryReason(t.expiration_reason))}</span>`
+          : t.result
+            ? outcomeBadge(t.result)
+            : `<span class="active-tag">Active</span>`}
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;padding-top:6px;border-top:1px solid var(--border-subtle)">
         <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">Entry: ${fmt(t.entry)} &nbsp; SL: ${fmt(t.sl)}</span>
