@@ -820,13 +820,19 @@ app.post('/api/ntfy/test', async (req, res) => {
 });
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────────────────
+// Pre-compiled statements so the health check never blocks for statement compilation.
+const _stmtHealthPing  = db.prepare('SELECT 1 n');
+const _stmtSigCount    = db.prepare('SELECT COUNT(*) n FROM signals');
+const _stmtOutCount    = db.prepare('SELECT COUNT(*) n FROM outcomes');
+let   _stmtJrnCount    = null;
+try { _stmtJrnCount = db.prepare('SELECT COUNT(*) n FROM journal_entries'); } catch { /* table may not exist */ }
+
 app.get('/api/health', (req, res) => {
   try {
-    const ok       = !!db.prepare('SELECT 1 n').get();
-    const sigCount = db.prepare('SELECT COUNT(*) n FROM signals').get().n;
-    const outCount = db.prepare('SELECT COUNT(*) n FROM outcomes').get().n;
-    let entCount = 0;
-    try { entCount = db.prepare('SELECT COUNT(*) n FROM journal_entries').get().n; } catch {}
+    const ok       = !!_stmtHealthPing.get();
+    const sigCount = _stmtSigCount.get().n;
+    const outCount = _stmtOutCount.get().n;
+    const entCount = _stmtJrnCount ? _stmtJrnCount.get().n : 0;
     res.json({
       service:            'ok',
       database:           ok ? 'ok' : 'error',
