@@ -151,6 +151,7 @@ class Scanner extends EventEmitter {
     this._running           = false;
     this._lastResearchAt    = 0;   // epoch ms of last research cycle (throttled to 1/hour)
     this._prevMarketOpen    = null; // null = first scan; used to detect closed→open transition
+    this._startupNtfySent   = false; // in-memory flag: reset on every new process, never persisted
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -580,6 +581,21 @@ class Scanner extends EventEmitter {
   }
 
   // ── Price snapshot ───────────────────────────────────────────────────────────
+
+  // Seed _lastGoodBars from DB-persisted historical_bars on startup.
+  // Prevents Yahoo Finance rate-limiting from blocking the scanner after a crash restart.
+  _restoreBarCache() {
+    try {
+      const mnq5m = this._loadHistoricalBars(this.cfg.symbol,    '5m').slice(-500);
+      const mnq1h = this._loadHistoricalBars(this.cfg.symbol,    '1h').slice(-500);
+      const mgc5m = this._loadHistoricalBars(this.cfg.symbolMgc, '5m').slice(-500);
+      const mgc1h = this._loadHistoricalBars(this.cfg.symbolMgc, '1h').slice(-500);
+      if (mnq5m.length) { this._lastGoodBars.mnq5m = mnq5m; this._log(`[cache] restored ${mnq5m.length} MNQ 5m bars from DB`); }
+      if (mnq1h.length) { this._lastGoodBars.mnq1h = mnq1h; this._log(`[cache] restored ${mnq1h.length} MNQ 1h bars from DB`); }
+      if (mgc5m.length) { this._lastGoodBars.mgc5m = mgc5m; this._log(`[cache] restored ${mgc5m.length} MGC 5m bars from DB`); }
+      if (mgc1h.length) { this._lastGoodBars.mgc1h = mgc1h; this._log(`[cache] restored ${mgc1h.length} MGC 1h bars from DB`); }
+    } catch (e) { this._log(`[cache] bar restore error: ${e.message}`); }
+  }
 
   _savePrice(symbol, bars) {
     if (!bars || bars.length < 2) return;
@@ -1547,9 +1563,12 @@ class Scanner extends EventEmitter {
       };
       if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
       const body = `📈 Market reopening — scanner active\nSession: ${sess}\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY`;
-      this._log(`📈 Market resuming — sending ntfy notification (session=${sess})`);
-      fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body }).catch(() => {});
-    } catch { /* never crash */ }
+      const ntfyUrl = `${cfg.ntfyUrl}/${cfg.ntfyTopic}`;
+      this._log(`📈 Market resuming — sending ntfy notification → ${ntfyUrl} (session=${sess})`);
+      fetch(ntfyUrl, { method: 'POST', headers, body })
+        .then(r => this._log(`[ntfy] market-resume notification sent — HTTP ${r.status}`))
+        .catch(err => this._log(`[ntfy] market-resume notification FAILED: ${err.message}`));
+    } catch (e) { this._log(`[ntfy] market-resume notification error: ${e.message}`); }
   }
 
   // ── Main scan cycle ───────────────────────────────────────────────────────────
@@ -1612,11 +1631,17 @@ class Scanner extends EventEmitter {
           mgc5mRaw = bars.mgc5m;
           mgc1hRaw = bars.mgc1h;
 
-          // Update last-known-good cache
+          // Update in-memory last-known-good cache
           if (mnq5mRaw.length) this._lastGoodBars.mnq5m = mnq5mRaw;
           if (mnq1hRaw.length) this._lastGoodBars.mnq1h = mnq1hRaw;
           if (mgc5mRaw.length) this._lastGoodBars.mgc5m = mgc5mRaw;
           if (mgc1hRaw.length) this._lastGoodBars.mgc1h = mgc1hRaw;
+
+          // Persist 5m and 1h bars to DB so they survive a crash restart
+          if (mnq5mRaw.length) this._saveHistoricalBars(this.cfg.symbol,    mnq5mRaw, '5m');
+          if (mnq1hRaw.length) this._saveHistoricalBars(this.cfg.symbol,    mnq1hRaw, '1h');
+          if (mgc5mRaw.length) this._saveHistoricalBars(this.cfg.symbolMgc, mgc5mRaw, '5m');
+          if (mgc1hRaw.length) this._saveHistoricalBars(this.cfg.symbolMgc, mgc1hRaw, '1h');
 
           this._consecutiveErrors = 0;
           this._fetchBackoffUntil = 0;
@@ -1706,6 +1731,21 @@ class Scanner extends EventEmitter {
 
       const mnqReady = mnq5mConf.length >= 60 && mnq15m.length >= 20 && mnq1hConf.length >= 30;
       const mgcReady = mgc5mConf.length >= 60 && mgc15m.length >= 20;
+
+      // Record opening candles regardless of bar-count readiness.
+      // On Sundays right after Globex open (only ~32 bars vs 60 needed for signals)
+      // we still want the GLOBEX_OPEN candle captured immediately.
+      // recordOpeningCandle is idempotent — safe to call again from _scanInstrument.
+      try {
+        const _ocTodayKey = getEtDateKey(new Date().toISOString());
+        for (const [_ocInst, _ocBars] of [['MNQ', mnq5m], ['MGC', mgc5m]]) {
+          for (const bar of _ocBars) {
+            if (getEtDateKey(bar.timestamp) === _ocTodayKey) {
+              recordOpeningCandle(this.db, _ocInst, bar);
+            }
+          }
+        }
+      } catch { /* never crash scan on opening candle error */ }
 
       if (!mnqReady && !mgcReady) {
         this._log(`⏳ Insufficient bars: MNQ 5m=${mnq5mConf.length}/15m=${mnq15m.length}/1h=${mnq1hConf.length} MGC 5m=${mgc5mConf.length}`);
@@ -2907,6 +2947,10 @@ class Scanner extends EventEmitter {
 
     const cfg = this.cfg;
 
+    // Restore last-known bars from DB so the scanner has data immediately on restart.
+    // Prevents Yahoo Finance rate-limiting from blocking signal evaluation after a crash.
+    this._restoreBarCache();
+
     // ── Feed + event-driven watcher ─────────────────────────────────────────────
     // Start the feed adapter (Tradovate WS or Yahoo poll).
     // BarWatcher fires _onBarReady on each 5m bar close or Yahoo poll completion.
@@ -3012,23 +3056,17 @@ class Scanner extends EventEmitter {
     );
     this._log(formatStartupConfig(cfg.duplicateGuardMin));
 
-    // Startup ntfy confirmation — throttled to once per 2 hours to prevent restart spam
+    // Startup ntfy confirmation — in-memory flag so every fresh process start notifies.
+    // The old DB-based throttle persisted across restarts and blocked notifications after
+    // crash loops. In-memory resets on every new process, which is the right behaviour.
     if (cfg.ntfyTopic) {
       setTimeout(() => {
+        if (this._startupNtfySent) {
+          this._log('[ntfy] startup notification already sent this process — skipping');
+          return;
+        }
+        this._startupNtfySent = true;
         try {
-          const STARTUP_KEY  = '__startup_ntfy';
-          const THROTTLE_MS  = 2 * 60 * 60 * 1000; // 2 hours
-          const row = this.db.prepare(
-            `SELECT params_json FROM strategy_params WHERE instrument = ?`
-          ).get(STARTUP_KEY);
-          const lastSent = row ? (JSON.parse(row.params_json).lastSent ?? 0) : 0;
-          if (Date.now() - lastSent < THROTTLE_MS) return; // suppress restart spam
-
-          this.db.prepare(
-            `INSERT INTO strategy_params (instrument, params_json, updated_at) VALUES (?,?,datetime('now'))
-             ON CONFLICT(instrument) DO UPDATE SET params_json=excluded.params_json, updated_at=excluded.updated_at`
-          ).run(STARTUP_KEY, JSON.stringify({ lastSent: Date.now() }));
-
           const headers = {
             'Content-Type': 'text/plain',
             'Title':    'Aurum Signals — Online',
@@ -3037,10 +3075,15 @@ class Scanner extends EventEmitter {
           };
           if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
           const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nDuplicate guard: ${cfg.duplicateGuardMin}min | Adaptive cooldown: ENABLED`;
-          fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body })
-            .catch(() => {});
-        } catch { /* never crash startup */ }
+          const ntfyUrl = `${cfg.ntfyUrl}/${cfg.ntfyTopic}`;
+          this._log(`[ntfy] sending startup notification → ${ntfyUrl}`);
+          fetch(ntfyUrl, { method: 'POST', headers, body })
+            .then(r => this._log(`[ntfy] startup notification sent — HTTP ${r.status}`))
+            .catch(err => this._log(`[ntfy] startup notification FAILED: ${err.message}`));
+        } catch (e) { this._log(`[ntfy] startup notification error: ${e.message}`); }
       }, 3_000);
+    } else {
+      this._log('[ntfy] NTFY_TOPIC not configured — startup notification skipped');
     }
 
     return this;
