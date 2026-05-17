@@ -108,8 +108,23 @@ function setupBadge(setup) {
   return `<span class="badge ${cls}">${escH(setup)}</span>`;
 }
 
-function outcomeBadge(result, pnlPts) {
+function fmtExpiryReason(reason) {
+  const map = {
+    EXPIRED_MAX_HOLD:      'Expired — Max Hold',
+    EXPIRED_MARKET_CLOSE:  'Expired — Market Close',
+    EXPIRED_WEEKEND_CLOSE: 'Expired — Weekend Close',
+    EXPIRED_STUCK_TRADE:   'Expired — Session End',
+    MAX_HOLD_TIME:         'Expired — Max Hold',
+  };
+  if (!reason) return 'Expired';
+  return map[reason] || reason.replace(/_/g, ' ').replace(/^EXPIRED /, 'Expired — ');
+}
+
+function outcomeBadge(result, pnlPts, expiryReason) {
   if (!result) return '';
+  if (result === 'EXPIRED') {
+    return `<span class="badge badge-expired" title="${escH(expiryReason || 'EXPIRED')}">${escH(fmtExpiryReason(expiryReason))}</span>`;
+  }
   const pts = pnlPts != null ? ` ${Number(pnlPts) > 0 ? '+' : ''}${Number(pnlPts).toFixed(2)}` : '';
   return `<span class="badge badge-${result.toLowerCase()}">${result}${pts}</span>`;
 }
@@ -149,20 +164,25 @@ function probBar(label, val, cls) {
 /* ── Outcome section ─────────────────────────────────── */
 function outcomeSection(sig) {
   if (sig.result) {
+    // Use expiration_reason from signals table (s.*) for human-readable label
+    const expiryReason = sig.expiration_reason || sig.outcome_expiration_reason;
     const pts = sig.pnl_pts != null && sig.result !== 'EXPIRED'
       ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:6px">${fmtPts(sig.pnl_pts)}</span>`
       : '';
     const exitTs = sig.exit_at
       ? `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);margin-left:8px">${fmtDatetime(sig.exit_at)}</span>`
       : '';
-    return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">${outcomeBadge(sig.result)}${pts}${exitTs}</div>`;
+    return `<div style="display:flex;align-items:center;flex-wrap:wrap;gap:4px">${outcomeBadge(sig.result, sig.pnl_pts, expiryReason)}${pts}${exitTs}</div>`;
   }
-  // Show the live trade_status when no outcome recorded yet
+  // No outcome yet — show live trade_status
   const status = sig.trade_status || 'ACTIVE';
   if (status === 'ACTIVE') {
     return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--green);letter-spacing:.05em">ACTIVE — watching</span>`;
   }
-  return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);letter-spacing:.05em">${status}</span>`;
+  if (status === 'EXPIRED') {
+    return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);letter-spacing:.05em">${escH(fmtExpiryReason(sig.expiration_reason))}</span>`;
+  }
+  return `<span style="font-family:var(--font-mono);font-size:10px;color:var(--text-muted);letter-spacing:.05em">${escH(status)}</span>`;
 }
 
 /* ── Strategy label (human-readable) ─────────────────── */

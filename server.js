@@ -188,8 +188,10 @@ function applyMigrations() {
 applyMigrations();
 
 // ── One-time startup cleanup: expire all stale open trades ────────────────────
-// Runs every time the server starts. Catches any trades left open by downtime,
-// using per-strategy max hold times and PT market-close rules.
+// Runs synchronously every time the server starts — before the scanner begins.
+// Uses per-strategy max hold times and America/Los_Angeles market-close rules.
+// The expanded market-close logic fires any time it's past 13:00 PT on a weekday
+// and the signal was created before 13:00 PT that day (not just during 1-2 PM window).
 (function cleanupStaleOpenTrades() {
   try {
     const MAX_HOLD = {
@@ -199,7 +201,7 @@ applyMigrations();
       MNQ_50PT:     6  * 3600000,
       MNQ_SWING:    72 * 3600000,
     };
-    const NO_WEEKEND = new Set(['MGC_SCALP','MGC_INTRADAY','MNQ_INTRADAY','MNQ_50PT']);
+    const NO_WEEKEND   = new Set(['MGC_SCALP','MGC_INTRADAY','MNQ_INTRADAY','MNQ_50PT']);
     const NO_OVERNIGHT = NO_WEEKEND;
 
     const nowMs  = Date.now();
@@ -207,10 +209,13 @@ applyMigrations();
     const nowPt  = new Date(now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
     const ptHm   = nowPt.getHours() * 60 + nowPt.getMinutes();
     const ptDow  = nowPt.getDay();
-    const isFriClose    = ptDow === 5 && ptHm >= 13 * 60;
-    const isWeekend     = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
+    const ptDateStr = `${nowPt.getFullYear()}-${String(nowPt.getMonth()+1).padStart(2,'0')}-${String(nowPt.getDate()).padStart(2,'0')}`;
+
+    const isFriClose     = ptDow === 5 && ptHm >= 13 * 60;
+    const isWeekend      = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
     const isWeekendClose = isFriClose || isWeekend;
-    const isWeekdayClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60 && ptHm < 14 * 60;
+    // Expanded: any weekday at or past 13:00 PT — not just the 1-hour maintenance window
+    const pastDailyClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60;
 
     const stale = db.prepare(`
       SELECT s.id, s.entry, s.received_at, s.strategy_name, s.trade_style, s.instrument, s.direction
@@ -221,28 +226,39 @@ applyMigrations();
         AND (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
     `).all();
 
+    console.log(`[startup-cleanup] found ${stale.length} unresolved signal(s) to evaluate`);
     if (!stale.length) return;
 
-    const setStatus      = db.prepare("UPDATE signals  SET trade_status = 'EXPIRED' WHERE id = ?");
-    const insOutcome     = db.prepare("INSERT OR IGNORE INTO outcomes (signal_id, result, exit_price, exit_at, pnl_pts) VALUES (?,?,?,?,?)");
-    const setSigReason   = db.prepare("UPDATE signals  SET expiration_reason = ? WHERE id = ?");
-    const setOutReason   = db.prepare("UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?");
+    const setStatus    = db.prepare("UPDATE signals  SET trade_status = 'EXPIRED' WHERE id = ?");
+    const insOutcome   = db.prepare("INSERT OR IGNORE INTO outcomes (signal_id, result, exit_price, exit_at, pnl_pts) VALUES (?,?,?,?,?)");
+    const setSigReason = db.prepare("UPDATE signals  SET expiration_reason = ? WHERE id = ?");
+    const setOutReason = db.prepare("UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?");
 
     let fixed = 0;
     const nowIso = now.toISOString();
 
     for (const sig of stale) {
       try {
-        const maxMs    = MAX_HOLD[sig.strategy_name] ?? (sig.trade_style === 'swing' ? 72*3600000 : 6*3600000);
-        const ageMs    = nowMs - new Date(sig.received_at).getTime();
-        const overHold = ageMs > maxMs;
-        const wkndExp  = isWeekendClose && NO_WEEKEND.has(sig.strategy_name);
-        const mktExp   = isWeekdayClose && NO_OVERNIGHT.has(sig.strategy_name);
+        const maxMs  = MAX_HOLD[sig.strategy_name] ?? (sig.trade_style === 'swing' ? 72*3600000 : 6*3600000);
+        const ageMs  = nowMs - new Date(sig.received_at).getTime();
 
         let reason = null;
-        if (wkndExp)       reason = 'EXPIRED_WEEKEND_CLOSE';
-        else if (mktExp)   reason = 'EXPIRED_MARKET_CLOSE';
-        else if (overHold) reason = ageMs > 3 * 24 * 3600000 ? 'EXPIRED_STUCK_TRADE' : 'EXPIRED_MAX_HOLD';
+
+        if (isWeekendClose && NO_WEEKEND.has(sig.strategy_name)) {
+          reason = 'EXPIRED_WEEKEND_CLOSE';
+        } else if (pastDailyClose && NO_OVERNIGHT.has(sig.strategy_name)) {
+          // Signal created before today's 13:00 PT or on a prior calendar day
+          const sigPt      = new Date(new Date(sig.received_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+          const sigDateStr  = `${sigPt.getFullYear()}-${String(sigPt.getMonth()+1).padStart(2,'0')}-${String(sigPt.getDate()).padStart(2,'0')}`;
+          const sigHm       = sigPt.getHours() * 60 + sigPt.getMinutes();
+          if (sigDateStr < ptDateStr || (sigDateStr === ptDateStr && sigHm < 13 * 60)) {
+            reason = 'EXPIRED_MARKET_CLOSE';
+          }
+        }
+
+        if (!reason && ageMs > maxMs) {
+          reason = ageMs > 3 * 24 * 3600000 ? 'EXPIRED_STUCK_TRADE' : 'EXPIRED_MAX_HOLD';
+        }
 
         if (!reason) continue;
 
@@ -250,11 +266,15 @@ applyMigrations();
         setStatus.run(sig.id);
         setSigReason.run(reason, sig.id);
         setOutReason.run(reason, sig.id);
+        console.log(`[startup-cleanup] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason} age=${Math.round(ageMs/3600000)}h`);
         fixed++;
-      } catch { /* never crash per-row */ }
+      } catch (rowErr) {
+        console.error(`[startup-cleanup] row error for signal #${sig.id}:`, rowErr.message);
+      }
     }
 
-    if (fixed > 0) console.log(`[startup-cleanup] Expired ${fixed} stale open trade(s) at startup`);
+    if (fixed > 0) console.log(`[startup-cleanup] total expired: ${fixed} trade(s)`);
+    else console.log(`[startup-cleanup] no trades needed expiration`);
   } catch (err) {
     console.error('[startup-cleanup] Error during stale trade cleanup:', err.message);
   }
@@ -420,14 +440,31 @@ app.post('/webhook', (req, res) => {
 
 // ── API ───────────────────────────────────────────────────────────────────────────────
 app.get('/api/signals', (req, res) => {
+  res.set('Cache-Control', 'no-store');
   const limit = Math.min(Number(req.query.limit) || 50, 200);
   const rows = db.prepare(`
-    SELECT s.*, o.result, o.exit_price, o.exit_at, o.pnl_pts, o.pnl_usd
+    SELECT s.*, o.result, o.exit_price, o.exit_at, o.pnl_pts, o.pnl_usd, o.expiration_reason AS outcome_expiration_reason
     FROM   signals s
     LEFT   JOIN outcomes o ON o.signal_id = s.id
     ORDER  BY s.received_at DESC
     LIMIT  ?
   `).all(limit);
+  res.json(rows);
+});
+
+// Returns ONLY genuinely active (unresolved) signals.
+// Server-side filtered — the frontend OPEN tab should prefer this endpoint.
+app.get('/api/signals/open', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  const rows = db.prepare(`
+    SELECT s.*
+    FROM   signals s
+    LEFT JOIN outcomes o ON o.signal_id = s.id
+    WHERE  o.id IS NULL
+      AND  s.entry IS NOT NULL
+      AND  (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
+    ORDER  BY s.received_at DESC
+  `).all();
   res.json(rows);
 });
 
