@@ -17,7 +17,9 @@
  *  • Storage cleanup (keeps DB < 200 MB forever)
  */
 
-const EventEmitter = require('events');
+const EventEmitter        = require('events');
+const { Worker }          = require('worker_threads');
+const path                = require('path');
 
 const { evaluateAll, STRATEGY_META } = require('./strategy-engine');
 const {
@@ -1772,6 +1774,27 @@ class Scanner extends EventEmitter {
 
   // ── Backtest cycle ────────────────────────────────────────────────────────────
 
+  /**
+   * Runs the CPU-intensive runBacktest (+ optional swing supplement) in a Worker
+   * Thread so the main event loop stays free for HTTP health checks and SSE clients.
+   * Returns the merged result object, same shape as runBacktest().
+   */
+  _runBacktestInWorker(bars1m, params, opts, swing1hBars = [], swingSlippage = 0.5) {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(path.join(__dirname, 'workers/backtest-worker.js'), {
+        workerData: { bars1m, params, opts, swing1hBars, swingSlippage },
+      });
+      worker.on('message', msg => {
+        if (msg.success) resolve(msg.result);
+        else reject(new Error(msg.error));
+      });
+      worker.on('error', reject);
+      worker.on('exit', code => {
+        if (code !== 0) reject(new Error(`Backtest worker exited with code ${code}`));
+      });
+    });
+  }
+
   async runBacktestCycle(instrument, triggeredBy = 'scheduled') {
     const symbol = this.cfg.btSymbols[instrument];
     if (!symbol) return;
@@ -1850,34 +1873,23 @@ class Scanner extends EventEmitter {
       this._log(`BACKTEST HISTORY: ${instrument} using ${allBars1m.length} 1m bars (stored: ${storedBars.length} + fresh: ${bars1m.length})`);
 
       const params = getParams(this.db, instrument);
-      const result = runBacktest(allBars1m, params, {
-        instrument,
-        targetTrades: this.cfg.btTargetTrades,
-        slippage:     this.cfg.btSlippage,
-        walkForward:  true,
-      });
 
-      // For MNQ: supplement the 1m-derived backtest with a dedicated swing backtest
-      // on the cached 60-day 1h bars.  The 1m dataset produces only ~33 1h bars,
-      // so barsDly never reaches 3 and swing is never evaluated there.  The 1h
-      // cache gives ~273 bars / ~42 daily bars with a guaranteed full 24h
-      // resolution window for every signal.
-      if (instrument === 'MNQ' && this._lastGoodBars.mnq1h.length >= 60) {
-        try {
-          const swingResult = runSwingBacktest1h(this._lastGoodBars.mnq1h, {
-            slippage: this.cfg.btSlippage,
-          });
-          const swCount = swingResult.signalLog.length;
-          const swWR    = swCount > 0 ? (swingResult.metrics.winRate * 100).toFixed(1) : 'N/A';
+      // Run the CPU-intensive backtest in a Worker Thread so the main event loop
+      // stays free for HTTP health checks and SSE clients during computation.
+      const swing1hBars = (instrument === 'MNQ') ? (this._lastGoodBars.mnq1h ?? []) : [];
+      const result = await this._runBacktestInWorker(
+        allBars1m,
+        params,
+        { instrument, targetTrades: this.cfg.btTargetTrades, slippage: this.cfg.btSlippage, walkForward: true },
+        swing1hBars,
+        this.cfg.btSlippage,
+      );
+
+      if (swing1hBars.length >= 60) {
+        const swCount = (result.signalLog ?? []).filter(t => t.strategy_name === 'MNQ_SWING').length;
+        if (swCount > 0) {
+          const swWR = ((result.signalLog ?? []).filter(t => t.strategy_name === 'MNQ_SWING' && t.outcome === 'WIN').length / swCount * 100).toFixed(1);
           this._log(`SWING BT (1h): ${swCount} trades | WR=${swWR}%`);
-          if (swCount > 0) {
-            const merged   = [...(result.signalLog ?? []), ...swingResult.signalLog];
-            result.signalLog = merged;
-            result.trades    = merged.map(r => r.outcome);
-            result.metrics   = calcEnhancedMetrics(merged);
-          }
-        } catch (swingErr) {
-          this._err('Swing 1h backtest error', swingErr);
         }
       }
 
@@ -2915,15 +2927,16 @@ class Scanner extends EventEmitter {
     this.scan();
     this._intervals.push(setInterval(() => this.scan(), fallbackMs));
 
-    // Startup backtests — delayed so the service stabilises, scan traffic settles,
-    // and the GC has had multiple cycles before the memory-heavy backtest runs.
-    // Previously 3/5 min, which caused OOM crashes on Render starter (512 MB).
-    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'), 10 * 60_000);   // 10 min
-    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 18 * 60_000);   // 18 min
+    // Startup backtests — delayed so the service stabilises, Render health checks
+    // pass, and GC has had multiple cycles before the memory-heavy backtest runs.
+    // Runs in a Worker Thread (see _runBacktestInWorker) so the main event loop
+    // stays free during computation — no more health-check timeouts.
+    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'), 30 * 60_000);   // 30 min
+    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 40 * 60_000);   // 40 min
 
     // Startup optimizers (after backtests finish)
-    setTimeout(() => this.runOptimizerCycle('MNQ'), 45 * 60_000);
-    setTimeout(() => this.runOptimizerCycle('MGC'), 52 * 60_000);
+    setTimeout(() => this.runOptimizerCycle('MNQ'), 70 * 60_000);
+    setTimeout(() => this.runOptimizerCycle('MGC'), 78 * 60_000);
 
     // News at startup + every 30 min
     setTimeout(() => this.fetchAndStoreNews(), 8_000);
@@ -2949,8 +2962,8 @@ class Scanner extends EventEmitter {
     // Deep historical backtest (60-day 5m bars from Yahoo Finance).
     // Runs once at startup (after 25 min to avoid heap contention with normal backtests)
     // then weekly on Sundays. This gives ~8× more history than the 7-day 1m backtest.
-    setTimeout(() => this.runDeepHistoricalBacktest('MNQ'), 25 * 60_000);
-    setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 30 * 60_000);
+    setTimeout(() => this.runDeepHistoricalBacktest('MNQ'), 55 * 60_000);
+    setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 65 * 60_000);
     this._intervals.push(setInterval(() => {
       const now = new Date();
       if (now.getDay() === 0 && now.getHours() >= 18) {  // Sunday 18:00+ local (futures re-open)
