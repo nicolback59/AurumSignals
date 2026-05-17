@@ -497,6 +497,69 @@ function fmtExpiryReason(reason) {
   return map[reason] || reason.replace(/_/g, ' ').replace(/^EXPIRED /, 'Expired — ');
 }
 
+// ── Hard expiry rule ─────────────────────────────────────────────────────
+// Returns the expiry reason if this trade MUST be shown as expired right now,
+// regardless of whether the backend sweep has run yet.
+// Priority: backend result > backend trade_status > client-side time check.
+const _NO_OVERNIGHT = new Set(['MGC_SCALP', 'MGC_INTRADAY', 'MNQ_INTRADAY', 'MNQ_50PT']);
+const _MAX_HOLD_MIN = { MGC_SCALP: 60, MGC_INTRADAY: 240, MNQ_INTRADAY: 240, MNQ_50PT: 360, MNQ_SWING: 72 * 60 };
+
+function _toPt(d) {
+  return new Date((d instanceof Date ? d : new Date(
+    typeof d === 'string' && !d.includes('T') ? d + 'Z' : d
+  )).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+}
+
+function getTradeExpiry(trade) {
+  // 1. Backend already resolved it — let backend result take precedence
+  if (trade.result === 'WIN' || trade.result === 'LOSS' || trade.result === 'BE') return null;
+  if (trade.result === 'EXPIRED') return trade.expiration_reason || 'EXPIRED_STUCK_TRADE';
+
+  // 2. Backend updated trade_status but outcome insert may have raced
+  if (trade.trade_status === 'EXPIRED') return trade.expiration_reason || 'EXPIRED_STUCK_TRADE';
+
+  // 3. Client-side hard rules — apply when backend hasn't caught up yet
+  const isNoOvernight = _NO_OVERNIGHT.has(trade.strategy_name) ||
+    (trade.trade_style && trade.trade_style !== 'swing' && trade.strategy_name && !trade.strategy_name.toUpperCase().includes('SWING'));
+
+  const nowPt  = _toPt(new Date());
+  const ptDow  = nowPt.getDay();
+  const ptHm   = nowPt.getHours() * 60 + nowPt.getMinutes();
+
+  // Weekend close: Fri 13:00 PT onward / all Sat / Sun before 14:00 PT
+  const isWeekendClose = (ptDow === 5 && ptHm >= 13 * 60) || ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
+  if (isWeekendClose && isNoOvernight) return 'EXPIRED_WEEKEND_CLOSE';
+
+  // Weekday market close: past 13:00 PT and signal was created before 13:00 PT today (or on a prior day)
+  if (ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60 && isNoOvernight) {
+    const sigPt = _toPt(trade.received_at);
+    const sameDay = nowPt.getFullYear() === sigPt.getFullYear() &&
+                    nowPt.getMonth()    === sigPt.getMonth()    &&
+                    nowPt.getDate()     === sigPt.getDate();
+    const sigHm  = sigPt.getHours() * 60 + sigPt.getMinutes();
+    if (!sameDay || sigHm < 13 * 60) return 'EXPIRED_MARKET_CLOSE';
+  }
+
+  // Max hold time exceeded
+  const maxMin = _MAX_HOLD_MIN[trade.strategy_name] || (trade.trade_style === 'swing' ? 72 * 60 : 360);
+  const ageMin = (Date.now() - _toPt(trade.received_at).getTime()) / 60000;
+  if (ageMin > maxMin) return 'EXPIRED_MAX_HOLD';
+
+  return null; // genuinely active
+}
+
+// Unified status cell — the single source of truth for what to display.
+function tradeStatusHtml(trade) {
+  const expiry = getTradeExpiry(trade);
+  if (expiry) {
+    const label = fmtExpiryReason(expiry);
+    return `<span class="expiry-badge" title="${expiry}">${escH(label)}</span>`;
+  }
+  // Genuinely active
+  return `<span class="active-tag">Active</span>`;
+}
+}
+
 let allTrades    = [];
 let filteredList = [];
 let instFilter   = 'ALL';
@@ -558,9 +621,11 @@ function applyFiltersAndRender() {
     const instMatch = instFilter === 'ALL' ||
       t.instrument === instFilter ||
       (t.ticker || '').includes(instFilter);
-    // OPEN: no resolved outcome AND trade_status is ACTIVE/null (not EXPIRED, WIN, LOSS, BE)
-    const isGenuinelyOpen = !t.result && (t.trade_status === 'ACTIVE' || t.trade_status == null)
-      && t.trade_status !== 'EXPIRED';
+    // OPEN: only genuinely active trades — backend unresolved AND client-side rules pass
+    const isGenuinelyOpen = !t.result &&
+      (t.trade_status === 'ACTIVE' || t.trade_status == null) &&
+      t.trade_status !== 'EXPIRED' &&
+      !getTradeExpiry(t); // client-side hard rule: never show as open if market is closed
     const resMatch = resultFilter === 'ALL'  ? true
       : resultFilter === 'OPEN' ? isGenuinelyOpen
       : t.result === resultFilter;
@@ -631,13 +696,10 @@ function buildRow(t) {
     ? (usd >= 0 ? '+$' : '-$') + Math.abs(usd).toFixed(0)
     : '—';
 
-  const resultTd = t.result
-    ? (t.result === 'EXPIRED'
-        ? `<span class="expiry-badge">${escH(fmtExpiryReason(t.expiration_reason))}</span>`
-        : outcomeBadge(t.result))
-    : (t.trade_status === 'ACTIVE' || !t.trade_status
-        ? `<span class="active-tag">Active</span>`
-        : `<span class="pending-tag">${escH(t.trade_status)}</span>`);
+  // Use the unified status renderer — never shows "Active" when market is closed
+  const resultTd = (t.result && t.result !== 'EXPIRED')
+    ? outcomeBadge(t.result)
+    : tradeStatusHtml(t);
 
   return `<tr class="trade-row${isExp ? ' expanded' : ''}" onclick="toggleDetail(${t.id})">
     <td style="padding-left:12px"><span class="expand-caret">›</span></td>
@@ -691,7 +753,7 @@ function buildDetailPanel(t) {
     { lbl: 'TP2',        val: t.tp2     != null ? fmt(t.tp2)   : null },
     { lbl: 'TP3',        val: t.tp3     != null ? fmt(t.tp3)   : null },
     { lbl: 'Exit Price',     val: t.exit_price != null ? fmt(t.exit_price) : null },
-    { lbl: 'Expiry Reason', val: t.expiration_reason ? fmtExpiryReason(t.expiration_reason) : null },
+    { lbl: 'Expiry Reason', val: (t.expiration_reason || getTradeExpiry(t)) ? fmtExpiryReason(t.expiration_reason || getTradeExpiry(t)) : null },
   ].filter(i => i.val != null && i.val !== '');
 
   const probRows = [
@@ -767,11 +829,7 @@ function renderMobileCards() {
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px">
         <span style="font-size:11px;color:var(--text-secondary)">${escH(t.setup || '—')}</span>
-        ${t.result === 'EXPIRED'
-          ? `<span class="expiry-badge">${escH(fmtExpiryReason(t.expiration_reason))}</span>`
-          : t.result
-            ? outcomeBadge(t.result)
-            : `<span class="active-tag">Active</span>`}
+        ${(t.result && t.result !== 'EXPIRED') ? outcomeBadge(t.result) : tradeStatusHtml(t)}
       </div>
       <div style="display:flex;align-items:center;justify-content:space-between;padding-top:6px;border-top:1px solid var(--border-subtle)">
         <span style="font-family:var(--font-mono);font-size:11px;color:var(--text-muted)">Entry: ${fmt(t.entry)} &nbsp; SL: ${fmt(t.sl)}</span>
