@@ -437,8 +437,10 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // Requires clear HTF trend, VWAP aligned, ATR expanding
   // ══════════════════════════════════════════════════════════════════════════
   {
-    if (atr >= ATR_MIN_PTS && sess.quality >= 0.70) {
-      const isPowerHour = sess.name === 'NY Afternoon' || sess.name === 'Power Hour';
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.60) {
+      // 'Afternoon ✓' is the session name from getSessionInfo() for 13:30–15:59 ET.
+      // Power hour = last ~90 min of RTH (14:30+). Gate on hhmm for precision.
+      const isPowerHour = sess.isAftNoon && sess.hhmm >= 1430;
 
       if (isPowerHour) {
         const ema9PH  = ema(closes, 9)[n];
