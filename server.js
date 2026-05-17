@@ -15,6 +15,7 @@ const {
 const { getDNAInsights, getDNAGuidance, loadDNA } = require('./strategy-dna');
 const { getEvolutionHistory, getVariantPoolStatus } = require('./strategy-evolution');
 const { getOpeningCandleReport, getSessionOpenBias } = require('./opening-candle');
+const { classifyNow, isBlackout, msUntilOpen } = require('./clock/market-clock');
 
 // ── Global crash guards ───────────────────────────────────────────────────────
 // Prevent unhandled promise rejections or thrown errors from killing the server.
@@ -71,6 +72,22 @@ function applyMigrations() {
       db.exec("ALTER TABLE signals ADD COLUMN trade_status TEXT NOT NULL DEFAULT 'ACTIVE'");
       console.log('[migration] Added trade_status to signals');
     }
+    if (!cols.includes('expires_at')) {
+      db.exec("ALTER TABLE signals ADD COLUMN expires_at TEXT");
+      console.log('[migration] Added expires_at to signals');
+    }
+    if (!cols.includes('expiration_reason')) {
+      db.exec("ALTER TABLE signals ADD COLUMN expiration_reason TEXT");
+      console.log('[migration] Added expiration_reason to signals');
+    }
+  }
+  const hasOutcomes = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='outcomes'").get();
+  if (hasOutcomes) {
+    const outCols = db.prepare("PRAGMA table_info(outcomes)").all().map(r => r.name);
+    if (!outCols.includes('expiration_reason')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN expiration_reason TEXT");
+      console.log('[migration] Added expiration_reason to outcomes');
+    }
   }
   const hasBtTrades = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_trades'").get();
   if (hasBtTrades) {
@@ -105,6 +122,26 @@ function applyMigrations() {
   // Keep only the most recent run per (instrument, win_rate rounded to 3dp,
   // trades_found) group. Cascades to backtest_trades and backtest_details.
   const hasBtRuns = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_runs'").get();
+  if (hasBtRuns) {
+    const btRunCols = db.prepare("PRAGMA table_info(backtest_runs)").all().map(r => r.name);
+    if (!btRunCols.includes('source_data_start')) {
+      db.exec("ALTER TABLE backtest_runs ADD COLUMN source_data_start TEXT");
+      console.log('[migration] Added source_data_start to backtest_runs');
+    }
+    if (!btRunCols.includes('source_data_end')) {
+      db.exec("ALTER TABLE backtest_runs ADD COLUMN source_data_end TEXT");
+      console.log('[migration] Added source_data_end to backtest_runs');
+    }
+    if (!btRunCols.includes('data_window_label')) {
+      db.exec("ALTER TABLE backtest_runs ADD COLUMN data_window_label TEXT");
+      console.log('[migration] Added data_window_label to backtest_runs');
+    }
+    if (!btRunCols.includes('mode')) {
+      db.exec("ALTER TABLE backtest_runs ADD COLUMN mode TEXT DEFAULT 'LIVE'");
+      console.log('[migration] Added mode to backtest_runs');
+    }
+  }
+  // Re-check for dedup (variable already declared above, reuse hasBtRuns)
   if (hasBtRuns) {
     const hasCascadeDelete = db.prepare(`
       SELECT 1 FROM sqlite_master
@@ -485,6 +522,53 @@ app.get('/api/strategy/params', (req, res) => {
     if (!result[inst]) result[inst] = { ...getParams(db, inst), version: 0 };
   }
   res.json(result);
+});
+
+// ── MARKET MODE ───────────────────────────────────────────────────────────────────────────
+app.get('/api/market/mode', (req, res) => {
+  try {
+    const blk = isBlackout();
+    const { session, meta } = classifyNow();
+
+    let mode = 'LIVE';
+    let isWeekend = false;
+    let isMaintenance = false;
+
+    if (blk) {
+      const ptNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+      const dow = ptNow.getDay();
+      const hm  = ptNow.getHours() * 60 + ptNow.getMinutes();
+      if ((dow === 5 && hm >= 780) || dow === 6 || (dow === 0 && hm < 840)) {
+        mode = 'WEEKEND_CLOSE';
+        isWeekend = true;
+      } else {
+        mode = 'MAINTENANCE';
+        isMaintenance = true;
+      }
+    } else if (meta && meta.minTier === 'IGNORE') {
+      mode = 'OVERNIGHT';
+    }
+
+    const LABELS = {
+      LIVE:          'LIVE MODE',
+      MAINTENANCE:   'MAINTENANCE WINDOW',
+      WEEKEND_CLOSE: 'WEEKEND CLOSE',
+      OVERNIGHT:     'OVERNIGHT',
+      RESEARCH:      'RESEARCH MODE',
+    };
+
+    res.json({
+      mode,
+      label:          LABELS[mode] ?? mode,
+      session,
+      isBlackout:     blk,
+      isWeekend,
+      isMaintenance,
+      msUntilOpen:    msUntilOpen(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── MARKET PRICES ─────────────────────────────────────────────────────────────────────────

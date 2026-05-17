@@ -50,13 +50,31 @@ const TRANSITIONS = {
   INVALIDATED: [],
 };
 
-// Max hold durations in milliseconds per trade style
+// Per-strategy max hold (when strategy_name is available)
+const MAX_HOLD_MS_BY_STRATEGY = {
+  MGC_SCALP:    60  * 60 * 1000,       //  1 hour
+  MGC_INTRADAY: 4   * 60 * 60 * 1000,  //  4 hours
+  MNQ_INTRADAY: 4   * 60 * 60 * 1000,  //  4 hours
+  MNQ_50PT:     6   * 60 * 60 * 1000,  //  6 hours
+  MNQ_SWING:    72  * 60 * 60 * 1000,  // 72 hours
+};
+
+// Per-style fallback (when no strategy_name)
 const MAX_HOLD_MS = {
   scalp:    2  * 60 * 60 * 1000,   //  2 hours
   intraday: 6  * 60 * 60 * 1000,   //  6 hours
   swing:    72 * 60 * 60 * 1000,   // 72 hours
 };
 const DEFAULT_HOLD_MS = MAX_HOLD_MS.intraday;
+
+// Strategy-specific hold-overnight/weekend flags
+const STRATEGY_CONFIG = {
+  MGC_SCALP:    { allowHoldOvernight: false, allowHoldWeekend: false },
+  MGC_INTRADAY: { allowHoldOvernight: false, allowHoldWeekend: false },
+  MNQ_INTRADAY: { allowHoldOvernight: false, allowHoldWeekend: false },
+  MNQ_50PT:     { allowHoldOvernight: false, allowHoldWeekend: false },
+  MNQ_SWING:    { allowHoldOvernight: true,  allowHoldWeekend: true  },
+};
 
 /**
  * Validate a state transition. Returns { ok, reason }.
@@ -106,23 +124,26 @@ function resolveBar(sig, bar) {
  * Check whether an ACTIVE signal has exceeded its max hold time and should
  * transition to EXPIRED.
  *
- * @param {object} sig    - { trade_style, received_at }
+ * @param {object} sig    - { strategy_name, trade_style, received_at }
  * @param {Date}   [now]  - optional override for testing
- * @returns {boolean}
+ * @returns {{ expire: boolean, reason: string|null }}
  */
 function shouldExpire(sig, now = new Date()) {
-  const style   = sig.trade_style ?? 'intraday';
-  const maxMs   = MAX_HOLD_MS[style] ?? DEFAULT_HOLD_MS;
-  const sigTs   = new Date(sig.received_at).getTime();
-  return (now.getTime() - sigTs) > maxMs;
+  const maxMs = MAX_HOLD_MS_BY_STRATEGY[sig.strategy_name]
+    ?? MAX_HOLD_MS[sig.trade_style ?? 'intraday']
+    ?? DEFAULT_HOLD_MS;
+  const sigTs = new Date(sig.received_at).getTime();
+  const expired = (now.getTime() - sigTs) > maxMs;
+  return { expire: expired, reason: expired ? 'MAX_HOLD_TIME' : null };
 }
 
 /**
  * Compute the expiry deadline for a signal (returns a Date).
  */
 function expiryDate(sig) {
-  const style = sig.trade_style ?? 'intraday';
-  const maxMs = MAX_HOLD_MS[style] ?? DEFAULT_HOLD_MS;
+  const maxMs = MAX_HOLD_MS_BY_STRATEGY[sig.strategy_name]
+    ?? MAX_HOLD_MS[sig.trade_style ?? 'intraday']
+    ?? DEFAULT_HOLD_MS;
   return new Date(new Date(sig.received_at).getTime() + maxMs);
 }
 
@@ -143,6 +164,8 @@ module.exports = {
   TERMINAL,
   TRANSITIONS,
   MAX_HOLD_MS,
+  MAX_HOLD_MS_BY_STRATEGY,
+  STRATEGY_CONFIG,
   canTransition,
   resolveBar,
   shouldExpire,

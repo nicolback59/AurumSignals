@@ -288,6 +288,39 @@
       }
       .sum-card-val { font-size: 17px; }
     }
+
+    /* ── Market mode banner ──────────────────────────── */
+    .market-mode-banner {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 14px;
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+      border-bottom: 1px solid var(--border-default);
+      flex-shrink: 0;
+    }
+    .market-mode-banner.mode-live { color: var(--green); background: rgba(46,158,106,.06); }
+    .market-mode-banner.mode-research { color: var(--yellow); background: rgba(230,180,0,.06); }
+    .market-mode-banner.mode-maintenance { color: #e8a44a; background: rgba(232,164,74,.06); }
+    .market-mode-banner.mode-weekend { color: var(--text-muted); background: rgba(255,255,255,.03); }
+    .market-mode-banner.mode-overnight { color: var(--text-muted); background: rgba(255,255,255,.03); }
+    .mode-dot { width: 6px; height: 6px; border-radius: 50%; }
+    .mode-live .mode-dot { background: var(--green); }
+    .mode-research .mode-dot { background: var(--yellow); }
+    .mode-maintenance .mode-dot { background: #e8a44a; }
+    .mode-weekend .mode-dot, .mode-overnight .mode-dot { background: var(--text-muted); }
+    .expiry-tag {
+      font-size: 9px;
+      padding: 1px 5px;
+      border-radius: 4px;
+      font-family: var(--font-ui);
+      font-style: italic;
+      color: var(--text-muted);
+      border: 1px solid var(--border-subtle);
+    }
   </style>
 </head>
 <body>
@@ -314,6 +347,13 @@
     <div id="navUser"></div>
   </div>
 </header>
+
+<!-- ── MARKET MODE BANNER ────────────────────────────────── -->
+<div class="market-mode-banner mode-research" id="marketModeBanner" style="display:none">
+  <span class="mode-dot"></span>
+  <span id="marketModeLabel">RESEARCH MODE</span>
+  <span style="margin-left:auto;font-weight:400;opacity:.7;text-transform:none" id="marketModeSession"></span>
+</div>
 
 <!-- ── SUMMARY CARDS ────────────────────────────────── -->
 <div class="summary-row">
@@ -504,7 +544,7 @@ function applyFiltersAndRender() {
       t.instrument === instFilter ||
       (t.ticker || '').includes(instFilter);
     const resMatch = resultFilter === 'ALL'  ? true
-      : resultFilter === 'OPEN' ? !t.result
+      : resultFilter === 'OPEN' ? (!t.result && t.trade_status !== 'EXPIRED')
       : t.result === resultFilter;
     return instMatch && resMatch;
   });
@@ -574,7 +614,9 @@ function buildRow(t) {
     : '—';
 
   const resultTd = t.result
-    ? outcomeBadge(t.result)
+    ? (t.result === 'EXPIRED' && t.expiration_reason
+        ? outcomeBadge(t.result) + ` <span class="expiry-tag">${escH(t.expiration_reason.replace(/_/g,' ').toLowerCase())}</span>`
+        : outcomeBadge(t.result))
     : `<span class="pending-tag">pending</span>`;
 
   return `<tr class="trade-row${isExp ? ' expanded' : ''}" onclick="toggleDetail(${t.id})">
@@ -628,7 +670,8 @@ function buildDetailPanel(t) {
     { lbl: 'TP1',        val: t.tp1     != null ? fmt(t.tp1)   : null },
     { lbl: 'TP2',        val: t.tp2     != null ? fmt(t.tp2)   : null },
     { lbl: 'TP3',        val: t.tp3     != null ? fmt(t.tp3)   : null },
-    { lbl: 'Exit Price', val: t.exit_price != null ? fmt(t.exit_price) : null },
+    { lbl: 'Exit Price',     val: t.exit_price != null ? fmt(t.exit_price) : null },
+    { lbl: 'Expiry Reason', val: t.expiration_reason },
   ].filter(i => i.val != null && i.val !== '');
 
   const probRows = [
@@ -793,6 +836,30 @@ document.querySelectorAll('.trade-table thead th.sortable').forEach(th => {
 });
 document.querySelector('th[data-col="received_at"]')?.classList.add('desc');
 
+/* ── Market mode banner ───────────────────────────────── */
+async function loadMarketMode() {
+  try {
+    const res  = await fetch('/api/market/mode');
+    const data = await res.json();
+    const banner = document.getElementById('marketModeBanner');
+    const label  = document.getElementById('marketModeLabel');
+    const sess   = document.getElementById('marketModeSession');
+
+    const modeClass = {
+      LIVE:          'mode-live',
+      MAINTENANCE:   'mode-maintenance',
+      WEEKEND_CLOSE: 'mode-weekend',
+      OVERNIGHT:     'mode-overnight',
+      RESEARCH:      'mode-research',
+    }[data.mode] || 'mode-research';
+
+    banner.className = `market-mode-banner ${modeClass}`;
+    banner.style.display = '';
+    label.textContent  = data.label;
+    sess.textContent   = data.session || '';
+  } catch { /* fail silently */ }
+}
+
 /* ── Load ────────────────────────────────────────────── */
 async function load() {
   try {
@@ -805,6 +872,7 @@ async function load() {
     allTrades = trades;
     renderSummary(stats, trades);
     applyFiltersAndRender();
+    loadMarketMode();
 
     document.getElementById('refreshLbl').textContent = 'Updated ' + new Date().toLocaleTimeString();
   } catch (e) {

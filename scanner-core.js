@@ -36,6 +36,7 @@ const { rankSignal }        = require('./signals/signal-ranker');
 const signalDedup           = require('./signals/signal-dedup');
 const {
   STATES, resolveBar, shouldExpire, stateToResult,
+  STRATEGY_CONFIG, MAX_HOLD_MS_BY_STRATEGY,
 } = require('./signals/signal-state-machine');
 const {
   buildAlertPayload, flattenPayload, buildNtfyBody, buildNtfyHeaders,
@@ -146,6 +147,7 @@ class Scanner extends EventEmitter {
     this._fetchBackoffUntil = 0;   // circuit breaker: epoch ms when backoff expires
     this._intervals         = [];
     this._running           = false;
+    this._lastResearchAt    = 0;   // epoch ms of last research cycle (throttled to 1/hour)
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -812,6 +814,15 @@ class Scanner extends EventEmitter {
     });
 
     const id         = info.lastInsertRowid;
+
+    // Set expires_at on the newly inserted signal
+    try {
+      const holdMs = MAX_HOLD_MS_BY_STRATEGY[signal.strategy_name]
+        ?? (signal.trade_style === 'swing' ? 72*3600000 : signal.trade_style === 'scalp' ? 2*3600000 : 6*3600000);
+      const expiresAt = new Date(Date.now() + holdMs).toISOString();
+      this.db.prepare('UPDATE signals SET expires_at = ? WHERE id = ?').run(expiresAt, id);
+    } catch { /* never crash signal storage */ }
+
     const stratLabel = signal.strategy_name ?? signal.setup ?? 'unknown';
     const logMsg = `✅ SIGNAL #${id} | ${signal.instrument} ${signal.direction} ${signal.grade} | ` +
       `${stratLabel} | confidence=${signal.confidence ?? signal.score}/100 | entry=${signal.entry} | rr=${signal.rr}`;
@@ -969,6 +980,59 @@ class Scanner extends EventEmitter {
     }
   }
 
+  // ── Closed-market research cycle ─────────────────────────────────────────────
+  // Runs at most once per hour during blackout/overnight periods.
+  // Uses accumulated historical bars to run a lightweight backtest and surface
+  // key edge health metrics — no live fetches, no signal emission.
+
+  async _runResearchCycle() {
+    try {
+      const instruments = ['MNQ', 'MGC'];
+      const summary = [];
+
+      for (const instrument of instruments) {
+        const symbol = this.cfg.btSymbols[instrument];
+        if (!symbol) continue;
+
+        const bars1m = this._loadHistoricalBars(symbol, '1m');
+        const bars5m = this._loadHistoricalBars(symbol, '5m');
+
+        // Prefer whichever set has more coverage; need at least 200 bars
+        const bars = bars5m.length >= bars1m.length ? bars5m : bars1m;
+        const interval = bars5m.length >= bars1m.length ? '5m' : '1m';
+        if (bars.length < 200) continue;
+
+        const params = getParams(this.db, instrument);
+        const result = interval === '5m'
+          ? runBacktest5m(bars, params, { instrument, slippage: this.cfg.btSlippage, walkForward: false })
+          : runBacktest(bars, params, { instrument, slippage: this.cfg.btSlippage, walkForward: false });
+
+        const m = result?.metrics;
+        if (!m || (m.tradeCount ?? 0) === 0) continue;
+
+        const dwFirst = bars[0]?.timestamp?.slice(0, 10) ?? '?';
+        const dwLast  = bars[bars.length - 1]?.timestamp?.slice(0, 10) ?? '?';
+        const wrPct   = (m.winRate * 100).toFixed(1);
+        const pf      = m.profitFactor?.toFixed(2) ?? 'N/A';
+
+        summary.push(`${instrument}: WR=${wrPct}% PF=${pf} trades=${m.tradeCount} [${dwFirst}→${dwLast}]`);
+
+        // Update learning state from research backtest (same as live backtest path)
+        try {
+          updateLearningFromLiveSignals(this.db, result.signalLog ?? []);
+          updateSessionBiasFromBacktest(this.db, instrument, result.signalLog ?? []);
+        } catch { /* never crash */ }
+      }
+
+      if (summary.length > 0) {
+        this._log(`🔬 RESEARCH MODE: ${summary.join(' | ')}`);
+        this.emit('research', { at: ts(), summary });
+      }
+    } catch (err) {
+      this._err('_runResearchCycle error', err);
+    }
+  }
+
   // ── Timer-based expiry sweep ──────────────────────────────────────────────────
   // Runs every 5 min regardless of market hours or bars availability.
   // Expires ACTIVE signals that have exceeded their max hold time so signals
@@ -981,22 +1045,59 @@ class Scanner extends EventEmitter {
       const now = new Date();
       let swept = 0;
 
-      for (const sig of pending) {
-        if (!shouldExpire(sig, now)) continue;
+      // Determine market-close conditions in PT timezone
+      const nowPt  = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+      const ptHour = nowPt.getHours();
+      const ptMin  = nowPt.getMinutes();
+      const ptHm   = ptHour * 60 + ptMin;
+      const ptDow  = nowPt.getDay(); // 0=Sun,1=Mon,...,5=Fri,6=Sat
 
-        this._stmts.insertOutcome.run(
-          sig.id, 'EXPIRED', sig.entry,
-          now.toISOString(),
-          0
-        );
+      // Forced market-close: Mon-Fri 13:00-13:59 PT (daily maintenance/lunch window)
+      const isWeekdayMarketClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60 && ptHm < 14 * 60;
+
+      // Weekend forced close: Fri 13:00 PT onward, all day Sat, Sun before 14:00 PT
+      const isFridayClose   = ptDow === 5 && ptHm >= 13 * 60;
+      const isWeekend       = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
+      const isWeekendClose  = isFridayClose || isWeekend;
+
+      // Local helper to expire a signal with a specific reason
+      const expireSignal = (sig, reason) => {
+        this._stmts.insertOutcome.run(sig.id, 'EXPIRED', sig.entry, now.toISOString(), 0);
         this._stmts.updateTradeStatus.run(STATES.EXPIRED, sig.id);
-
+        try { this.db.prepare('UPDATE signals SET expiration_reason = ? WHERE id = ?').run(reason, sig.id); } catch { /* ignore */ }
         this._log(
-          `SWEEP-EXPIRE #${sig.id} ${sig.instrument}: ${sig.direction} ` +
-          `${sig.trade_style ?? 'intraday'} open since ${sig.received_at}`,
+          `SWEEP-EXPIRE #${sig.id} ${sig.instrument}: ${sig.direction} reason=${reason}`,
           'signal'
         );
-        swept++;
+      };
+
+      for (const sig of pending) {
+        // Forced weekend close: all non-swing trades expire if isWeekendClose
+        if (isWeekendClose) {
+          const stratCfg = STRATEGY_CONFIG[sig.strategy_name] || {};
+          if (!stratCfg.allowHoldWeekend) {
+            expireSignal(sig, 'EXPIRED_WEEKEND_CLOSE');
+            swept++;
+            continue;
+          }
+        }
+
+        // Forced market close: intraday/scalp expire at 1:00 PM PT on weekdays
+        if (isWeekdayMarketClose) {
+          const stratCfg = STRATEGY_CONFIG[sig.strategy_name] || {};
+          if (!stratCfg.allowHoldOvernight) {
+            expireSignal(sig, 'EXPIRED_MARKET_CLOSE');
+            swept++;
+            continue;
+          }
+        }
+
+        // Max hold time check (new return format: { expire, reason })
+        const expResult = shouldExpire(sig, now);
+        if (expResult.expire) {
+          expireSignal(sig, expResult.reason || 'MAX_HOLD_TIME');
+          swept++;
+        }
       }
 
       if (swept > 0) {
@@ -1005,6 +1106,41 @@ class Scanner extends EventEmitter {
       }
     } catch (err) {
       this._err('_sweepExpiredSignals error', err);
+    }
+  }
+
+  // ── Fix stuck trades (runs once at startup) ──────────────────────────────────
+
+  _fixStuckTrades() {
+    try {
+      const cutoff = new Date(Date.now() - 3 * 24 * 60 * 60 * 1000).toISOString(); // 3 days ago
+      const stuckSignals = this.db.prepare(`
+        SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
+               s.trade_style, s.strategy_name, s.session, s.setup
+        FROM signals s
+        LEFT JOIN outcomes o ON o.signal_id = s.id
+        WHERE o.id IS NULL
+          AND s.entry IS NOT NULL
+          AND (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
+          AND s.received_at < ?
+      `).all(cutoff);
+
+      if (!stuckSignals.length) return;
+
+      const now = new Date();
+      let fixed = 0;
+      for (const sig of stuckSignals) {
+        try {
+          this._stmts.insertOutcome.run(sig.id, 'EXPIRED', sig.entry, now.toISOString(), 0);
+          this._stmts.updateTradeStatus.run(STATES.EXPIRED, sig.id);
+          try { this.db.prepare('UPDATE signals SET expiration_reason = ? WHERE id = ?').run('EXPIRED_STUCK_TRADE', sig.id); } catch { /* ignore */ }
+          this._log(`FIX-STUCK #${sig.id} ${sig.instrument}: ${sig.direction} open since ${sig.received_at}`, 'signal');
+          fixed++;
+        } catch { /* never crash */ }
+      }
+      if (fixed > 0) this._log(`Fixed ${fixed} stuck trade(s) open > 3 days`);
+    } catch (err) {
+      this._err('_fixStuckTrades error', err);
     }
   }
 
@@ -1333,7 +1469,28 @@ class Scanner extends EventEmitter {
         this._log('⏸️  Market closed — scanner paused until next session opens');
       }
       try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash */ }
-      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true, feedType: this.feedType, feedConnected: this._feed.isConnected() });
+      // Determine market mode for closed-market heartbeat
+      let marketMode = 'RESEARCH';
+      try {
+        const { session: _sess, meta, isBlackout: blk } = classifyNow();
+        if (blk) {
+          const ptNow = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+          const dow = ptNow.getDay();
+          const hm  = ptNow.getHours() * 60 + ptNow.getMinutes();
+          marketMode = (dow === 5 && hm >= 780) || dow === 6 || (dow === 0 && hm < 840) ? 'WEEKEND_CLOSE' : 'MAINTENANCE';
+        } else if (meta && meta.minTier === 'IGNORE') {
+          marketMode = 'OVERNIGHT';
+        }
+      } catch { /* never crash */ }
+      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true, marketMode, feedType: this.feedType, feedConnected: this._feed.isConnected() });
+
+      // Research mode: run a background analysis cycle using historical bars.
+      // Throttled to once per hour so it doesn't compete with startup backtests.
+      const researchIntervalMs = 60 * 60_000;
+      if (Date.now() - this._lastResearchAt > researchIntervalMs) {
+        this._lastResearchAt = Date.now();
+        this._runResearchCycle().catch(e => this._err('Research cycle error', e));
+      }
       return;
     }
 
@@ -1487,7 +1644,7 @@ class Scanner extends EventEmitter {
       this._err('Scan cycle error', err);
     } finally {
       try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash on heartbeat */ }
-      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), feedType: this.feedType, feedConnected: this._feed.isConnected() });
+      this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketMode: 'LIVE', feedType: this.feedType, feedConnected: this._feed.isConnected() });
     }
   }
 
@@ -1658,7 +1815,17 @@ class Scanner extends EventEmitter {
       // Embed fingerprint so the NEXT run can compare against it
       params._dataWindowKey = _dataWindowKey;
 
-      const runId = saveBacktestRun(this.db, instrument, params, metrics, triggeredBy);
+      const _dwDays = _dwFirst && _dwLast
+        ? Math.max(1, Math.round((new Date(_dwLast) - new Date(_dwFirst)) / 86400000))
+        : 0;
+      const _dataWindow = {
+        sourceStart: _dwFirst,
+        sourceEnd:   _dwLast,
+        label: `${_dwDays}d · ${allBars1m.length.toLocaleString()} 1m bars`,
+        mode: 'LIVE',
+      };
+
+      const runId = saveBacktestRun(this.db, instrument, params, metrics, triggeredBy, _dataWindow);
 
       // Store up to 200 trades per run (WIN + LOSS + BE)
       const allTrades = (result.signalLog ?? []).slice(0, 200);
@@ -1902,11 +2069,23 @@ class Scanner extends EventEmitter {
       );
 
       // Tag params so dashboard can identify historical runs
-      params._dataWindowKey  = `5m|${bars5m[0]?.timestamp ?? ''}|${bars5m[bars5m.length - 1]?.timestamp ?? ''}|${metrics.tradeCount}`;
+      const _dw5mFirst = bars5m[0]?.timestamp ?? '';
+      const _dw5mLast  = bars5m[bars5m.length - 1]?.timestamp ?? '';
+      const _dw5mDays  = _dw5mFirst && _dw5mLast
+        ? Math.max(1, Math.round((new Date(_dw5mLast) - new Date(_dw5mFirst)) / 86400000))
+        : 60;
+      params._dataWindowKey  = `5m|${_dw5mFirst}|${_dw5mLast}|${metrics.tradeCount}`;
       params._baseInterval   = '5m';
-      params._histDays       = 60;
+      params._histDays       = _dw5mDays;
 
-      const runId = saveBacktestRun(this.db, instrument, params, metrics, 'historical_5m');
+      const _deepDataWindow = {
+        sourceStart: _dw5mFirst,
+        sourceEnd:   _dw5mLast,
+        label: `${_dw5mDays}d · ${bars5m.length.toLocaleString()} 5m bars (deep)`,
+        mode: 'LIVE',
+      };
+
+      const runId = saveBacktestRun(this.db, instrument, params, metrics, 'historical_5m', _deepDataWindow);
 
       // Store up to 500 trades from the deep backtest (larger window = more trades)
       const allTrades = (result.signalLog ?? []).slice(0, 500);
@@ -2652,6 +2831,9 @@ class Scanner extends EventEmitter {
     // Storage cleanup
     setTimeout(() => this.runStorageCleanup(), 15_000);
     this._intervals.push(setInterval(() => this.runStorageCleanup(), 24 * 3_600_000));
+
+    // Fix trades that have been open more than 3 days (stuck due to downtime etc.)
+    this._fixStuckTrades();
 
     // Expiry sweep — runs every 5 min, wall-clock based, market-agnostic.
     // Ensures ACTIVE signals are closed even if scanner was down when they expired.
