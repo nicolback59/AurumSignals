@@ -10,6 +10,7 @@ const { Scanner }          = require('./scanner-core');
 const {
   analyzeDivergence, generateMidWeekReport, generateWeeklyDeepReport,
   getPerformanceIntelligence, getInstrumentBehaviorProfile, loadReport,
+  listReports, getReportScheduleStatus,
 } = require('./performance-reporter');
 const { getDNAInsights, getDNAGuidance, loadDNA } = require('./strategy-dna');
 const { getEvolutionHistory, getVariantPoolStatus } = require('./strategy-evolution');
@@ -150,6 +151,41 @@ function applyMigrations() {
 applyMigrations();
 
 db.exec(schema);
+
+// Create new tables added by this release if they don't exist yet (safe no-ops on fresh DBs)
+db.exec(`
+  CREATE TABLE IF NOT EXISTS reports (
+    id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+    report_id            TEXT    UNIQUE NOT NULL,
+    report_type          TEXT    NOT NULL,
+    scope                TEXT    NOT NULL DEFAULT 'COMBINED',
+    status               TEXT    NOT NULL DEFAULT 'completed',
+    attempt_count        INTEGER NOT NULL DEFAULT 1,
+    generated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+    start_date           TEXT    NOT NULL,
+    end_date             TEXT    NOT NULL,
+    summary              TEXT,
+    metrics_json         TEXT,
+    strategy_json        TEXT,
+    backtest_json        TEXT,
+    recommendations_json TEXT,
+    version_changes      TEXT,
+    failure_analysis     TEXT,
+    narrative            TEXT,
+    error_message        TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_reports_type ON reports(report_type, generated_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_reports_id   ON reports(report_id);
+
+  CREATE TABLE IF NOT EXISTS report_schedule (
+    schedule_key    TEXT    PRIMARY KEY,
+    last_run_at     TEXT,
+    last_report_id  TEXT,
+    next_run_at     TEXT,
+    enabled         INTEGER NOT NULL DEFAULT 1,
+    tz              TEXT    NOT NULL DEFAULT 'America/Los_Angeles'
+  );
+`);
 
 const insertSignal = db.prepare(`
   INSERT INTO signals
@@ -1181,6 +1217,56 @@ app.get('/api/performance/edge-health', (req, res) => {
       MGC: detectEdgeDegradation(db, 'MGC'),
       generated_at: new Date().toISOString(),
     });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── REPORT SCHEDULER ENDPOINTS ───────────────────────────────────────────────────────────
+
+// List all generated reports (history log)
+app.get('/api/reports/list', (req, res) => {
+  try {
+    const limit = Math.min(parseInt(req.query.limit ?? '50'), 200);
+    const reports = listReports(db, limit);
+    res.json({ reports, count: reports.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Report scheduler status (last run, next scheduled, enabled)
+app.get('/api/reports/schedule', (req, res) => {
+  try {
+    const schedules = getReportScheduleStatus(db);
+    const now = new Date().toISOString();
+    res.json({ schedules, checked_at: now });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Get a specific report by ID
+app.get('/api/reports/:reportId', (req, res) => {
+  try {
+    const row = db.prepare(
+      'SELECT * FROM reports WHERE report_id = ?'
+    ).get(req.params.reportId);
+    if (!row) return res.status(404).json({ error: 'Report not found' });
+    const report = { ...row };
+    for (const f of ['metrics_json', 'strategy_json', 'backtest_json', 'recommendations_json', 'version_changes', 'failure_analysis']) {
+      if (report[f]) try { report[f.replace('_json', '')] = JSON.parse(report[f]); } catch {}
+    }
+    res.json(report);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Force-generate a report immediately (manual refresh)
+app.post('/api/reports/generate', (req, res) => {
+  try {
+    const type = (req.body?.type ?? 'MID_WEEK').toUpperCase();
+    let report;
+    if (type === 'WEEKLY_DEEP_DIVE' || type === 'WEEKLY') {
+      const weekStart = req.body?.week_start ?? null;
+      report = generateWeeklyDeepReport(db, weekStart);
+    } else {
+      report = generateMidWeekReport(db);
+    }
+    res.json({ status: 'generated', report_type: type, report });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

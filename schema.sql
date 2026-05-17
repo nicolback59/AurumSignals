@@ -332,3 +332,41 @@ CREATE INDEX IF NOT EXISTS idx_hist_bars ON historical_bars(symbol, interval, ti
 -- These are handled via the migration runner in server.js startup instead of
 -- raw SQL here, since SQLite does not support IF NOT EXISTS on ALTER TABLE.
 -- See server.js applyMigrations() for the actual column additions.
+
+-- ── Automated Report Scheduler ────────────────────────────────────────────────
+-- Persists every auto-generated and manual report with full metrics and narrative.
+-- report_id is unique e.g. 'WEEKLY_DEEP_2025-05-12' or 'MID_WEEK_2025-05-12'.
+-- scope distinguishes live-only, backtest-only, or combined analysis.
+
+CREATE TABLE IF NOT EXISTS reports (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  report_id            TEXT    UNIQUE NOT NULL,
+  report_type          TEXT    NOT NULL,   -- 'WEEKLY_DEEP_DIVE' | 'MID_WEEK'
+  scope                TEXT    NOT NULL DEFAULT 'COMBINED', -- 'LIVE' | 'BACKTEST' | 'COMBINED'
+  status               TEXT    NOT NULL DEFAULT 'completed', -- 'generating' | 'completed' | 'failed'
+  attempt_count        INTEGER NOT NULL DEFAULT 1,
+  generated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  start_date           TEXT    NOT NULL,
+  end_date             TEXT    NOT NULL,
+  summary              TEXT,
+  metrics_json         TEXT,   -- JSON: all live performance metrics
+  strategy_json        TEXT,   -- JSON: per-strategy breakdown
+  backtest_json        TEXT,   -- JSON: backtest performance section
+  recommendations_json TEXT,   -- JSON: recommended actions
+  version_changes      TEXT,   -- JSON: strategy version deltas this period
+  failure_analysis     TEXT,   -- text: failure modes identified
+  narrative            TEXT,   -- full plain-text report narrative
+  error_message        TEXT    -- populated if status = 'failed'
+);
+CREATE INDEX IF NOT EXISTS idx_reports_type ON reports(report_type, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_reports_id   ON reports(report_id);
+
+-- Report scheduler state — tracks next scheduled generation to prevent duplicates
+CREATE TABLE IF NOT EXISTS report_schedule (
+  schedule_key    TEXT    PRIMARY KEY,  -- 'WEEKLY_DEEP_DIVE' | 'MID_WEEK'
+  last_run_at     TEXT,
+  last_report_id  TEXT,
+  next_run_at     TEXT,
+  enabled         INTEGER NOT NULL DEFAULT 1,
+  tz              TEXT    NOT NULL DEFAULT 'America/Los_Angeles'
+);

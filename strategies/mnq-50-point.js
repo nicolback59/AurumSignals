@@ -25,7 +25,7 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '2.1';
+const STRATEGY_VERSION = '3.0';
 
 const TARGET_PTS  = 50;   // fixed primary target
 const PARTIAL_PTS = 25;   // partial exit
@@ -340,6 +340,261 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
             timestamp: last.timestamp, trade_status: 'PENDING',
           };
         }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 4: Failed Breakdown / Failed Breakout Reversal
+  // Price breaks below support (or above resistance) but immediately reverses —
+  // a classic stop-hunt followed by a ~50-pt recovery move.
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.30) {
+      const swLow5  = recentSwingLow(bars, 10);
+      const swHigh5 = recentSwingHigh(bars, 10);
+      const prevBar  = bars[n - 1];
+      const prev2Bar = bars[n - 2];
+
+      // LONG: prev bar wick broke below swLow5 but closed back above it; current bar bullish
+      const failedBreakdownL = prevBar && prev2Bar &&
+        prevBar.low < swLow5 - 0.1 * atr &&
+        prevBar.close > swLow5 - 0.3 * atr &&
+        last.close > prevBar.close &&
+        isBullishCandle(last, 0.20) &&
+        htfBias >= 0;
+
+      // SHORT: prev bar wick broke above swHigh5 but closed back below; current bar bearish
+      const failedBreakoutS  = prevBar && prev2Bar &&
+        prevBar.high > swHigh5 + 0.1 * atr &&
+        prevBar.close < swHigh5 + 0.3 * atr &&
+        last.close < prevBar.close &&
+        isBearishCandle(last, 0.20) &&
+        htfBias <= 0;
+
+      for (const dir of (failedBreakdownL ? ['LONG'] : []).concat(failedBreakoutS ? ['SHORT'] : [])) {
+        const isBull = dir === 'LONG';
+        const entry  = last.close;
+        let sl, rawRisk;
+        if (isBull) {
+          sl      = prevBar.low - 0.5 * atr;
+          rawRisk = entry - sl;
+        } else {
+          sl      = prevBar.high + 0.5 * atr;
+          rawRisk = sl - entry;
+        }
+        if (rawRisk < 2 || rawRisk > TARGET_PTS * 1.2) continue;
+        const rrFB = TARGET_PTS / rawRisk;
+
+        const tp0fb = isBull ? entry + PARTIAL_PTS : entry - PARTIAL_PTS;
+        const tp1fb = isBull ? entry + TARGET_PTS  : entry - TARGET_PTS;
+        const tp3fb = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
+
+        const srDistFB = srDistanceAtr(tp1fb, bars, atr, 50);
+        if (srDistFB < 0.8) continue;
+
+        const rsiArrFB = calcRsi(closes, 14);
+        const rsiFB    = rsiArrFB[n];
+        if (rsiFB != null) {
+          if (isBull  && rsiFB >= 75) continue;
+          if (!isBull && rsiFB <= 25) continue;
+        }
+
+        const confidence = scoreSignal({
+          direction: dir, bars, htfBias, htf2Bias: 0, hasHtf2: false,
+          vwapVal: vwap, emaStackVal: vwap != null ? (isBull && last.close > vwap ? 1 : !isBull && last.close < vwap ? 1 : 0) : 0,
+          atr, atrMin: ATR_MIN_PTS, rr: rrFB, srDistanceAtr: srDistFB,
+          timestamp: last.timestamp,
+        });
+        if (confidence < THRESHOLDS.MNQ_50PT) continue;
+
+        lastSignalBar = curIdx;
+        const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+        return {
+          instrument: 'MNQ', strategy_name: 'MNQ_50PT', trade_style: 'intraday', timeframe: '5m',
+          direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+          tp1: +tp0fb.toFixed(2), tp2: +tp1fb.toFixed(2), tp3: +tp3fb.toFixed(2),
+          rr: +rrFB.toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+          score: Math.round(confidence / 4),
+          setup: isBull ? 'Failed Breakdown Reversal' : 'Failed Breakout Reversal',
+          strategy_version: STRATEGY_VERSION,
+          htf_bias: htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+          session: sess.name,
+          trigger_reason: `Failed ${isBull ? 'breakdown' : 'breakout'} — stop hunt beyond swing ${isBull ? 'low' : 'high'} rejected; price recovering with ${isBull ? 'bull' : 'bear'} candle`,
+          indicators: {
+            atr: +atr.toFixed(2), vwap: +vwap.toFixed(2), swLow5: +swLow5.toFixed(2), swHigh5: +swHigh5.toFixed(2),
+            rsi: rsiFB != null ? +rsiFB.toFixed(1) : null, htfBias,
+          },
+          timestamp: last.timestamp, trade_status: 'PENDING',
+        };
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 5: Power Hour Expansion (14:30–16:00 ET)
+  // Late-session momentum expansion — often 50+ pts in 30–60 min
+  // Requires clear HTF trend, VWAP aligned, ATR expanding
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.70) {
+      const isPowerHour = sess.name === 'NY Afternoon' || sess.name === 'Power Hour';
+
+      if (isPowerHour) {
+        const ema9PH  = ema(closes, 9)[n];
+        const ema21PH = ema(closes, 21)[n];
+        const rsiPH   = calcRsi(closes, 14)[n];
+
+        // LONG: uptrend (ema9 > ema21), above VWAP, RSI 45–65, fresh momentum
+        const longPH  = ema9PH != null && ema21PH != null &&
+                        ema9PH > ema21PH && last.close > vwap &&
+                        rsiPH != null && rsiPH >= 45 && rsiPH <= 68 &&
+                        htfBias >= 0 && isBullishCandle(last, 0.25);
+
+        // SHORT: downtrend, below VWAP, RSI 32–55
+        const shortPH = ema9PH != null && ema21PH != null &&
+                        ema9PH < ema21PH && last.close < vwap &&
+                        rsiPH != null && rsiPH >= 32 && rsiPH <= 55 &&
+                        htfBias <= 0 && isBearishCandle(last, 0.25);
+
+        for (const dir of (longPH ? ['LONG'] : []).concat(shortPH ? ['SHORT'] : [])) {
+          const isBull = dir === 'LONG';
+          const entry  = last.close;
+
+          let sl, rawRisk;
+          const swLowPH  = recentSwingLow(bars, 6);
+          const swHighPH = recentSwingHigh(bars, 6);
+          if (isBull) {
+            sl      = Math.min(swLowPH, vwap) - 0.5 * atr;
+            rawRisk = entry - sl;
+          } else {
+            sl      = Math.max(swHighPH, vwap) + 0.5 * atr;
+            rawRisk = sl - entry;
+          }
+          if (rawRisk < 2 || rawRisk > TARGET_PTS * 1.2) continue;
+          const rrPH = TARGET_PTS / rawRisk;
+
+          const tp0ph = isBull ? entry + PARTIAL_PTS : entry - PARTIAL_PTS;
+          const tp1ph = isBull ? entry + TARGET_PTS  : entry - TARGET_PTS;
+          const tp3ph = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
+
+          const srDistPH = srDistanceAtr(tp1ph, bars, atr, 50);
+          if (srDistPH < 0.8) continue;
+
+          const confidence = scoreSignal({
+            direction: dir, bars, htfBias, htf2Bias: 0, hasHtf2: false,
+            vwapVal: vwap, emaStackVal: 1,
+            atr, atrMin: ATR_MIN_PTS, rr: rrPH, srDistanceAtr: srDistPH,
+            timestamp: last.timestamp,
+          });
+          if (confidence < THRESHOLDS.MNQ_50PT) continue;
+
+          lastSignalBar = curIdx;
+          const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+          return {
+            instrument: 'MNQ', strategy_name: 'MNQ_50PT', trade_style: 'intraday', timeframe: '5m',
+            direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+            tp1: +tp0ph.toFixed(2), tp2: +tp1ph.toFixed(2), tp3: +tp3ph.toFixed(2),
+            rr: +rrPH.toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+            score: Math.round(confidence / 4),
+            setup: 'Power Hour Expansion', strategy_version: STRATEGY_VERSION,
+            htf_bias: htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+            session: sess.name,
+            trigger_reason: `Power hour ${isBull ? 'bull' : 'bear'} expansion — clear ${isBull ? 'uptrend' : 'downtrend'}, VWAP aligned, RSI mid-range, late-session momentum`,
+            indicators: {
+              atr: +atr.toFixed(2), vwap: +vwap.toFixed(2),
+              ema9: ema9PH != null ? +ema9PH.toFixed(2) : null,
+              ema21: ema21PH != null ? +ema21PH.toFixed(2) : null,
+              rsi: rsiPH != null ? +rsiPH.toFixed(1) : null, htfBias,
+            },
+            timestamp: last.timestamp, trade_status: 'PENDING',
+          };
+        }
+      }
+    }
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // ARCHETYPE 6: Post-Liquidity Sweep Momentum (5m level sweep → recovery)
+  // After a liquidity sweep (stop hunt) on 5m, price reverses and targets 50 pts
+  // Requires: sweep of recent 5m swing low/high, recovery close, HTF aligned
+  // ══════════════════════════════════════════════════════════════════════════
+  {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.30) {
+      const swLowLS  = recentSwingLow(bars, 8);
+      const swHighLS = recentSwingHigh(bars, 8);
+      const prev1    = bars[n - 1];
+      const prev2    = bars[n - 2];
+
+      // LONG: prior bar swept below swLowLS (wick < swLow - 0.05*atr), closed back above; current bar bullish
+      const sweepLong  = prev1 && prev2 &&
+                         prev1.low < swLowLS - 0.05 * atr &&
+                         prev1.close > swLowLS &&
+                         last.close > prev1.close &&
+                         isBullishCandle(last, 0.20) && htfBias >= 0;
+
+      // SHORT: prior bar swept above swHighLS, closed back below; current bar bearish
+      const sweepShort = prev1 && prev2 &&
+                         prev1.high > swHighLS + 0.05 * atr &&
+                         prev1.close < swHighLS &&
+                         last.close < prev1.close &&
+                         isBearishCandle(last, 0.20) && htfBias <= 0;
+
+      for (const dir of (sweepLong ? ['LONG'] : []).concat(sweepShort ? ['SHORT'] : [])) {
+        const isBull = dir === 'LONG';
+        const entry  = last.close;
+
+        let sl, rawRisk;
+        if (isBull) {
+          sl      = prev1.low - 0.4 * atr;
+          rawRisk = entry - sl;
+        } else {
+          sl      = prev1.high + 0.4 * atr;
+          rawRisk = sl - entry;
+        }
+        if (rawRisk < 2 || rawRisk > TARGET_PTS * 1.2) continue;
+        const rrLS = TARGET_PTS / rawRisk;
+
+        const tp0ls = isBull ? entry + PARTIAL_PTS : entry - PARTIAL_PTS;
+        const tp1ls = isBull ? entry + TARGET_PTS  : entry - TARGET_PTS;
+        const tp3ls = isBull ? entry + TARGET_PTS * 1.4 : entry - TARGET_PTS * 1.4;
+
+        const srDistLS = srDistanceAtr(tp1ls, bars, atr, 50);
+        if (srDistLS < 0.8) continue;
+
+        const rsiLS = calcRsi(closes, 14)[n];
+        if (rsiLS != null) {
+          if (isBull  && rsiLS >= 75) continue;
+          if (!isBull && rsiLS <= 25) continue;
+        }
+
+        const confidence = scoreSignal({
+          direction: dir, bars, htfBias, htf2Bias: 0, hasHtf2: false,
+          vwapVal: vwap, emaStackVal: (isBull && last.close > vwap) || (!isBull && last.close < vwap) ? 1 : 0,
+          atr, atrMin: ATR_MIN_PTS, rr: rrLS, srDistanceAtr: srDistLS,
+          timestamp: last.timestamp,
+        });
+        if (confidence < THRESHOLDS.MNQ_50PT) continue;
+
+        lastSignalBar = curIdx;
+        const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+        return {
+          instrument: 'MNQ', strategy_name: 'MNQ_50PT', trade_style: 'intraday', timeframe: '5m',
+          direction: dir, entry: +entry.toFixed(2), sl: +sl.toFixed(2),
+          tp1: +tp0ls.toFixed(2), tp2: +tp1ls.toFixed(2), tp3: +tp3ls.toFixed(2),
+          rr: +rrLS.toFixed(2), confidence, grade, win_prob_tp1, win_prob_tp2, win_prob_tp3,
+          score: Math.round(confidence / 4),
+          setup: 'Post-Liquidity Sweep Momentum', strategy_version: STRATEGY_VERSION,
+          htf_bias: htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
+          session: sess.name,
+          trigger_reason: `Liquidity sweep ${isBull ? 'below' : 'above'} 5m swing ${isBull ? 'low' : 'high'} — stop hunt complete, momentum ${isBull ? 'long' : 'short'} targeting 50 pts`,
+          indicators: {
+            atr: +atr.toFixed(2), vwap: +vwap.toFixed(2),
+            sweepBar: { low: +prev1.low.toFixed(2), high: +prev1.high.toFixed(2), close: +prev1.close.toFixed(2) },
+            rsi: rsiLS != null ? +rsiLS.toFixed(1) : null, htfBias,
+          },
+          timestamp: last.timestamp, trade_status: 'PENDING',
+        };
       }
     }
   }

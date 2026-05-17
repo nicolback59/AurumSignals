@@ -145,6 +145,149 @@ function analyzeDivergence(db) {
   };
 }
 
+// ── Backtest Section Builder ──────────────────────────────────────────────────
+// Builds a backtest performance summary for inclusion in weekly and mid-week reports.
+// Queries backtest_runs and backtest_trades for the given date range.
+
+function _getBacktestSection(db, weekStart, weekEnd) {
+  const runs = _q(db, `
+    SELECT id, instrument, run_at, trades_found, win_rate, profit_factor, sharpe, max_drawdown
+    FROM   backtest_runs
+    WHERE  run_at >= ? AND run_at < ?
+    ORDER  BY run_at DESC
+  `, [weekStart, weekEnd]);
+
+  const tradesByStrategy = _q(db, `
+    SELECT t.strategy_name,
+           COUNT(*)                                             AS total,
+           SUM(CASE WHEN t.outcome = 'WIN'  THEN 1 ELSE 0 END) AS wins,
+           SUM(CASE WHEN t.outcome = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+           AVG(t.pnl_pts)                                       AS avg_pnl,
+           MIN(t.pnl_pts)                                       AS min_pnl,
+           MAX(t.pnl_pts)                                       AS max_pnl
+    FROM   backtest_trades t
+    WHERE  t.run_id IN (
+             SELECT id FROM backtest_runs WHERE run_at >= ? AND run_at < ?
+           )
+    GROUP  BY t.strategy_name
+    ORDER  BY total DESC
+  `, [weekStart, weekEnd]);
+
+  const noSignalRuns = runs.filter(r => (r.trades_found ?? 0) === 0).length;
+  const validRuns    = runs.filter(r => (r.trades_found ?? 0) > 0);
+
+  const stratMap = {};
+  for (const t of tradesByStrategy) {
+    if (!t.strategy_name) continue;
+    const total = t.wins + t.losses;
+    stratMap[t.strategy_name] = {
+      strategy_name:  t.strategy_name,
+      total_trades:   total,
+      wins:           t.wins,
+      losses:         t.losses,
+      win_rate_pct:   total > 0 ? +(t.wins / total * 100).toFixed(1) : null,
+      avg_pnl:        t.avg_pnl  != null ? +t.avg_pnl.toFixed(2)  : null,
+      min_pnl:        t.min_pnl  != null ? +t.min_pnl.toFixed(2)  : null,
+      max_pnl:        t.max_pnl  != null ? +t.max_pnl.toFixed(2)  : null,
+    };
+  }
+
+  // Per-strategy profit factor
+  for (const [key, s] of Object.entries(stratMap)) {
+    const rawTrades = _q(db, `
+      SELECT t.pnl_pts, t.outcome
+      FROM   backtest_trades t
+      WHERE  t.run_id IN (SELECT id FROM backtest_runs WHERE run_at >= ? AND run_at < ?)
+        AND  t.strategy_name = ?
+    `, [weekStart, weekEnd, key]);
+    const gw = rawTrades.filter(t => t.outcome === 'WIN').reduce((s, t) => s + Math.max(0, t.pnl_pts ?? 0), 0);
+    const gl = rawTrades.filter(t => t.outcome === 'LOSS').reduce((s, t) => s + Math.abs(Math.min(0, t.pnl_pts ?? 0)), 0);
+    stratMap[key].profit_factor = gl > 0 ? +(gw / gl).toFixed(2) : (gw > 0 ? 9.99 : 0);
+  }
+
+  // Prior week comparison for trend
+  const priorEnd   = weekStart;
+  const priorStart = new Date(weekStart + 'T00:00:00Z');
+  priorStart.setUTCDate(priorStart.getUTCDate() - 7);
+  const priorStartStr = priorStart.toISOString().slice(0, 10);
+
+  const priorByStrategy = _q(db, `
+    SELECT t.strategy_name,
+           COUNT(*) AS total,
+           SUM(CASE WHEN t.outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
+    FROM   backtest_trades t
+    WHERE  t.run_id IN (SELECT id FROM backtest_runs WHERE run_at >= ? AND run_at < ?)
+    GROUP  BY t.strategy_name
+  `, [priorStartStr, priorEnd]);
+
+  const priorMap = {};
+  for (const t of priorByStrategy) {
+    if (!t.strategy_name) continue;
+    priorMap[t.strategy_name] = t.wins / Math.max(1, t.total);
+  }
+
+  for (const [key, s] of Object.entries(stratMap)) {
+    const priorWR = priorMap[key];
+    if (priorWR != null && s.win_rate_pct != null) {
+      const delta = s.win_rate_pct - priorWR * 100;
+      s.wr_delta_vs_prior = +delta.toFixed(1);
+      s.wr_trend = delta > 3 ? 'improving' : delta < -3 ? 'declining' : 'stable';
+    }
+  }
+
+  // Version changes this period
+  const versionChanges = _q(db, `
+    SELECT instrument, revised_at, reason, win_rate_before, win_rate_after, status
+    FROM   strategy_revisions
+    WHERE  revised_at >= ? AND revised_at < ?
+    ORDER  BY revised_at DESC
+  `, [weekStart, weekEnd]);
+
+  return {
+    total_runs:        runs.length,
+    valid_runs:        validRuns.length,
+    no_signal_runs:    noSignalRuns,
+    strategies:        Object.values(stratMap),
+    version_changes:   versionChanges,
+    by_instrument: {
+      MNQ: validRuns.filter(r => r.instrument === 'MNQ').length,
+      MGC: validRuns.filter(r => r.instrument === 'MGC').length,
+    },
+  };
+}
+
+function _buildBacktestNarrative(bt, label = '') {
+  if (!bt) return '';
+  const lines = [];
+  lines.push(`${label}BACKTEST PERFORMANCE:`);
+  lines.push(`  Runs this period: ${bt.total_runs} total (${bt.valid_runs} with signals, ${bt.no_signal_runs} empty)`);
+
+  if (bt.strategies.length === 0) {
+    lines.push('  No backtest trades recorded this period.');
+    return lines.join('\n');
+  }
+
+  lines.push('  Per-Strategy Backtest Results:');
+  for (const s of bt.strategies) {
+    const wrStr  = s.win_rate_pct != null ? `WR=${s.win_rate_pct}%` : 'WR=N/A';
+    const pfStr  = s.profit_factor != null ? ` PF=${s.profit_factor}` : '';
+    const trendS = s.wr_trend ? ` [${s.wr_trend.toUpperCase()}${s.wr_delta_vs_prior != null ? ' Δ' + (s.wr_delta_vs_prior >= 0 ? '+' : '') + s.wr_delta_vs_prior + '%' : ''}]` : '';
+    lines.push(`    ${s.strategy_name}: ${s.wins}W/${s.losses}L = ${wrStr}${pfStr}${trendS} (${s.total_trades} trades)`);
+  }
+
+  if (bt.version_changes.length > 0) {
+    lines.push('  Strategy Version Changes:');
+    for (const v of bt.version_changes.slice(0, 5)) {
+      const wrDelta = (v.win_rate_before != null && v.win_rate_after != null)
+        ? ` WR: ${(v.win_rate_before*100).toFixed(1)}% → ${(v.win_rate_after*100).toFixed(1)}%`
+        : '';
+      lines.push(`    ${v.instrument} @ ${v.revised_at?.slice(0,10)}: ${v.status} — ${v.reason ?? 'param update'}${wrDelta}`);
+    }
+  }
+
+  return lines.join('\n');
+}
+
 // ── Mid-Week Intelligence Report ──────────────────────────────────────────────
 
 function generateMidWeekReport(db) {
@@ -253,15 +396,20 @@ function generateMidWeekReport(db) {
   const expectancy = total > 0 ? +((grossWin - grossLoss) / total).toFixed(2) : 0;
 
   const divergence = analyzeDivergence(db);
+  const weekEnd    = _addDays(weekStart, 7);
+  const backtestSection = _getBacktestSection(db, weekStart, weekEnd);
   const narrative  = _buildMidWeekNarrative({
     wr, total, byStrategy, bySession, byInstrument, byDay,
     byConfBand, htfMismatches, maxLoss, maxWin, divergence, pf, expectancy,
+    backtestSection,
   });
 
   const report = {
     generated_at: new Date().toISOString(),
     week_start:   weekStart,
     report_type:  'MID_WEEK',
+    scope:        'COMBINED',
+    backtest:     backtestSection,
     metrics: {
       total_trades:    total,
       win_rate_pct:    wr != null ? +(wr * 100).toFixed(1) : null,
@@ -400,6 +548,36 @@ function _buildMidWeekNarrative(d) {
   }
   if (recs.length === 0) recs.push('Maintain current approach — no adjustments needed at mid-week');
   for (let i = 0; i < recs.length; i++) lines.push(`  ${i+1}. ${recs[i]}`);
+
+  // ── Backtest section ──────────────────────────────────────────────────────
+  if (d.backtestSection) {
+    lines.push('');
+    lines.push(_buildBacktestNarrative(d.backtestSection, 'MID-WEEK '));
+
+    // Signal frequency trend
+    const declining = (d.backtestSection.strategies ?? []).filter(s => s.wr_trend === 'declining');
+    if (declining.length > 0) {
+      lines.push('');
+      lines.push('BACKTEST WARNING — DECLINING STRATEGIES:');
+      for (const s of declining) {
+        lines.push(`  ⚠ ${s.strategy_name}: WR declining by ${Math.abs(s.wr_delta_vs_prior ?? 0).toFixed(1)}% vs prior week`);
+        lines.push(`    → Investigate parameter drift or market regime change before week end`);
+      }
+    }
+  }
+
+  // ── System health summary ─────────────────────────────────────────────────
+  lines.push('');
+  lines.push('SYSTEM HEALTH:');
+  const liveStatus = wr !== null
+    ? (wr >= 0.65 ? 'IMPROVING' : wr >= 0.52 ? 'STABLE' : 'DECLINING')
+    : 'NO_DATA';
+  const btStrategies = d.backtestSection?.strategies ?? [];
+  const btDeclining = btStrategies.filter(s => s.wr_trend === 'declining').length;
+  const btTotal = btStrategies.length;
+  lines.push(`  Live signals:    ${liveStatus} (WR=${wr != null ? _pct(wr) : 'N/A'})`);
+  lines.push(`  Backtest health: ${btDeclining === 0 ? 'STABLE' : `${btDeclining}/${btTotal} strategies declining`}`);
+  lines.push(`  Overall verdict: ${liveStatus === 'IMPROVING' && btDeclining === 0 ? 'SYSTEM PERFORMING WELL' : liveStatus === 'DECLINING' || btDeclining > 0 ? 'ACTION REQUIRED' : 'MONITORING'}`);
 
   return lines.join('\n');
 }
@@ -542,11 +720,12 @@ function generateWeeklyDeepReport(db, weekStart = null) {
 
   const divergence = analyzeDivergence(db);
   const edgeStrengths = _analyzeEdgeStrengths(bySession, bySetup, byDay);
+  const backtestSection = _getBacktestSection(db, ws, we);
   const narrative  = _buildWeeklyNarrative({
     ws, we, wr, prevWR, total, prevTotal, pf, avgWin, avgLoss,
     expectancy, maxDD, recoveryFactor, maxLoss, maxWin,
     byStrategy, bySession, bySetup, byDay, byDirection, byGrade,
-    falseRatio, signalEff, divergence, edgeStrengths,
+    falseRatio, signalEff, divergence, edgeStrengths, backtestSection,
   });
 
   const report = {
@@ -554,6 +733,8 @@ function generateWeeklyDeepReport(db, weekStart = null) {
     week_start:   ws,
     week_end:     we,
     report_type:  'WEEKLY_DEEP',
+    scope:        'COMBINED',
+    backtest:     backtestSection,
     metrics: {
       total_signals:    core?.total_signals ?? 0,
       total_trades:     total,
@@ -730,6 +911,48 @@ function _buildWeeklyNarrative(d) {
     lines.push('  H2: Raising minimum confidence to 70 will reduce signal count but increase win rate above 60%');
   }
   lines.push('  H3: Confirm that confirmed-bar-only evaluation (forming bar fix) reduces signal count — expected ~1 fewer signal/instrument/day');
+
+  // ── Backtest performance section ──────────────────────────────────────────
+  if (d.backtestSection) {
+    lines.push('');
+    lines.push(_buildBacktestNarrative(d.backtestSection, 'WEEKLY '));
+
+    // Regression analysis
+    const regressions = (d.backtestSection.strategies ?? []).filter(s => s.wr_trend === 'declining' && Math.abs(s.wr_delta_vs_prior ?? 0) > 5);
+    if (regressions.length > 0) {
+      lines.push('');
+      lines.push('BACKTEST REGRESSION ANALYSIS:');
+      for (const s of regressions) {
+        lines.push(`  ⚠ ${s.strategy_name}: WR dropped ${Math.abs(s.wr_delta_vs_prior).toFixed(1)}% vs prior week`);
+        lines.push(`    Possible causes: parameter change, market regime shift, data quality issue`);
+        lines.push(`    Action: inspect strategy_revisions table for changes during this week`);
+      }
+    }
+
+    // What improved
+    const improvements = (d.backtestSection.strategies ?? []).filter(s => s.wr_trend === 'improving' && (s.wr_delta_vs_prior ?? 0) > 3);
+    if (improvements.length > 0) {
+      lines.push('');
+      lines.push('WHAT IMPROVED (BACKTEST):');
+      for (const s of improvements) {
+        lines.push(`  ✓ ${s.strategy_name}: WR improved +${s.wr_delta_vs_prior.toFixed(1)}% vs prior week (${s.win_rate_pct}% on ${s.total_trades} trades)`);
+      }
+    }
+  }
+
+  // ── Summary verdict ───────────────────────────────────────────────────────
+  lines.push('');
+  lines.push('WEEK SUMMARY:');
+  const btDecl = (d.backtestSection?.strategies ?? []).filter(s => s.wr_trend === 'declining').length;
+  const btImpr = (d.backtestSection?.strategies ?? []).filter(s => s.wr_trend === 'improving').length;
+  const liveVerdict = wr !== null
+    ? (wr >= 0.65 ? 'STRONG' : wr >= 0.52 ? 'ACCEPTABLE' : 'BELOW TARGET')
+    : 'NO LIVE DATA';
+  lines.push(`  Live performance: ${liveVerdict}`);
+  lines.push(`  Backtest health: ${btDecl === 0 ? 'STABLE/IMPROVING' : `${btDecl} strategy/ies declining`} | ${btImpr} improving`);
+  if (d.backtestSection?.version_changes?.length > 0) {
+    lines.push(`  Version changes this week: ${d.backtestSection.version_changes.length} revisions logged`);
+  }
 
   return lines.join('\n');
 }
@@ -934,6 +1157,62 @@ function _persistReport(db, type, weekStart, report) {
         version     = version + 1
     `).run(`REPORT_${type}_${weekStart}`, JSON.stringify(report));
   } catch { /* never crash */ }
+
+  // Also persist to reports table for scheduler history tracking
+  _persistReportToTable(db, type, weekStart, report);
+}
+
+function _persistReportToTable(db, type, weekStart, report) {
+  try {
+    const reportId  = `${type}_${weekStart}`;
+    const typeLabel = type === 'WEEKLY' ? 'WEEKLY_DEEP_DIVE' : 'MID_WEEK';
+    const endDate   = report.week_end ?? _addDays(weekStart, 7);
+    db.prepare(`
+      INSERT INTO reports
+        (report_id, report_type, scope, status, generated_at, start_date, end_date,
+         summary, metrics_json, strategy_json, backtest_json,
+         recommendations_json, version_changes, failure_analysis, narrative)
+      VALUES (?, ?, ?, 'completed', datetime('now'), ?, ?,
+              ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(report_id) DO UPDATE SET
+        status       = 'completed',
+        generated_at = datetime('now'),
+        metrics_json = excluded.metrics_json,
+        strategy_json = excluded.strategy_json,
+        backtest_json = excluded.backtest_json,
+        recommendations_json = excluded.recommendations_json,
+        narrative    = excluded.narrative
+    `).run(
+      reportId,
+      typeLabel,
+      report.scope ?? 'COMBINED',
+      weekStart,
+      endDate,
+      // summary: first 3 lines of narrative
+      (report.narrative ?? '').split('\n').slice(0, 3).join(' | '),
+      JSON.stringify(report.metrics ?? {}),
+      JSON.stringify(report.breakdowns?.byStrategy ?? []),
+      JSON.stringify(report.backtest ?? {}),
+      JSON.stringify(report.recommendations ?? []),
+      JSON.stringify(report.backtest?.version_changes ?? []),
+      JSON.stringify(report.divergence ?? {}),
+      report.narrative ?? '',
+    );
+
+    // Update report_schedule state
+    const schedKey = typeLabel;
+    const nextRunDays = typeLabel === 'WEEKLY_DEEP_DIVE' ? 7 : 7;
+    const nextRun = new Date(weekStart + 'T00:00:00Z');
+    nextRun.setUTCDate(nextRun.getUTCDate() + nextRunDays);
+    db.prepare(`
+      INSERT INTO report_schedule (schedule_key, last_run_at, last_report_id, next_run_at, enabled, tz)
+      VALUES (?, datetime('now'), ?, ?, 1, 'America/Los_Angeles')
+      ON CONFLICT(schedule_key) DO UPDATE SET
+        last_run_at    = datetime('now'),
+        last_report_id = excluded.last_report_id,
+        next_run_at    = excluded.next_run_at
+    `).run(schedKey, reportId, nextRun.toISOString().slice(0, 10) + 'T21:00:00Z');
+  } catch (e) { /* never crash — reports table may not exist yet on older DBs */ }
 }
 
 function loadReport(db, type, weekStart) {
@@ -946,6 +1225,24 @@ function loadReport(db, type, weekStart) {
   } catch { return null; }
 }
 
+function listReports(db, limit = 20) {
+  try {
+    return db.prepare(`
+      SELECT id, report_id, report_type, scope, status, generated_at, start_date, end_date, summary
+      FROM   reports
+      ORDER  BY generated_at DESC
+      LIMIT  ?
+    `).all(limit);
+  } catch { return []; }
+}
+
+function getReportScheduleStatus(db) {
+  try {
+    const schedules = db.prepare(`SELECT * FROM report_schedule ORDER BY schedule_key`).all();
+    return schedules;
+  } catch { return []; }
+}
+
 module.exports = {
   analyzeDivergence,
   generateMidWeekReport,
@@ -955,4 +1252,7 @@ module.exports = {
   explainThresholdChange,
   explainRegimeClassification,
   loadReport,
+  listReports,
+  getReportScheduleStatus,
+  _getBacktestSection,
 };
