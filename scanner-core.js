@@ -1060,11 +1060,18 @@ class Scanner extends EventEmitter {
       const isWeekend       = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
       const isWeekendClose  = isFridayClose || isWeekend;
 
+      // Pre-compiled statements for use inside the per-signal loop (avoids re-preparing each iteration)
+      const stmtSigReason = this.db.prepare('UPDATE signals  SET expiration_reason = ? WHERE id = ?');
+      const stmtOutReason = this.db.prepare('UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?');
+
       // Local helper to expire a signal with a specific reason
       const expireSignal = (sig, reason) => {
         this._stmts.insertOutcome.run(sig.id, 'EXPIRED', sig.entry, now.toISOString(), 0);
         this._stmts.updateTradeStatus.run(STATES.EXPIRED, sig.id);
-        try { this.db.prepare('UPDATE signals SET expiration_reason = ? WHERE id = ?').run(reason, sig.id); } catch { /* ignore */ }
+        try {
+          stmtSigReason.run(reason, sig.id);
+          stmtOutReason.run(reason, sig.id);
+        } catch { /* ignore */ }
         this._log(
           `SWEEP-EXPIRE #${sig.id} ${sig.instrument}: ${sig.direction} reason=${reason}`,
           'signal'
@@ -1136,7 +1143,8 @@ class Scanner extends EventEmitter {
       const isWeekdayClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60 && ptHm < 14 * 60;
 
       let fixed = 0;
-      const setReason = this.db.prepare('UPDATE signals SET expiration_reason = ? WHERE id = ?');
+      const setSigReason = this.db.prepare('UPDATE signals  SET expiration_reason = ? WHERE id = ?');
+      const setOutReason = this.db.prepare('UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?');
 
       for (const sig of stuckSignals) {
         try {
@@ -1158,7 +1166,10 @@ class Scanner extends EventEmitter {
 
           this._stmts.insertOutcome.run(sig.id, 'EXPIRED', sig.entry, now.toISOString(), 0);
           this._stmts.updateTradeStatus.run(STATES.EXPIRED, sig.id);
-          try { setReason.run(reason, sig.id); } catch { /* ignore */ }
+          try {
+            setSigReason.run(reason, sig.id);
+            setOutReason.run(reason, sig.id);
+          } catch { /* ignore */ }
           this._log(`FIX-STUCK #${sig.id} ${sig.instrument}: ${sig.direction} reason=${reason} age=${Math.round(ageMs/3600000)}h`, 'signal');
           fixed++;
         } catch { /* never crash per-signal */ }

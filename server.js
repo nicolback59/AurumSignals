@@ -223,9 +223,10 @@ applyMigrations();
 
     if (!stale.length) return;
 
-    const setStatus  = db.prepare("UPDATE signals SET trade_status = 'EXPIRED' WHERE id = ?");
-    const insOutcome = db.prepare("INSERT OR IGNORE INTO outcomes (signal_id, result, exit_price, exit_at, pnl_pts) VALUES (?,?,?,?,?)");
-    const setReason  = db.prepare("UPDATE signals SET expiration_reason = ? WHERE id = ?");
+    const setStatus      = db.prepare("UPDATE signals  SET trade_status = 'EXPIRED' WHERE id = ?");
+    const insOutcome     = db.prepare("INSERT OR IGNORE INTO outcomes (signal_id, result, exit_price, exit_at, pnl_pts) VALUES (?,?,?,?,?)");
+    const setSigReason   = db.prepare("UPDATE signals  SET expiration_reason = ? WHERE id = ?");
+    const setOutReason   = db.prepare("UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?");
 
     let fixed = 0;
     const nowIso = now.toISOString();
@@ -247,7 +248,8 @@ applyMigrations();
 
         insOutcome.run(sig.id, 'EXPIRED', sig.entry, nowIso, 0);
         setStatus.run(sig.id);
-        setReason.run(reason, sig.id);
+        setSigReason.run(reason, sig.id);
+        setOutReason.run(reason, sig.id);
         fixed++;
       } catch { /* never crash per-row */ }
     }

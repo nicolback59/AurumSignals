@@ -611,7 +611,6 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
     if (atr >= ATR_MIN_PTS && sess.quality >= 0.30 && htfBars.length >= 12) {
       const h15n    = htfBars.length - 1;
       const h15Last = htfBars[h15n];
-      const h15Closes = htfBars.map(b => b.close);
       const h15Atr  = calcAtr(htfBars, 14)[h15n];
 
       if (h15Atr && h15Last) {
@@ -699,7 +698,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
   // Archetype 1 with explicit 15m HTF bias confirmation for higher RR setups.
   // ══════════════════════════════════════════════════════════════════════════
   {
-    if (atr >= ATR_MIN_PTS && sess.quality >= 0.35 && htfBars.length >= 8) {
+    if (atr >= ATR_MIN_PTS && sess.quality >= 0.35 && htfBars.length >= 22) { // need 22 bars for EMA21
       // Require tight consolidation: atrRatio below 1.8 (tighter than Archetype 1's 2.5)
       const consol8 = detectConsolidation(bars.slice(0, -1), 10, 14);
       if (consol8.atrRatio < 1.8 && consol8.atrRatio >= 0.3) {
@@ -748,7 +747,7 @@ function evaluate(bars, htfBars, cfg = {}, barIdx = null) {
           if (srDist8 < 1.0) continue;
 
           const confidence = scoreSignal({
-            direction: dir, bars, htfBias, htf2Bias: h15Bull === isBull ? 1 : (h15Bear === !isBull ? -1 : 0), hasHtf2: true,
+            direction: dir, bars, htfBias, htf2Bias: (isBull && h15Bull) ? 1 : (!isBull && h15Bear) ? -1 : 0, hasHtf2: true,
             vwapVal: vwap, emaStackVal: (isBull && last.close > vwap) || (!isBull && last.close < vwap) ? 1 : 0,
             atr, atrMin: ATR_MIN_PTS, rr: rr8, srDistanceAtr: srDist8,
             timestamp: last.timestamp,
