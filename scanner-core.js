@@ -898,7 +898,13 @@ class Scanner extends EventEmitter {
     // Rebuild with id for emit + ntfy
     const payload = buildAlertPayload(signal, { id, received_at, rank });
     this.emit('signal', { ...flattenPayload(payload), raw_payload: JSON.stringify(payload) });
-    this._sendNtfyPayload(payload);
+    // Live-gated signals are stored for backtest/research but do not fire a
+    // live notification (confidence below strategy's LIVE_THRESHOLDS).
+    if (rank?.liveGated) {
+      this._log(`SIGNAL_RESEARCH_ONLY #${id} strat=${signal.strategy_name} conf=${signal.confidence} (below live min — no ntfy)`, 'signal');
+    } else {
+      this._sendNtfyPayload(payload);
+    }
     return id;
   }
 
@@ -1563,7 +1569,8 @@ class Scanner extends EventEmitter {
       }
       sig.tier              = rank.tier;
       sig.adjusted_confidence = rank.adjustedConfidence;
-      this._log(`SIGNAL_APPROVED strat=${sig.strategy_name} ${instrument} ${sig.direction} conf=${sig.confidence} tier=${rank.tier} adjConf=${rank.adjustedConfidence}`, 'signal');
+      const approvalTag = rank.liveGated ? 'SIGNAL_RESEARCH_ONLY' : 'SIGNAL_APPROVED';
+      this._log(`${approvalTag} strat=${sig.strategy_name} ${instrument} ${sig.direction} conf=${sig.confidence} tier=${rank.tier} adjConf=${rank.adjustedConfidence}${rank.liveGated ? ' (live-gated)' : ''}`, 'signal');
 
       this._lastSignalTimes[stratKey] = Date.now();
       this._storeSignal({ ...sig, ticker: `${instrument}1!`, _rank: rank });
