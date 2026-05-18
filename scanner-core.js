@@ -154,6 +154,10 @@ class Scanner extends EventEmitter {
     this._startupNtfySent   = false; // in-memory flag: reset on every new process, never persisted
     this._lastFetchAt       = 0;   // epoch ms of last successful bar fetch
     this._lastDataStatus    = 'INIT'; // DATA_OK | DATA_STALE | DATA_MISSING | DATA_BACKOFF
+    this._lastNtfyAttemptAt = 0;   // epoch ms of last ntfy send attempt
+    this._lastNtfySuccessAt = 0;   // epoch ms of last ntfy HTTP 2xx response
+    this._lastNtfyStatus    = null; // last HTTP status code from ntfy
+    this._lastNtfyError     = null; // last ntfy error message
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -643,11 +647,32 @@ class Scanner extends EventEmitter {
   // ── ntfy push ────────────────────────────────────────────────────────────────
 
   _sendNtfyPayload(payload) {
-    if (!this.cfg.ntfyTopic) return;
+    if (!this.cfg.ntfyTopic) {
+      this._log('NOTIFICATION_SEND_FAILED reason=NTFY_TOPIC_not_set', 'signal');
+      return;
+    }
     const body    = buildNtfyBody(payload);
     const headers = buildNtfyHeaders(payload, { ntfyToken: this.cfg.ntfyToken });
-    fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
-      .catch(err => this._err('[ntfy] send failed', err));
+    const url     = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
+    this._lastNtfyAttemptAt = Date.now();
+    this._log(`NOTIFICATION_SEND_START → ${url}`, 'signal');
+    fetch(url, { method: 'POST', headers, body })
+      .then(r => {
+        this._lastNtfyStatus = r.status;
+        if (r.ok) {
+          this._lastNtfySuccessAt = Date.now();
+          this._lastNtfyError = null;
+          this._log(`NOTIFICATION_SEND_SUCCESS HTTP ${r.status}`, 'signal');
+        } else {
+          this._lastNtfyError = `HTTP ${r.status}`;
+          this._log(`NOTIFICATION_SEND_FAILED HTTP ${r.status} (check NTFY_TOPIC / NTFY_TOKEN)`, 'signal');
+        }
+      })
+      .catch(err => {
+        this._lastNtfyError = err.message;
+        this._log(`NOTIFICATION_SEND_FAILED network error: ${err.message}`, 'signal');
+        this._err('[ntfy] send failed', err);
+      });
   }
 
   // ── Outcome ntfy push ─────────────────────────────────────────────────────────
@@ -1283,12 +1308,12 @@ class Scanner extends EventEmitter {
     const stratsFiredNames = signals.map(s => s.strategy_name);
     let anyFired          = false;
 
-    // Always log candidate signals so we can debug why signals aren't firing
+    // Candidate signals logged at 'signal' level so they're always visible in Render
     if (signals.length > 0) {
       const summary = signals.map(s => `${s.strategy_name}(${s.direction} conf=${s.confidence})`).join(', ');
-      this._log(`🔍 ${instrument} candidate signal(s): ${summary}`);
-    } else if (this._scanCount % 5 === 0) {
-      this._log(`📉 ${instrument} — no strategy candidates (bars=${bars5m.length})`);
+      this._log(`SIGNAL_CANDIDATE_CREATED ${instrument} ${summary}`, 'signal');
+    } else if (this._scanCount % 10 === 0) {
+      this._log(`${instrument} — no strategy candidates this cycle (bars=${bars5m.length})`);
     }
 
     // ── Minimum daily signal guarantee — 3-tier confidence relaxation ────────────
@@ -1332,6 +1357,8 @@ class Scanner extends EventEmitter {
 
       // ── Duplicate guard — spam/same-bar prevention only (SCANNER_DUPLICATE_GUARD_MIN) ──
       if (Date.now() - (this._lastSignalTimes[stratKey] ?? 0) < duplicateGuardMs) {
+        const guarMin = Math.ceil((duplicateGuardMs - (Date.now() - (this._lastSignalTimes[stratKey] ?? 0))) / 60000);
+        this._log(`SIGNAL_FILTERED_OUT reason=duplicate_guard strat=${sig.strategy_name} remainingMin=${guarMin}`, 'signal');
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
           sig.confidence, null, 'duplicate_guard');
         continue;
@@ -1349,14 +1376,14 @@ class Scanner extends EventEmitter {
       });
 
       if (!cooldownResult.allowed) {
-        const reason = `adaptive_cooldown: ${cooldownResult.reason} (${cooldownResult.remainingMin === Infinity ? '∞' : cooldownResult.remainingMin?.toFixed(1)}min remaining)`;
+        const remStr = cooldownResult.remainingMin === Infinity ? '∞' : `${cooldownResult.remainingMin?.toFixed(1)}`;
+        const reason = `adaptive_cooldown: ${cooldownResult.reason} (${remStr}min remaining)`;
+        this._log(`SIGNAL_FILTERED_OUT reason=adaptive_cooldown strat=${sig.strategy_name} remainingMin=${remStr}`, 'signal');
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
           sig.confidence, null, reason);
         if (this.cfg.logLevel === 'full') {
           this._log(formatBlockLog(sig.strategy_name, instrument, sig.session ?? 'unknown',
             sig.confidence, currentRegime, cooldownResult));
-        } else {
-          this._log(formatBlockSummary(sig.strategy_name, instrument, cooldownResult));
         }
         continue;
       }
@@ -1366,30 +1393,27 @@ class Scanner extends EventEmitter {
       if (ov) {
         if (ov.paused) {
           const reason = `strategy paused by adaptive learning (${(ov.reasons ?? []).slice(-1)[0] ?? 'poor WR'})`;
-          this._log(`🔇 ${sig.strategy_name} ${instrument} — ${reason}`);
+          this._log(`SIGNAL_FILTERED_OUT reason=strategy_paused strat=${sig.strategy_name} cause=${(ov.reasons ?? []).slice(-1)[0] ?? 'poor WR'}`, 'signal');
           this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
             sig.confidence, null, reason);
           continue;
         }
         if (sig.direction === 'LONG'  && ov.blockLong) {
-          const reason = `LONG direction blocked by adaptive learning (low LONG WR)`;
-          this._log(`🔇 ${sig.strategy_name} LONG blocked — ${reason}`);
+          this._log(`SIGNAL_FILTERED_OUT reason=long_blocked strat=${sig.strategy_name} cause=low_LONG_WR`, 'signal');
           this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
-            sig.confidence, null, reason);
+            sig.confidence, null, 'LONG direction blocked by adaptive learning (low LONG WR)');
           continue;
         }
         if (sig.direction === 'SHORT' && ov.blockShort) {
-          const reason = `SHORT direction blocked by adaptive learning (low SHORT WR)`;
-          this._log(`🔇 ${sig.strategy_name} SHORT blocked — ${reason}`);
+          this._log(`SIGNAL_FILTERED_OUT reason=short_blocked strat=${sig.strategy_name} cause=low_SHORT_WR`, 'signal');
           this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
-            sig.confidence, null, reason);
+            sig.confidence, null, 'SHORT direction blocked by adaptive learning (low SHORT WR)');
           continue;
         }
         if ((ov.blockedSessions ?? []).includes(sig.session)) {
-          const reason = `session '${sig.session}' blocked by adaptive learning (low session WR)`;
-          this._log(`🔇 ${sig.strategy_name} session blocked — ${reason}`);
+          this._log(`SIGNAL_FILTERED_OUT reason=session_blocked strat=${sig.strategy_name} session=${sig.session}`, 'signal');
           this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
-            sig.confidence, null, reason);
+            sig.confidence, null, `session '${sig.session}' blocked by adaptive learning`);
           continue;
         }
       }
@@ -1459,12 +1483,16 @@ class Scanner extends EventEmitter {
       const learnedMin = getLearnedThreshold(this.db, sig.strategy_name, sig.confidence * 0.9);
       const effectiveMin = Math.round(learnedMin + patternAdj + dnaGateAdj + ocAdj + minConfBonus);
       if (sig.confidence < effectiveMin) {
-        const reason = `confidence ${sig.confidence} < learned threshold ${effectiveMin}` +
-          (patternAdj !== 0 ? ` (pattern adj ${patternAdj > 0 ? '+' : ''}${patternAdj})` : '') +
-          (minConfBonus < 0 ? ' (min-guarantee relaxed)' : '');
-        this._log(`⚠️  ${sig.strategy_name} ${instrument} — ${reason}`);
+        const adjParts = [];
+        if (patternAdj !== 0) adjParts.push(`pattern${patternAdj > 0 ? '+' : ''}${patternAdj}`);
+        if (dnaGateAdj  !== 0) adjParts.push(`dna${dnaGateAdj > 0 ? '+' : ''}${dnaGateAdj}`);
+        if (ocAdj       !== 0) adjParts.push(`oc${ocAdj > 0 ? '+' : ''}${ocAdj}`);
+        if (minConfBonus < 0) adjParts.push(`pace${minConfBonus}`);
+        const adjStr = adjParts.length ? ` [${adjParts.join(' ')}]` : '';
+        this._log(`SIGNAL_FILTERED_OUT reason=confidence_below_threshold strat=${sig.strategy_name} conf=${sig.confidence} threshold=${effectiveMin} base=${learnedMin}${adjStr}`, 'signal');
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
-          sig.confidence, effectiveMin, reason);
+          sig.confidence, effectiveMin,
+          `confidence ${sig.confidence} < learned threshold ${effectiveMin}${adjStr}`);
         continue;
       }
 
@@ -1474,7 +1502,7 @@ class Scanner extends EventEmitter {
       // e.g. MGC_SCALP + MGC_INTRADAY at the same entry = one alert, not two.
       const { isDuplicate, suppressLog } = signalDedup.checkAndRegister(sig);
       if (isDuplicate) {
-        this._log(`🔇 ${suppressLog}`);
+        this._log(`SIGNAL_FILTERED_OUT reason=fuzzy_dedup strat=${sig.strategy_name} ${suppressLog}`, 'signal');
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
           sig.confidence, null, suppressLog);
         continue;
@@ -1483,14 +1511,14 @@ class Scanner extends EventEmitter {
       // ── Institutional tier gate ───────────────────────────────────────────────
       const rank = rankSignal(sig);
       if (!rank.accepted) {
-        this._log(`🏷️  ${sig.strategy_name} ${instrument} rejected by tier gate: ${rank.rejectReason}`);
+        this._log(`SIGNAL_FILTERED_OUT reason=tier_gate strat=${sig.strategy_name} conf=${sig.confidence} cause=${rank.rejectReason}`, 'signal');
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
           sig.confidence, null, rank.rejectReason);
         continue;
       }
       sig.tier              = rank.tier;
       sig.adjusted_confidence = rank.adjustedConfidence;
-      this._log(`🏷️  ${sig.strategy_name} ${instrument} — tier ${rank.tier} (adj conf ${rank.adjustedConfidence}, session ${rank.session}×${rank.sessionModifier})`);
+      this._log(`SIGNAL_APPROVED strat=${sig.strategy_name} ${instrument} ${sig.direction} conf=${sig.confidence} tier=${rank.tier} adjConf=${rank.adjustedConfidence}`, 'signal');
 
       this._lastSignalTimes[stratKey] = Date.now();
       this._storeSignal({ ...sig, ticker: `${instrument}1!`, _rank: rank });
@@ -2984,6 +3012,15 @@ class Scanner extends EventEmitter {
 
     this._log(`SCANNER_BOOT_START platform=${process.env.NODE_ENV ?? 'dev'} feed=${this.feedType} logLevel=${cfg.logLevel} scanInterval=${cfg.scanInterval / 1000}s`, 'signal');
     this._log('REGISTERED_STRATEGIES MNQ: MNQ_INTRADAY(LIVE) MNQ_SWING(LIVE) MNQ_50PT(LIVE) | MGC: MGC_SCALP(LIVE) MGC_INTRADAY(LIVE)', 'signal');
+
+    if (cfg.ntfyTopic) {
+      const masked = cfg.ntfyTopic.length > 4
+        ? cfg.ntfyTopic.slice(0, 3) + '***'
+        : '***';
+      this._log(`NOTIFICATION_CONFIG_VALID provider=ntfy url=${cfg.ntfyUrl}/${masked} token=${cfg.ntfyToken ? 'SET' : 'NOT_SET'}`, 'signal');
+    } else {
+      this._log('NOTIFICATION_CONFIG_INVALID NTFY_TOPIC is not set — no push notifications will fire. Set NTFY_TOPIC in Render dashboard and redeploy.', 'signal');
+    }
 
     // Restore last-known bars from DB so the scanner has data immediately on restart.
     // Prevents Yahoo Finance rate-limiting from blocking signal evaluation after a crash.

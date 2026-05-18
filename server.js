@@ -520,6 +520,20 @@ app.get('/api/status', (req, res) => {
     lastFetchAt:       scanner?._lastFetchAt ? new Date(scanner._lastFetchAt).toISOString() : null,
     scanCount:         scanner?._scanCount ?? 0,
     consecutiveErrors: scanner?._consecutiveErrors ?? 0,
+    notification: {
+      configured:     !!process.env.NTFY_TOPIC,
+      provider:       'ntfy',
+      topicMasked:    process.env.NTFY_TOPIC
+        ? (process.env.NTFY_TOPIC.slice(0, 3) + '***')
+        : null,
+      tokenSet:       !!process.env.NTFY_TOKEN,
+      lastAttemptAt:  scanner?._lastNtfyAttemptAt
+        ? new Date(scanner._lastNtfyAttemptAt).toISOString() : null,
+      lastSuccessAt:  scanner?._lastNtfySuccessAt
+        ? new Date(scanner._lastNtfySuccessAt).toISOString() : null,
+      lastStatus:     scanner?._lastNtfyStatus ?? null,
+      lastError:      scanner?._lastNtfyError  ?? null,
+    },
     tradovateConfigured: !!(
       process.env.TRADOVATE_USERNAME &&
       process.env.TRADOVATE_CID &&
@@ -864,6 +878,48 @@ app.post('/api/ntfy/test', async (req, res) => {
   } catch (err) {
     res.status(502).json({ ok: false, error: err.message, url, topic: NTFY_TOPIC });
   }
+});
+
+// ── FAKE SIGNAL ALERT TEST — same ntfy pipeline as real signals ──────────────────────────
+// Sends a realistic fake signal notification through _sendNtfyPayload (not a raw fetch).
+// Use this to confirm the full pipeline works before waiting for a real market signal.
+app.post('/api/debug/test-signal-alert', async (req, res) => {
+  const scanner = global._scanner;
+  if (!scanner) return res.status(503).json({ ok: false, error: 'Scanner not running' });
+  if (!NTFY_TOPIC) {
+    return res.status(400).json({ ok: false, error: 'NTFY_TOPIC not set — add it in Render dashboard' });
+  }
+
+  const { buildAlertPayload } = require('./signals/alert-payload');
+  const fakeSignal = {
+    instrument: 'MNQ', direction: 'LONG', grade: 'A',
+    setup: 'DEBUG_TEST', strategy_name: 'MNQ_INTRADAY',
+    entry: 21500, sl: 21480, tp1: 21540, tp2: 21580, tp3: 21620,
+    score: 78, confidence: 78, tier: 'A',
+    win_prob_tp1: 65, session: 'NY_OPEN', trade_style: 'intraday',
+    rr: 2.0, htf_bias: 'BULLISH', ticker: 'MNQ1!',
+  };
+  const payload = buildAlertPayload(fakeSignal, { id: 0, received_at: new Date().toISOString(), rank: null });
+
+  // Track before/after so we can confirm the send happened
+  const attemptBefore = scanner._lastNtfyAttemptAt;
+  scanner._sendNtfyPayload(payload);
+
+  // Give the async fetch 3s to resolve
+  await new Promise(r => setTimeout(r, 3000));
+
+  const sent = scanner._lastNtfyAttemptAt > attemptBefore;
+  res.json({
+    ok: sent && scanner._lastNtfyStatus >= 200 && scanner._lastNtfyStatus < 300,
+    sent,
+    httpStatus: scanner._lastNtfyStatus,
+    error:      scanner._lastNtfyError,
+    successAt:  scanner._lastNtfySuccessAt ? new Date(scanner._lastNtfySuccessAt).toISOString() : null,
+    topic: NTFY_TOPIC,
+    message: sent
+      ? `Fake MNQ LONG signal sent — check your phone. HTTP ${scanner._lastNtfyStatus}`
+      : 'Send did not complete within 3s — check NTFY_TOPIC config',
+  });
 });
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────────────────
