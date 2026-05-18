@@ -1553,8 +1553,11 @@ class Scanner extends EventEmitter {
 
   /** Fires an ntfy push when the market transitions from closed → open. */
   _notifyMarketResuming() {
-    const cfg = this._cfg;
-    if (!cfg.ntfyTopic) return;
+    const cfg = this.cfg;
+    if (!cfg.ntfyTopic) {
+      this._log('[ntfy] market-resume skipped — NTFY_TOPIC not set', 'signal');
+      return;
+    }
     try {
       const sess = classifyNow().session || 'LIVE';
       const headers = {
@@ -1566,11 +1569,11 @@ class Scanner extends EventEmitter {
       if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
       const body = `📈 Market reopening — scanner active\nSession: ${sess}\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY`;
       const ntfyUrl = `${cfg.ntfyUrl}/${cfg.ntfyTopic}`;
-      this._log(`📈 Market resuming — sending ntfy notification → ${ntfyUrl} (session=${sess})`);
+      this._log(`📈 Market resuming — sending ntfy → ${ntfyUrl} (session=${sess})`, 'signal');
       fetch(ntfyUrl, { method: 'POST', headers, body })
-        .then(r => this._log(`[ntfy] market-resume notification sent — HTTP ${r.status}`))
-        .catch(err => this._log(`[ntfy] market-resume notification FAILED: ${err.message}`));
-    } catch (e) { this._log(`[ntfy] market-resume notification error: ${e.message}`); }
+        .then(r => this._log(`[ntfy] market-resume sent — HTTP ${r.status}`, 'signal'))
+        .catch(err => this._log(`[ntfy] market-resume FAILED: ${err.message}`, 'signal'));
+    } catch (e) { this._log(`[ntfy] market-resume error: ${e.message}`, 'signal'); }
   }
 
   // ── Main scan cycle ───────────────────────────────────────────────────────────
@@ -3064,7 +3067,7 @@ class Scanner extends EventEmitter {
     if (cfg.ntfyTopic) {
       setTimeout(() => {
         if (this._startupNtfySent) {
-          this._log('[ntfy] startup notification already sent this process — skipping');
+          this._log('[ntfy] startup notification already sent this process — skipping', 'signal');
           return;
         }
         this._startupNtfySent = true;
@@ -3078,14 +3081,14 @@ class Scanner extends EventEmitter {
           if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
           const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nDuplicate guard: ${cfg.duplicateGuardMin}min | Adaptive cooldown: ENABLED`;
           const ntfyUrl = `${cfg.ntfyUrl}/${cfg.ntfyTopic}`;
-          this._log(`[ntfy] sending startup notification → ${ntfyUrl}`);
+          this._log(`[ntfy] sending startup notification → ${ntfyUrl}`, 'signal');
           fetch(ntfyUrl, { method: 'POST', headers, body })
-            .then(r => this._log(`[ntfy] startup notification sent — HTTP ${r.status}`))
-            .catch(err => this._log(`[ntfy] startup notification FAILED: ${err.message}`));
-        } catch (e) { this._log(`[ntfy] startup notification error: ${e.message}`); }
+            .then(r => this._log(`[ntfy] startup notification sent — HTTP ${r.status}`, 'signal'))
+            .catch(err => this._log(`[ntfy] startup notification FAILED: ${err.message}`, 'signal'));
+        } catch (e) { this._log(`[ntfy] startup notification error: ${e.message}`, 'signal'); }
       }, 3_000);
     } else {
-      this._log('[ntfy] NTFY_TOPIC not configured — startup notification skipped');
+      this._log('[ntfy] NTFY_TOPIC not configured — startup notification skipped', 'signal');
     }
 
     return this;
