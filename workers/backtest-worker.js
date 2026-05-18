@@ -1,31 +1,38 @@
 'use strict';
 /**
  * Worker thread for CPU-intensive backtest computation.
- * Runs runBacktest (and optionally runSwingBacktest1h) on a separate OS thread
- * so the main event loop stays free for HTTP health checks and SSE clients.
+ * Handles all three backtest variants so the main event loop stays free.
  *
  * Input (workerData):
- *   bars1m        — array of 1-min bars
+ *   mode          — 'backtest' | 'backtest5m' | 'research'
+ *   bars          — bar array (1m for 'backtest', 5m for 'backtest5m'/'research')
  *   params        — strategy params object
  *   opts          — { instrument, targetTrades, slippage, walkForward }
- *   swing1hBars   — array of 1h bars for MNQ swing supplement (may be empty)
+ *   swing1hBars   — 1h bars for MNQ swing supplement (backtest mode only)
  *   swingSlippage — slippage for swing backtest
  *
- * Output (parentPort message):
- *   { success: true,  result: { metrics, signalLog, trades, walkForward, slippageUsed, cooldownUsed } }
+ * Output:
+ *   { success: true,  result }
  *   { success: false, error: '<message>' }
  */
 
 const { workerData, parentPort } = require('worker_threads');
-const { runBacktest, runSwingBacktest1h, calcEnhancedMetrics } = require('../backtest-engine');
+const { runBacktest, runBacktest5m, runSwingBacktest1h, calcEnhancedMetrics } = require('../backtest-engine');
 
-const { bars1m, params, opts, swing1hBars, swingSlippage } = workerData;
+const { mode, bars, params, opts, swing1hBars, swingSlippage } = workerData;
 
 try {
-  const result = runBacktest(bars1m, params, opts);
+  let result;
 
-  // Supplement with swing 1h backtest if bars provided (MNQ only)
-  if (swing1hBars && swing1hBars.length >= 60) {
+  if (mode === 'backtest5m' || mode === 'research5m') {
+    result = runBacktest5m(bars, params, opts);
+  } else {
+    // default: 'backtest' or 'research'
+    result = runBacktest(bars, params, opts);
+  }
+
+  // Supplement with swing 1h backtest if bars provided (MNQ only, full backtest mode)
+  if (mode === 'backtest' && swing1hBars && swing1hBars.length >= 60) {
     try {
       const swingResult = runSwingBacktest1h(swing1hBars, { slippage: swingSlippage });
       if (swingResult.signalLog.length > 0) {
