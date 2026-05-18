@@ -1043,9 +1043,11 @@ class Scanner extends EventEmitter {
         if (bars.length < 200) continue;
 
         const params = getParams(this.db, instrument);
-        const result = interval === '5m'
-          ? runBacktest5m(bars, params, { instrument, slippage: this.cfg.btSlippage, walkForward: false })
-          : runBacktest(bars, params, { instrument, slippage: this.cfg.btSlippage, walkForward: false });
+        const mode   = interval === '5m' ? 'research5m' : 'research';
+        const result = await this._runBacktestInWorker(
+          bars, params, { instrument, slippage: this.cfg.btSlippage, walkForward: false },
+          [], 0, mode,
+        );
 
         const m = result?.metrics;
         if (!m || (m.tradeCount ?? 0) === 0) continue;
@@ -1815,14 +1817,13 @@ class Scanner extends EventEmitter {
   // ── Backtest cycle ────────────────────────────────────────────────────────────
 
   /**
-   * Runs the CPU-intensive runBacktest (+ optional swing supplement) in a Worker
-   * Thread so the main event loop stays free for HTTP health checks and SSE clients.
-   * Returns the merged result object, same shape as runBacktest().
+   * Runs a backtest variant in a Worker Thread so the main event loop stays free.
+   * mode: 'backtest' (default, 1m bars + swing), 'backtest5m' (5m bars), 'research' (1m), 'research5m' (5m)
    */
-  _runBacktestInWorker(bars1m, params, opts, swing1hBars = [], swingSlippage = 0.5) {
+  _runBacktestInWorker(bars, params, opts, swing1hBars = [], swingSlippage = 0.5, mode = 'backtest') {
     return new Promise((resolve, reject) => {
       const worker = new Worker(path.join(__dirname, 'workers/backtest-worker.js'), {
-        workerData: { bars1m, params, opts, swing1hBars, swingSlippage },
+        workerData: { mode, bars, params, opts, swing1hBars, swingSlippage },
       });
       worker.on('message', msg => {
         if (msg.success) resolve(msg.result);
@@ -1923,6 +1924,7 @@ class Scanner extends EventEmitter {
         { instrument, targetTrades: this.cfg.btTargetTrades, slippage: this.cfg.btSlippage, walkForward: true },
         swing1hBars,
         this.cfg.btSlippage,
+        'backtest',
       );
 
       if (swing1hBars.length >= 60) {
