@@ -113,6 +113,18 @@ CREATE TABLE IF NOT EXISTS style_params (
   version     INTEGER DEFAULT 1
 );
 
+-- Per-strategy live/research mode
+-- Strategies start in RESEARCH_ONLY and are promoted to LIVE_ENABLED once
+-- they meet quality criteria (sample size, win rate, expectancy, drawdown).
+CREATE TABLE IF NOT EXISTS strategy_status (
+  strategy_name  TEXT    PRIMARY KEY,
+  mode           TEXT    NOT NULL DEFAULT 'RESEARCH_ONLY'
+                         CHECK(mode IN ('RESEARCH_ONLY','LIVE_ENABLED')),
+  live_since     TEXT,
+  notes          TEXT,
+  updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
 -- Optimization run history (tracks each 50-candidate search cycle)
 CREATE TABLE IF NOT EXISTS optimization_runs (
   id                  INTEGER PRIMARY KEY AUTOINCREMENT,

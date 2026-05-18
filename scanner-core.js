@@ -882,12 +882,15 @@ class Scanner extends EventEmitter {
 
     const id         = info.lastInsertRowid;
 
-    // Set expires_at on the newly inserted signal
+    // Set expires_at and live_gated on the newly inserted signal
     try {
       const holdMs = MAX_HOLD_MS_BY_STRATEGY[signal.strategy_name]
         ?? (signal.trade_style === 'swing' ? 72*3600000 : signal.trade_style === 'scalp' ? 2*3600000 : 6*3600000);
       const expiresAt = new Date(Date.now() + holdMs).toISOString();
       this.db.prepare('UPDATE signals SET expires_at = ? WHERE id = ?').run(expiresAt, id);
+      if (rank?.liveGated) {
+        this.db.prepare('UPDATE signals SET live_gated = 1 WHERE id = ?').run(id);
+      }
     } catch { /* never crash signal storage */ }
 
     const stratLabel = signal.strategy_name ?? signal.setup ?? 'unknown';
@@ -1566,6 +1569,15 @@ class Scanner extends EventEmitter {
         this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
           sig.confidence, null, rank.rejectReason);
         continue;
+      }
+      // ── Strategy status gate (RESEARCH_ONLY overrides live threshold) ─────────
+      if (sig.strategy_name && !rank.liveGated) {
+        const statusRow = this.db.prepare(
+          'SELECT mode FROM strategy_status WHERE strategy_name = ?'
+        ).get(sig.strategy_name);
+        if (statusRow?.mode === 'RESEARCH_ONLY') {
+          rank.liveGated = true;
+        }
       }
       sig.tier              = rank.tier;
       sig.adjusted_confidence = rank.adjustedConfidence;

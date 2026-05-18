@@ -176,6 +176,11 @@ function tierBadge(tier) {
   return `<span class="badge ${cls}">${tier}</span>`;
 }
 
+function researchBadge(liveGated) {
+  if (!liveGated) return '';
+  return `<span class="badge badge-research" title="Research only — below live confidence threshold">Research</span>`;
+}
+
 function statusBadge(status) {
   if (status === 'active')     return '<span class="badge badge-active">ACTIVE</span>';
   if (status === 'shadow')     return '<span class="badge badge-shadow">SHADOW</span>';
@@ -264,6 +269,7 @@ function buildSignalCard(sig) {
       ${directionBadge(sig.direction)}
       ${tierBadge(sig.tier)}
       ${gradeBadge(sig.grade)}
+      ${researchBadge(sig.live_gated)}
       ${confChip}
       <span class="signal-card-time" title="${fmtDatetime(sig.received_at)}">${timeAgo(sig.received_at)}</span>
     </div>

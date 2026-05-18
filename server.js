@@ -80,6 +80,30 @@ function applyMigrations() {
       db.exec("ALTER TABLE signals ADD COLUMN expiration_reason TEXT");
       console.log('[migration] Added expiration_reason to signals');
     }
+    if (!cols.includes('live_gated')) {
+      db.exec("ALTER TABLE signals ADD COLUMN live_gated INTEGER DEFAULT 0");
+      console.log('[migration] Added live_gated to signals');
+    }
+  }
+  // ── strategy_status table (create + seed defaults) ──────────────────────
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS strategy_status (
+      strategy_name  TEXT    PRIMARY KEY,
+      mode           TEXT    NOT NULL DEFAULT 'RESEARCH_ONLY'
+                             CHECK(mode IN ('RESEARCH_ONLY','LIVE_ENABLED')),
+      live_since     TEXT,
+      notes          TEXT,
+      updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  for (const [name, mode] of Object.entries({
+    MNQ_INTRADAY: 'LIVE_ENABLED',
+    MNQ_SWING:    'RESEARCH_ONLY',
+    MNQ_50PT:     'RESEARCH_ONLY',
+    MGC_SCALP:    'LIVE_ENABLED',
+    MGC_INTRADAY: 'LIVE_ENABLED',
+  })) {
+    db.prepare('INSERT OR IGNORE INTO strategy_status (strategy_name, mode) VALUES (?, ?)').run(name, mode);
   }
   const hasOutcomes = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='outcomes'").get();
   if (hasOutcomes) {
@@ -553,7 +577,42 @@ app.get('/api/stats', (req, res) => {
   const byStrategy = db.prepare('SELECT strategy_name, COUNT(*) n FROM signals WHERE strategy_name IS NOT NULL GROUP BY strategy_name ORDER BY n DESC').all();
   const byDir      = db.prepare('SELECT direction, COUNT(*) n FROM signals GROUP BY direction').all();
   const outcomes   = db.prepare('SELECT result, COUNT(*) n FROM outcomes GROUP BY result').all();
-  res.json({ total, last24h, byGrade, bySetup, byStrategy, byDir, outcomes });
+  const expiredByReason = db.prepare(
+    `SELECT COALESCE(expiration_reason,'EXPIRED_UNKNOWN') AS reason, COUNT(*) n
+     FROM   outcomes WHERE result = 'EXPIRED'
+     GROUP  BY expiration_reason`
+  ).all();
+  res.json({ total, last24h, byGrade, bySetup, byStrategy, byDir, outcomes, expiredByReason });
+});
+
+// ── Strategy status ───────────────────────────────────────────────────────────
+app.get('/api/strategy-status', (req, res) => {
+  try {
+    const rows = db.prepare('SELECT * FROM strategy_status ORDER BY strategy_name').all();
+    res.json(rows);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/strategy-status/:name', (req, res) => {
+  const { name } = req.params;
+  const { mode, notes } = req.body || {};
+  if (!['RESEARCH_ONLY', 'LIVE_ENABLED'].includes(mode)) {
+    return res.status(400).json({ error: 'mode must be RESEARCH_ONLY or LIVE_ENABLED' });
+  }
+  try {
+    const existing = db.prepare('SELECT mode FROM strategy_status WHERE strategy_name = ?').get(name);
+    if (!existing) return res.status(404).json({ error: `Unknown strategy: ${name}` });
+    const liveSince = mode === 'LIVE_ENABLED' && existing.mode !== 'LIVE_ENABLED'
+      ? new Date().toISOString() : undefined;
+    db.prepare(`
+      UPDATE strategy_status
+      SET mode = ?, notes = ?,
+          live_since = COALESCE(?, live_since),
+          updated_at = datetime('now')
+      WHERE strategy_name = ?
+    `).run(mode, notes ?? null, liveSince ?? null, name);
+    res.json({ ok: true, strategy_name: name, mode });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 app.post('/api/outcome', (req, res) => {

@@ -424,10 +424,11 @@ body {
 .badge-win     { background: var(--green-glow);        color: var(--green);  border-color: var(--green-border); }
 .badge-loss    { background: var(--red-glow);          color: var(--red);    border-color: var(--red-border); }
 .badge-be      { background: var(--orange-glow);       color: var(--orange); border-color: var(--orange-border); }
-.badge-expired { background: rgba(255,255,255,.04);    color: var(--text-muted); border-color: var(--border-default); font-style: italic; }
-.badge-active { background: var(--green-glow);        color: var(--green);  border-color: var(--green-border); }
-.badge-shadow { background: var(--orange-glow);       color: var(--orange); border-color: var(--orange-border); }
-.badge-muted  { background: rgba(255,255,255,.04);    color: var(--text-muted); border-color: var(--border-default); }
+.badge-expired   { background: rgba(255,255,255,.04);    color: var(--text-muted); border-color: var(--border-default); font-style: italic; }
+.badge-active    { background: var(--green-glow);        color: var(--green);  border-color: var(--green-border); }
+.badge-shadow    { background: var(--orange-glow);       color: var(--orange); border-color: var(--orange-border); }
+.badge-muted     { background: rgba(255,255,255,.04);    color: var(--text-muted); border-color: var(--border-default); }
+.badge-research  { background: rgba(138,99,210,.15);     color: #a78bfa; border-color: rgba(138,99,210,.35); font-style: italic; letter-spacing:.03em; }
 
 /* Institutional tier badges */
 .badge-tier-s { background: rgba(200,144,42,.18);   color: #e8b84a; border-color: rgba(200,144,42,.40); font-weight: 700; letter-spacing: .08em; }
