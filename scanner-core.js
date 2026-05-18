@@ -997,6 +997,51 @@ class Scanner extends EventEmitter {
       resolvedCount++;
     }
 
+    // ── Retroactively correct signals expired by the sweep before bar resolution ──
+    // Fixes the live race: sweep fires at 13:00 PT and expires a signal whose bar
+    // showed TP1 was hit at 12:58 PT before the next scan could detect it.
+    const retroCutoff = new Date(now.getTime() - 15 * 60_000).toISOString();
+    const recentlyExpired = this.db.prepare(`
+      SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
+             s.trade_style, s.strategy_name, s.session, s.setup, s.win_prob_tp1,
+             json_extract(s.raw_payload, '$.context.prediction.win_rate_pct') AS predicted_wr_pct,
+             o.exit_at AS expired_at
+      FROM   signals s
+      JOIN   outcomes o ON o.signal_id = s.id
+      WHERE  o.result = 'EXPIRED'
+        AND  o.exit_at >= ?
+        AND  s.entry IS NOT NULL AND s.sl IS NOT NULL AND s.tp1 IS NOT NULL
+        AND  s.instrument = ?
+    `).all(retroCutoff, instrument);
+
+    for (const sig of recentlyExpired) {
+      const sigTime   = new Date(sig.received_at).getTime();
+      const expiredAt = new Date(sig.expired_at).getTime();
+      const validBars = bars5m.filter(b => {
+        const ts = new Date(b.timestamp).getTime();
+        return ts > sigTime && ts <= expiredAt;
+      });
+
+      for (const bar of validBars) {
+        const resolution = resolveBar(sig, bar);
+        if (!resolution) continue;
+        const result = stateToResult(resolution.toState);
+        if (result !== 'WIN' && result !== 'LOSS') continue;
+
+        const pnlPts = +resolution.pnlPts.toFixed(2);
+        this.db.prepare(
+          `UPDATE outcomes SET result = ?, exit_price = ?, exit_at = ?, pnl_pts = ?, expiration_reason = NULL WHERE signal_id = ?`
+        ).run(result, resolution.exitPrice, bar.timestamp, pnlPts, sig.id);
+        this._stmts.updateTradeStatus.run(resolution.toState, sig.id);
+        if (result === 'WIN' || result === 'LOSS') signalDedup.releaseBySignal(sig);
+        this._log(`RETRO-FIX #${sig.id} ${instrument}: EXPIRED → ${result}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
+        this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
+        this._sendNtfyOutcome(sig, result, pnlPts);
+        resolvedCount++;
+        break;
+      }
+    }
+
     // After resolving outcomes, feed live results back into all learning systems
     if (resolvedCount > 0) {
       try {
@@ -3042,8 +3087,6 @@ class Scanner extends EventEmitter {
     const isTradovate = this.feedType === 'TradovateFeed';
     const fallbackMs  = isTradovate ? 5 * 60_000 : cfg.scanInterval;
 
-    // Immediate first scan (before first feed event arrives)
-    this.scan();
     this._intervals.push(setInterval(() => this.scan(), fallbackMs));
 
     this._log(`SCANNER_LOOP_STARTED interval=${fallbackMs / 1000}s`, 'signal');
@@ -3067,20 +3110,15 @@ class Scanner extends EventEmitter {
     setTimeout(() => this.runStorageCleanup(), 15_000);
     this._intervals.push(setInterval(() => this.runStorageCleanup(), 24 * 3_600_000));
 
-    // Fix stuck trades immediately at startup (per-strategy hold times, not just 3-day blanket).
-    // This catches any stale trades left by a server restart or previous downtime.
-    this._fixStuckTrades();
-
-    // Expiry sweep — runs immediately at startup, then every 60 seconds.
-    // Uses getAllActiveSignals (no tp1/sl requirement) to catch all open signals.
-    this._sweepExpiredSignals();
-    this._intervals.push(setInterval(() => this._sweepExpiredSignals(), 60_000));
-
-    // _fixStuckTrades runs at startup (above) and every 5 min as a belt-and-suspenders
-    // catch for anything the sweep might miss (signals without entry, etc.).
-    this._intervals.push(setInterval(() => this._fixStuckTrades(), 5 * 60_000));
-
-    this._log('RECONCILIATION_LOOP_STARTED expirySweep=60s fixStuck=5min', 'signal');
+    // First scan runs immediately; expiry sweeps chain after so _autoResolveOutcomes
+    // can detect WIN/LOSS in recent bars before the sweep fires and expires them.
+    this.scan().finally(() => {
+      this._fixStuckTrades();
+      this._sweepExpiredSignals();
+      this._intervals.push(setInterval(() => this._sweepExpiredSignals(), 60_000));
+      this._intervals.push(setInterval(() => this._fixStuckTrades(), 5 * 60_000));
+      this._log('RECONCILIATION_LOOP_STARTED expirySweep=60s fixStuck=5min', 'signal');
+    });
 
     // Deep historical backtest (60-day 5m bars from Yahoo Finance).
     // Runs once at startup (after 25 min to avoid heap contention with normal backtests)
