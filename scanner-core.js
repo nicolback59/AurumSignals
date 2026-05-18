@@ -695,9 +695,9 @@ class Scanner extends EventEmitter {
       const wrStr      = wrPct != null ? ` | WR was ${wrPct}%` : '';
       priority = 'high';
       tags     = 'trophy,white_check_mark';
-      title    = `[WIN] TP1 HIT ${instrument} ${direction}${pnlStr}`;
+      title    = `Win | ${instrument} ${direction}${pnlStr}`;
       body     = [
-        `✅ TP1 HIT — ${direction} ${stratLabel}`,
+        `✅ Win — ${direction} ${stratLabel}`,
         sig.entry != null ? `Entry: ${sig.entry}  →  TP1: ${sig.tp1}` : null,
         pnlPts    != null ? `Gained: ${pnlPts >= 0 ? '+' : ''}${pnlPts} pts` : null,
         sig.session       ? `Session: ${sig.session}` : null,
@@ -706,8 +706,8 @@ class Scanner extends EventEmitter {
     } else if (result === 'LOSS') {
       priority = 'default';
       tags     = 'x';
-      title    = `[LOSS] ${instrument} ${direction}${pnlStr}`;
-      body     = `❌ Stopped out: ${direction} ${instrument}${pnlStr}\nSignal #${signalId}`;
+      title    = `Loss | ${instrument} ${direction}${pnlStr}`;
+      body     = `❌ Loss — ${direction} ${instrument}${pnlStr}\nSignal #${signalId}`;
     } else {
       priority = 'default';
       tags     = 'warning';
@@ -961,7 +961,7 @@ class Scanner extends EventEmitter {
       }
 
       // No TP1/SL hit yet — check expiry
-      if (!resolution && shouldExpire(sig, now)) {
+      if (!resolution && shouldExpire(sig, now).expire) {
         const lastBar = futureBars[futureBars.length - 1];
         resolution = {
           toState:   STATES.EXPIRED,
