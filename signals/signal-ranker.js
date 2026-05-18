@@ -26,7 +26,8 @@
  * signals; ASIAN multiplies by 0.80, making it harder to reach S).
  */
 
-const { classifyNow } = require('../clock/market-clock');
+const { classifyNow }   = require('../clock/market-clock');
+const { LIVE_THRESHOLDS } = require('../strategies/confidence-scorer');
 
 // Tier thresholds (confidence 0–100)
 const TIER_THRESHOLDS = {
@@ -59,10 +60,15 @@ function tierMeetsMinimum(tier, minTier) {
 /**
  * Rank a signal and decide whether to accept it.
  *
+ * Returns `liveGated: true` when the signal passes the session/tier gate but
+ * falls below the per-strategy LIVE_THRESHOLDS.  Live-gated signals are stored
+ * for backtest/research but must NOT fire a live ntfy notification.
+ *
  * @param {object} sig     - raw strategy signal
  * @param {Date|null} [now] - optional override for testing
  * @returns {{
  *   accepted:           boolean,
+ *   liveGated:          boolean,
  *   tier:               'S'|'A'|'B'|'IGNORE',
  *   adjustedConfidence: number,
  *   session:            string,
@@ -81,6 +87,7 @@ function rankSignal(sig, now = null) {
   if (clock.isBlackout || minTier === 'IGNORE') {
     return {
       accepted:           false,
+      liveGated:          false,
       tier:               'IGNORE',
       adjustedConfidence: 0,
       session,
@@ -97,6 +104,7 @@ function rankSignal(sig, now = null) {
   if (!tierMeetsMinimum(tier, minTier)) {
     return {
       accepted:           false,
+      liveGated:          false,
       tier,
       adjustedConfidence,
       session,
@@ -106,14 +114,22 @@ function rankSignal(sig, now = null) {
     };
   }
 
+  // Per-strategy live confidence gate — signal is accepted (stored) but live
+  // ntfy is suppressed when raw confidence is below the strategy's live minimum.
+  const liveMin  = LIVE_THRESHOLDS[sig.strategy_name] ?? 0;
+  const liveGated = sig.confidence != null && sig.confidence < liveMin;
+
   return {
     accepted:           true,
+    liveGated,
     tier,
     adjustedConfidence,
     session,
     sessionModifier:    sessionMod,
     minTier,
-    rejectReason:       null,
+    rejectReason:       liveGated
+      ? `confidence ${sig.confidence} below live minimum ${liveMin} for ${sig.strategy_name} (research only)`
+      : null,
   };
 }
 

@@ -5,14 +5,30 @@ const {
 } = require('./shared-indicators');
 
 // ── Per-strategy minimum confidence thresholds ────────────────────────────────
-
-const THRESHOLDS = {
-  MNQ_INTRADAY: 65,  // raised from 60 — require stronger HTF+VWAP confluence
-  MNQ_SWING:    55,  // lowered from 60 — more signal frequency with new archetypes
-  MNQ_50PT:     55,  // lowered from 58 — more signal frequency with new archetypes
-  MGC_SCALP:    55,  // raised from 45 — tighter confluence gate for backtest-quality signals
-  MGC_INTRADAY: 60,  // keep
+// RESEARCH_THRESHOLDS — minimum to generate a signal candidate for backtest/learning.
+// These stay lenient so the system keeps training on signal quality.
+const RESEARCH_THRESHOLDS = {
+  MNQ_INTRADAY: 65,
+  MNQ_SWING:    65,
+  MNQ_50PT:     65,
+  MGC_SCALP:    55,
+  MGC_INTRADAY: 60,
 };
+
+// LIVE_THRESHOLDS — minimum raw confidence to fire a live ntfy alert.
+// Signals below this are stored for backtest/research but do NOT send a
+// live notification.  MNQ_SWING and MNQ_50PT are intentionally strict
+// because weak setups in these strategies have produced losses historically.
+const LIVE_THRESHOLDS = {
+  MNQ_INTRADAY: 65,
+  MNQ_SWING:    85,  // requires A+/S-tier conviction (4H bias + 1H alignment confirmed)
+  MNQ_50PT:     86,  // requires clean displacement + open space + HTF support
+  MGC_SCALP:    55,
+  MGC_INTRADAY: 60,
+};
+
+// Back-compat alias used by strategies as their internal filter gate
+const THRESHOLDS = RESEARCH_THRESHOLDS;
 
 /**
  * Score a potential signal from 0–114 (capped at 100).
@@ -167,4 +183,4 @@ function deriveGradeAndProbs(confidence) {
   return { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3, win_prob_tp4 };
 }
 
-module.exports = { scoreSignal, deriveGradeAndProbs, THRESHOLDS };
+module.exports = { scoreSignal, deriveGradeAndProbs, THRESHOLDS, LIVE_THRESHOLDS, RESEARCH_THRESHOLDS };

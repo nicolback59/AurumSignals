@@ -398,11 +398,13 @@
   <div class="inst-sep"></div>
   <span class="inst-bar-label">Result</span>
   <div class="filter-chips" id="resultFilters">
-    <button class="filter-chip active" onclick="setResultFilter('ALL',  this)">All</button>
-    <button class="filter-chip"        onclick="setResultFilter('WIN',  this)">✓ Win</button>
-    <button class="filter-chip"        onclick="setResultFilter('LOSS', this)">✗ Loss</button>
-    <button class="filter-chip"        onclick="setResultFilter('BE',   this)">~ BE</button>
-    <button class="filter-chip"        onclick="setResultFilter('OPEN', this)">◉ Open</button>
+    <button class="filter-chip active" onclick="setResultFilter('ALL',         this)">All</button>
+    <button class="filter-chip"        onclick="setResultFilter('WIN',         this)">✓ Win</button>
+    <button class="filter-chip"        onclick="setResultFilter('LOSS',        this)">✗ Loss</button>
+    <button class="filter-chip"        onclick="setResultFilter('BE',          this)">~ BE</button>
+    <button class="filter-chip"        onclick="setResultFilter('OPEN',        this)">◉ Open</button>
+    <button class="filter-chip"        onclick="setResultFilter('EXPIRED',     this)">⊘ Expired</button>
+    <button class="filter-chip"        onclick="setResultFilter('MARKET_CLOSE',this)">⏱ Mkt Close</button>
   </div>
   <span style="margin-left:auto;font-family:var(--font-mono);font-size:10px;color:var(--text-muted);flex-shrink:0" id="tradeCount">—</span>
 </div>
@@ -626,8 +628,20 @@ function applyFiltersAndRender() {
       (t.trade_status === 'ACTIVE' || t.trade_status == null) &&
       t.trade_status !== 'EXPIRED' &&
       !getTradeExpiry(t); // client-side hard rule: never show as open if market is closed
-    const resMatch = resultFilter === 'ALL'  ? true
-      : resultFilter === 'OPEN' ? isGenuinelyOpen
+    // EXPIRED: any trade with result=EXPIRED or client-side expiry triggered
+    const expiryReason  = t.expiration_reason || getTradeExpiry(t);
+    const isExpired     = t.result === 'EXPIRED' || t.trade_status === 'EXPIRED' ||
+                          (!t.result && !!expiryReason);
+    // MARKET_CLOSE: expired specifically due to market/weekend close (not max hold)
+    const isMarketClose = isExpired && (
+      expiryReason === 'EXPIRED_MARKET_CLOSE' ||
+      expiryReason === 'EXPIRED_WEEKEND_CLOSE' ||
+      expiryReason === 'EXPIRED_STUCK_TRADE'
+    );
+    const resMatch = resultFilter === 'ALL'          ? true
+      : resultFilter === 'OPEN'         ? isGenuinelyOpen
+      : resultFilter === 'EXPIRED'      ? isExpired
+      : resultFilter === 'MARKET_CLOSE' ? isMarketClose
       : t.result === resultFilter;
     return instMatch && resMatch;
   });
