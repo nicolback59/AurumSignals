@@ -152,6 +152,8 @@ class Scanner extends EventEmitter {
     this._lastResearchAt    = 0;   // epoch ms of last research cycle (throttled to 1/hour)
     this._prevMarketOpen    = null; // null = first scan; used to detect closed→open transition
     this._startupNtfySent   = false; // in-memory flag: reset on every new process, never persisted
+    this._lastFetchAt       = 0;   // epoch ms of last successful bar fetch
+    this._lastDataStatus    = 'INIT'; // DATA_OK | DATA_STALE | DATA_MISSING | DATA_BACKOFF
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -1087,6 +1089,9 @@ class Scanner extends EventEmitter {
       const pending = this._stmts.getAllActiveSignals.all();
       const now = new Date();
 
+      if (pending.length > 0) {
+        this._log(`RECONCILIATION_TICK checking ${pending.length} active signal(s)`, 'signal');
+      }
       console.log(`[${now.toISOString()}] [sweep] checking ${pending.length} active signal(s)`);
       if (!pending.length) return;
 
@@ -1589,6 +1594,12 @@ class Scanner extends EventEmitter {
     }
     this._prevMarketOpen = marketIsOpen;
 
+    // Periodic heartbeat visible in Render logs (every 10 scans ≈ every 2.5 min at 15s interval)
+    if (this._scanCount % 10 === 0) {
+      const _upMin = Math.floor(process.uptime() / 60);
+      this._log(`SCAN_TICK #${this._scanCount} mode=${marketIsOpen ? 'LIVE' : 'RESEARCH'} feed=${this.feedType} uptime=${_upMin}min data=${this._lastDataStatus}`, 'signal');
+    }
+
     // Skip signal evaluation entirely when futures markets are closed.
     // Heartbeat is still emitted so the UI knows the scanner process is alive.
     if (!marketIsOpen) {
@@ -1650,6 +1661,24 @@ class Scanner extends EventEmitter {
 
           this._consecutiveErrors = 0;
           this._fetchBackoffUntil = 0;
+          this._lastFetchAt = Date.now();
+
+          // Track data freshness for health endpoint and SCAN_TICK log
+          const _latestMnq = mnq5mRaw[mnq5mRaw.length - 1];
+          const _ageMin = _latestMnq
+            ? Math.round((Date.now() - new Date(_latestMnq.timestamp).getTime()) / 60000)
+            : 999;
+          if (_ageMin > 15) {
+            this._lastDataStatus = 'DATA_STALE';
+            if (this._scanCount % 5 === 0) {
+              this._log(`DATA_STALE MNQ latest bar ${_ageMin}min old (${_latestMnq?.timestamp})`, 'signal');
+            }
+          } else {
+            this._lastDataStatus = 'DATA_OK';
+            if (this._scanCount % 20 === 0) {
+              this._log(`DATA_OK MNQ 5m=${mnq5mRaw.length} bars age=${_ageMin}min | MGC 5m=${mgc5mRaw.length} bars`, 'signal');
+            }
+          }
         } catch (fetchErr) {
           this._consecutiveErrors++;
           this._err(`Data fetch failed (error #${this._consecutiveErrors})`, fetchErr);
@@ -1689,8 +1718,9 @@ class Scanner extends EventEmitter {
       } else {
         // Still in backoff — use cached bars without making any HTTP requests
         const remaining = Math.ceil((this._fetchBackoffUntil - now) / 60_000);
+        this._lastDataStatus = 'DATA_BACKOFF';
         if (this._scanCount % 5 === 0) {
-          this._log(`⏸️  Rate-limit backoff — ${remaining} min remaining — signal eval on cached bars`);
+          this._log(`⏸️  Rate-limit backoff — ${remaining} min remaining — signal eval on cached bars`, 'signal');
         }
         if (!this._lastGoodBars.mnq5m.length) return;
         mnq5mRaw = this._lastGoodBars.mnq5m;
@@ -2952,6 +2982,9 @@ class Scanner extends EventEmitter {
 
     const cfg = this.cfg;
 
+    this._log(`SCANNER_BOOT_START platform=${process.env.NODE_ENV ?? 'dev'} feed=${this.feedType} logLevel=${cfg.logLevel} scanInterval=${cfg.scanInterval / 1000}s`, 'signal');
+    this._log('REGISTERED_STRATEGIES MNQ: MNQ_INTRADAY(LIVE) MNQ_SWING(LIVE) MNQ_50PT(LIVE) | MGC: MGC_SCALP(LIVE) MGC_INTRADAY(LIVE)', 'signal');
+
     // Restore last-known bars from DB so the scanner has data immediately on restart.
     // Prevents Yahoo Finance rate-limiting from blocking signal evaluation after a crash.
     this._restoreBarCache();
@@ -2975,6 +3008,8 @@ class Scanner extends EventEmitter {
     // Immediate first scan (before first feed event arrives)
     this.scan();
     this._intervals.push(setInterval(() => this.scan(), fallbackMs));
+
+    this._log(`SCANNER_LOOP_STARTED interval=${fallbackMs / 1000}s`, 'signal');
 
     // Startup backtests — delayed so the service stabilises, Render health checks
     // pass, and GC has had multiple cycles before the memory-heavy backtest runs.
@@ -3007,6 +3042,8 @@ class Scanner extends EventEmitter {
     // _fixStuckTrades runs at startup (above) and every 5 min as a belt-and-suspenders
     // catch for anything the sweep might miss (signals without entry, etc.).
     this._intervals.push(setInterval(() => this._fixStuckTrades(), 5 * 60_000));
+
+    this._log('RECONCILIATION_LOOP_STARTED expirySweep=60s fixStuck=5min', 'signal');
 
     // Deep historical backtest (60-day 5m bars from Yahoo Finance).
     // Runs once at startup (after 25 min to avoid heap contention with normal backtests)
@@ -3060,6 +3097,8 @@ class Scanner extends EventEmitter {
       `strategies=MNQ_INTRADAY,MNQ_SWING,MNQ_50PT,MGC_SCALP,MGC_INTRADAY`
     );
     this._log(formatStartupConfig(cfg.duplicateGuardMin));
+
+    this._log(`SCANNER_BOOT_SUCCESS all subsystems armed — scanner is live`, 'signal');
 
     // Startup ntfy confirmation — in-memory flag so every fresh process start notifies.
     // The old DB-based throttle persisted across restarts and blocked notifications after

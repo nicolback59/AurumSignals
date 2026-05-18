@@ -470,17 +470,64 @@ app.get('/api/signals/open', (req, res) => {
 
 app.get('/api/status', (req, res) => {
   const scanner = global._scanner;
+  const { classifyNow } = require('./clock/market-clock');
+
+  let marketMode = 'UNKNOWN';
+  let marketOpen = false;
+  try {
+    const { session, meta, isBlackout } = classifyNow();
+    marketOpen = !isBlackout && meta?.minTier !== 'IGNORE';
+    if (isBlackout) {
+      const pt = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
+      const dow = pt.getDay(); const hm = pt.getHours() * 60 + pt.getMinutes();
+      marketMode = (dow === 5 && hm >= 780) || dow === 6 || (dow === 0 && hm < 840) ? 'WEEKEND_CLOSE' : 'MAINTENANCE';
+    } else if (meta?.minTier === 'IGNORE') {
+      marketMode = 'OVERNIGHT';
+    } else if (marketOpen) {
+      marketMode = 'LIVE';
+    } else {
+      marketMode = 'RESEARCH';
+    }
+  } catch { /* never crash status */ }
+
+  // Data freshness from scanner bar cache
+  let lastDataTimestamp = null; let dataAgeMinutes = null;
+  try {
+    const bars = scanner?._lastGoodBars?.mnq5m ?? [];
+    if (bars.length) {
+      lastDataTimestamp = bars[bars.length - 1]?.timestamp ?? null;
+      dataAgeMinutes = lastDataTimestamp
+        ? Math.round((Date.now() - new Date(lastDataTimestamp).getTime()) / 60000)
+        : null;
+    }
+  } catch { /* ignore */ }
+
   res.json({
-    feedType:      scanner?.feedType      ?? 'unknown',
-    feedConnected: scanner?._feed?.isConnected() ?? false,
+    scannerRunning:    !!(scanner?._running),
+    reconciliationRunning: true,
+    marketMode,
+    marketOpen,
+    strategies: {
+      live:         ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP', 'MGC_INTRADAY'],
+      researchOnly: [],
+      disabled:     [],
+    },
+    feedType:          scanner?.feedType      ?? 'unknown',
+    feedConnected:     scanner?._feed?.isConnected() ?? false,
+    dataStatus:        scanner?._lastDataStatus ?? 'INIT',
+    lastDataTimestamp,
+    dataAgeMinutes,
+    lastFetchAt:       scanner?._lastFetchAt ? new Date(scanner._lastFetchAt).toISOString() : null,
+    scanCount:         scanner?._scanCount ?? 0,
+    consecutiveErrors: scanner?._consecutiveErrors ?? 0,
     tradovateConfigured: !!(
       process.env.TRADOVATE_USERNAME &&
       process.env.TRADOVATE_CID &&
       process.env.TRADOVATE_SECRET
     ),
-    env:           process.env.TRADOVATE_ENV || 'live',
-    scanCount:     scanner?._scanCount ?? 0,
-    uptime:        Math.floor(process.uptime()),
+    env:    process.env.TRADOVATE_ENV || 'live',
+    uptime: Math.floor(process.uptime()),
+    ntfyConfigured: !!process.env.NTFY_TOPIC,
   });
 });
 
