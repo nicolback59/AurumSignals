@@ -44,7 +44,7 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '4.3';
+const STRATEGY_VERSION = '4.4';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
 const MAX_RISK_PTS = 10;  // hard cap on SL distance — skip any setup requiring >10pt risk
@@ -296,12 +296,16 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
 
   const adxVal    = getAdxValue(exec);
 
+  // Displacement strength: current bar body vs average of prior 10 bars
+  const dispStrength = displacementStrength(exec);
+
   // ── Evaluation context object ───────────────────────────────────────────────
   const ctx = {
     exec, bars5m, bars15m, bars1h, n, last, closes, atr, vwap, vwapArr,
     ema9, ema21, ema9Arr, ema21Arr, rsi, rsiOB, rsiOS, hist, histPrev,
     regime, chopScore, vwapState, volRegime, htfBias, htf1hBias,
     htf30mBias, htf45mBias, priorDay, isChop, isSoftChop, adxVal, sess,
+    dispStrength,
   };
 
   // ── Try each archetype ──────────────────────────────────────────────────────
@@ -428,12 +432,25 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   };
 }
 
+// ── Displacement strength ──────────────────────────────────────────────────────
+// Ratio of the current bar's body size to the average body over the prior 10 bars.
+// Strong displacement (≥ 1.4×) indicates a decisive momentum move and earns an
+// extra +4 bonus in continuation and VWAP archetypes.
+
+function displacementStrength(bars) {
+  const n = bars.length - 1;
+  const bodies = bars.slice(-11, -1).map(b => Math.abs(b.close - b.open));
+  const avgBody = bodies.reduce((s, v) => s + v, 0) / (bodies.length || 1) || 1;
+  const curBody = Math.abs(bars[n].close - bars[n].open);
+  return curBody / avgBody;
+}
+
 // ── Archetype evaluators ───────────────────────────────────────────────────────
 
 function evalContinuationPullback(ctx) {
   const { exec, n, last, atr, vwap, vwapArr, ema9, ema21,
           regime, htfBias, rsiOB, rsiOS, hist, histPrev, chopScore,
-          adxVal, sess } = ctx;
+          adxVal, sess, dispStrength } = ctx;
 
   if (regime === 'RANGE_CHOP' || regime === 'SOFT_CHOP') return null;
 
@@ -492,12 +509,14 @@ function evalContinuationPullback(ctx) {
 
     const trendBonus = trendRegime ? 5 : 0;
     const adxBonus   = adxVal != null && adxVal >= 25 ? 3 : 0;
+    // Displacement strength: strong momentum bar adds conviction to the continuation
+    const dispBonus  = (dispStrength ?? 0) >= 1.4 ? 4 : 0;
 
     return {
       dir, sl, rr, srDist,
       archetype: 'continuation_pullback',
-      bonus: trendBonus + adxBonus,
-      score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus + adxBonus,
+      bonus: trendBonus + adxBonus + dispBonus,
+      score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus + adxBonus + dispBonus,
     };
   }
   return null;
