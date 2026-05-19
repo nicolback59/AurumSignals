@@ -47,6 +47,7 @@ const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-s
 const STRATEGY_VERSION = '4.3';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
+const MAX_RISK_PTS = 10;  // hard cap on SL distance — skip any setup requiring >10pt risk
 const MIN_BAR_GAP = 1;          // 1-bar spam guard — adaptive-cooldown.js handles strategy timing
 const TP = [10, 14, 20, 25];    // fixed MGC take-profit levels in points
 
@@ -481,7 +482,7 @@ function evalContinuationPullback(ctx) {
     const swHigh = recentSwingHigh(exec, 8);
     const sl     = isBull ? Math.min(swLow, ema21) - 0.3 * atr : Math.max(swHigh, ema21) + 0.3 * atr;
     const risk   = isBull ? last.close - sl : sl - last.close;
-    if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) continue;
+    if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) continue;
 
     const rr     = +(14 / risk).toFixed(2);
     if (rr < 0.8) continue;
@@ -522,7 +523,7 @@ function evalVwapReclaimReject(ctx) {
   const swHigh = recentSwingHigh(exec, 6);
   const sl     = isBull ? Math.min(swLow, vwap) - 0.3 * atr : Math.max(swHigh, vwap) + 0.3 * atr;
   const risk   = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.4 || risk > 2.5 * atr) return null;
+  if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) return null;
 
   const rr     = +(14 / risk).toFixed(2);
   if (rr < 0.8) return null;
@@ -560,7 +561,7 @@ function evalSweepReversal(ctx) {
       ? sweepBar.low  - 0.25 * atr
       : sweepBar.high + 0.25 * atr;
     const risk = isBull ? last.close - sl : sl - last.close;
-    if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) continue;
+    if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) continue;
 
     const rr     = +(14 / risk).toFixed(2);
     if (rr < 0.7) continue;
@@ -616,7 +617,7 @@ function evalCompressionBreakout(ctx) {
 
   const sl   = isBull ? rangeLow - 0.2 * atr : rangeHigh + 0.2 * atr;
   const risk = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) return null;
+  if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) return null;
 
   const rr     = +(14 / risk).toFixed(2);
   if (rr < 0.7) return null;
@@ -651,7 +652,7 @@ function evalChopMeanRevert(ctx) {
 
   const sl   = isBull ? exec[n-1].low  - 0.2 * atr : exec[n-1].high + 0.2 * atr;
   const risk = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.3 || risk > 2 * atr) return null;
+  if (risk < ATR_MIN_PTS * 0.3 || risk > MAX_RISK_PTS) return null;
 
   // Smaller target in chop (aim for VWAP, ~TP1)
   const rr = +(10 / risk).toFixed(2);
