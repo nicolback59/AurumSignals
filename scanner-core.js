@@ -78,6 +78,7 @@ const {
   updateSessionBiasAccuracy, updateSessionBiasFromBacktest,
   getOpeningCandleReport, getEtDateKey,
 } = require('./opening-candle');
+const { computeQuantScore } = require('./strategies/quant-scorer');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function ts() { return new Date().toISOString(); }
@@ -1579,10 +1580,40 @@ class Scanner extends EventEmitter {
           rank.liveGated = true;
         }
       }
+
+      // ── Quant scorer — 8-dimension quality gate ───────────────────────────────
+      try {
+        const quantCtx = {
+          regime: currentRegime ?? 'unknown',
+          volRegime: sig.indicators?.volRegime ?? 'NORMAL',
+          atrRatio: sig.indicators?.atr ? (sig.indicators.atr / (sig.indicators?.atrMin ?? sig.indicators.atr)) : 1,
+          sess: { quality: sig.indicators?.sessionQuality ?? 0.7, name: sig.session ?? '' },
+          htfBiases: [
+            { bias: sig.indicators?.htfBias ?? 0, present: true },
+            { bias: sig.indicators?.htf2Bias ?? 0, present: sig.indicators?.htf2Bias != null },
+            { bias: sig.indicators?.htf1hBias ?? 0, present: sig.indicators?.htf1hBias != null },
+          ],
+          bars5m,
+          rsi: sig.indicators?.rsi ?? null,
+          hist: null,
+          histPrev: null,
+        };
+        const quantResult = computeQuantScore(sig, quantCtx);
+        sig.quant_score = quantResult.total;
+        sig.quant_grade = quantResult.grade;
+        sig.quant_subscores = quantResult.subscores;
+
+        // B-tier and IGNORE quant grades → force research-only (live gated)
+        if (!quantResult.isLive && !rank.liveGated) {
+          rank.liveGated = true;
+          this._log(`SIGNAL_QUANT_GATED strat=${sig.strategy_name} quantGrade=${quantResult.grade} quantScore=${quantResult.total} (below strong-A threshold — research only)`, 'signal');
+        }
+      } catch { /* never crash */ }
+
       sig.tier              = rank.tier;
       sig.adjusted_confidence = rank.adjustedConfidence;
       const approvalTag = rank.liveGated ? 'SIGNAL_RESEARCH_ONLY' : 'SIGNAL_APPROVED';
-      this._log(`${approvalTag} strat=${sig.strategy_name} ${instrument} ${sig.direction} conf=${sig.confidence} tier=${rank.tier} adjConf=${rank.adjustedConfidence}${rank.liveGated ? ' (live-gated)' : ''}`, 'signal');
+      this._log(`${approvalTag} strat=${sig.strategy_name} ${instrument} ${sig.direction} conf=${sig.confidence} tier=${rank.tier} adjConf=${rank.adjustedConfidence}${rank.liveGated ? ' (live-gated)' : ''}${sig.quant_grade ? ` quantGrade=${sig.quant_grade} quantScore=${sig.quant_score}` : ''}`, 'signal');
 
       this._lastSignalTimes[stratKey] = Date.now();
       this._storeSignal({ ...sig, ticker: `${instrument}1!`, _rank: rank });
@@ -1690,6 +1721,21 @@ class Scanner extends EventEmitter {
     if (this._scanCount % 10 === 0) {
       const _upMin = Math.floor(process.uptime() / 60);
       this._log(`SCAN_TICK #${this._scanCount} mode=${marketIsOpen ? 'LIVE' : 'RESEARCH'} feed=${this.feedType} uptime=${_upMin}min data=${this._lastDataStatus}`, 'signal');
+    }
+
+    // SCANNER_HEARTBEAT — every 12 scans (~60s at 5s interval, ~30s at 5s with event feed)
+    if (this._scanCount % 12 === 0) {
+      const _upMin = Math.floor(process.uptime() / 60);
+      const _lastFetchAgo = this._lastFetchAt
+        ? Math.round((Date.now() - this._lastFetchAt) / 1000)
+        : null;
+      const _dataStatus = this._lastDataStatus === 'DATA_OK' ? 'OK' : 'STALE';
+      this._log(
+        `SCANNER_HEARTBEAT scans=${this._scanCount} uptime=${_upMin}m` +
+        (_lastFetchAgo != null ? ` lastFetch=${_lastFetchAgo}s ago` : '') +
+        ` dataStatus=${_dataStatus}`,
+        'signal'
+      );
     }
 
     // Skip signal evaluation entirely when futures markets are closed.
@@ -1877,6 +1923,27 @@ class Scanner extends EventEmitter {
       if (!mnqReady && !mgcReady) {
         this._log(`⏳ Insufficient bars: MNQ 5m=${mnq5mConf.length}/15m=${mnq15m.length}/1h=${mnq1hConf.length} MGC 5m=${mgc5mConf.length}`);
         return;
+      }
+
+      // Stale candle detection — skip signal evaluation if most recent bar is >15 min old during market hours.
+      // Stale data in live mode produces signals on old prices, wasting alert budget.
+      {
+        const _latestMnq5m = mnq5mConf[mnq5mConf.length - 1];
+        const _latestMgc5m = mgc5mConf[mgc5mConf.length - 1];
+        const _staleMnq = _latestMnq5m
+          ? (Date.now() - new Date(_latestMnq5m.timestamp).getTime()) > 15 * 60_000
+          : false;
+        const _staleMgc = _latestMgc5m
+          ? (Date.now() - new Date(_latestMgc5m.timestamp).getTime()) > 15 * 60_000
+          : false;
+        if (_staleMnq || _staleMgc) {
+          const _staleInfo = [
+            _staleMnq ? `MNQ latest=${_latestMnq5m?.timestamp}` : null,
+            _staleMgc ? `MGC latest=${_latestMgc5m?.timestamp}` : null,
+          ].filter(Boolean).join(', ');
+          this._log(`DATA_STALE_WARNING stale candles detected — skipping signal evaluation (${_staleInfo})`, 'signal');
+          return;
+        }
       }
 
       // Signal evaluation uses confirmed bars; outcome resolution uses full bars (including forming)
@@ -3076,6 +3143,19 @@ class Scanner extends EventEmitter {
 
     this._log(`SCANNER_BOOT_START platform=${process.env.NODE_ENV ?? 'dev'} feed=${this.feedType} logLevel=${cfg.logLevel} scanInterval=${cfg.scanInterval / 1000}s`, 'signal');
     this._log('REGISTERED_STRATEGIES MNQ: MNQ_INTRADAY(LIVE) MNQ_SWING(LIVE) MNQ_50PT(LIVE) | MGC: MGC_SCALP(LIVE) MGC_INTRADAY(LIVE)', 'signal');
+
+    // Lock non-live strategies to RESEARCH_ONLY — only MGC_SCALP and MNQ_INTRADAY are live
+    try {
+      const RESEARCH_ONLY_STRATEGIES = ['MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
+      for (const strat of RESEARCH_ONLY_STRATEGIES) {
+        this.db.prepare(`
+          INSERT INTO strategy_status (strategy_name, mode, notes, updated_at)
+          VALUES (?, 'RESEARCH_ONLY', 'Demoted to research — focus on MGC_SCALP + MNQ_INTRADAY only', datetime('now'))
+          ON CONFLICT(strategy_name) DO UPDATE SET mode = 'RESEARCH_ONLY', updated_at = datetime('now')
+        `).run(strat);
+      }
+      this._log('STRATEGY_STATUS MGC_SCALP=LIVE MNQ_INTRADAY=LIVE | MNQ_SWING/MNQ_50PT/MGC_INTRADAY=RESEARCH_ONLY', 'signal');
+    } catch (e) { this._log(`STRATEGY_STATUS_INIT_ERROR ${e.message}`, 'signal'); }
 
     if (cfg.ntfyTopic) {
       const masked = cfg.ntfyTopic.length > 4

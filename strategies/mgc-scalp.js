@@ -523,7 +523,7 @@ function evalContinuationPullback(ctx) {
 }
 
 function evalVwapReclaimReject(ctx) {
-  const { exec, n, last, atr, vwap, vwapArr, vwapState, htfBias, rsiOB, rsiOS } = ctx;
+  const { exec, n, last, atr, vwap, vwapArr, vwapState, htfBias, rsiOB, rsiOS, dispStrength } = ctx;
 
   if (vwapState === 'CHOPPING' || vwapState === 'ABOVE' || vwapState === 'BELOW' || vwapState === 'UNKNOWN') return null;
 
@@ -550,11 +550,14 @@ function evalVwapReclaimReject(ctx) {
   const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
   if (srDist < 0.35) return null;
 
+  // Displacement strength: strong momentum bar adds conviction to the VWAP reclaim/rejection
+  const dispBonus = (dispStrength ?? 0) >= 1.4 ? 4 : 0;
+
   return {
     dir, sl, rr, srDist,
     archetype: isBull ? 'vwap_reclaim' : 'vwap_rejection',
-    bonus: 5,
-    score: rr * 12 + srDist * 4,
+    bonus: 5 + dispBonus,
+    score: rr * 12 + srDist * 4 + dispBonus,
   };
 }
 

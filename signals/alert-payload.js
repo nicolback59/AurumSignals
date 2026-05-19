@@ -70,6 +70,8 @@ function buildAlertPayload(raw, extras = {}) {
     win_prob_tp3:       raw.win_prob_tp3          ?? null,
     win_prob_tp4:       raw.win_prob_tp4          ?? null,
     dna_score:          raw.dnaScore              ?? null,
+    quant_score:        raw.quant_score           ?? null,
+    quant_grade:        raw.quant_grade           ?? null,
   };
 
   // ── Levels ─────────────────────────────────────────────────────────────────
@@ -134,6 +136,8 @@ function flattenPayload(p) {
     win_prob_tp2:        p.quality?.win_prob_tp2,
     win_prob_tp3:        p.quality?.win_prob_tp3,
     win_prob_tp4:        p.quality?.win_prob_tp4,
+    quant_score:         p.quality?.quant_score ?? p.quant_score,
+    quant_grade:         p.quality?.quant_grade ?? p.quant_grade,
 
     entry: p.levels?.entry,
     sl:    p.levels?.sl,
@@ -183,6 +187,7 @@ function buildNtfyBody(p) {
     flat.tp2  != null ? `Tp2 ${flat.tp2}`       : null,
     flat.tp3  != null ? `Tp3 ${flat.tp3}`       : null,
     flat.tp4  != null ? `Tp4 ${flat.tp4}`       : null,
+    flat.quant_grade != null ? `Grade: ${flat.quant_grade}  Score: ${flat.quant_score ?? ''}` : null,
   ].filter(Boolean).join('\n');
 }
 
