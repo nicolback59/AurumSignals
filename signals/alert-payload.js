@@ -162,66 +162,45 @@ function flattenPayload(p) {
 
 /**
  * Build the ntfy notification body from a canonical payload.
- * Always ASCII-safe in headers; emoji allowed in body.
+ *
+ * Format matches the Discord signal style:
+ *   MGC buy 3295.00
+ *   Stop loss 3285.00
+ *   Tp1 3305.00
+ *   Tp2 3309.00
+ *   Tp3 3315.00
+ *   Tp4 3320.00          ← only when present
  */
 function buildNtfyBody(p) {
   const flat = p.v === SCHEMA_VERSION ? flattenPayload(p) : p;
-  const dir  = flat.direction === 'LONG' ? '▲ LONG' : '▼ SHORT';
-  const tier = flat.tier ? `[${flat.tier}]` : '';
-  const conf = flat.confidence != null ? `Conf: ${flat.confidence}/100` : null;
-
-  // TP1-specific win rate — prefer data-driven predicted WR, fall back to confidence-based estimate
-  let tp1WrLine = null;
-  if (flat.predicted_wr_pct != null) {
-    const band = flat.predicted_wr_band ?? 9;
-    const src  = flat.predicted_wr_source === 'confidence-estimate' ? 'est'
-               : flat.predicted_wr_source === 'live+backtest'       ? 'live+bt'
-               : flat.predicted_wr_source === 'backtest'            ? 'bt'
-               : flat.predicted_wr_source === 'live'                ? 'live'
-               : (flat.predicted_wr_source ?? '?');
-    const spike = flat.predicted_wr_atr_spike ? ' [SPIKE]' : '';
-    tp1WrLine = `TP1 WR: ${flat.predicted_wr_pct}%\xb1${band}% (${src})${spike}`;
-  } else if (flat.win_prob_tp1 != null) {
-    tp1WrLine = `TP1 WR: ${flat.win_prob_tp1}% (est)`;
-  }
-
-  const stratMap = {
-    MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing',
-    MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday',
-  };
-  const stratLabel = stratMap[flat.strategy_name] || flat.setup || flat.strategy_name || '';
+  const dir  = flat.direction === 'LONG' ? 'buy' : 'sell';
+  const instr = flat.instrument ?? flat.ticker ?? '';
 
   return [
-    `${dir} ${tier}  |  ${flat.ticker ?? flat.instrument}`,
-    stratLabel      ? `Strategy: ${stratLabel}`         : null,
-    flat.trade_style? `Style:    ${flat.trade_style}`   : null,
-    flat.entry != null ? `Entry:    ${flat.entry}`      : null,
-    flat.sl    != null ? `SL:       ${flat.sl}`         : null,
-    flat.tp1   != null ? `TP1:      ${flat.tp1}`        : null,
-    flat.tp2   != null ? `TP2:      ${flat.tp2}`        : null,
-    flat.tp3   != null ? `TP3:      ${flat.tp3}`        : null,
-    flat.tp4   != null ? `TP4:      ${flat.tp4}`        : null,
-    flat.rr    != null ? `RR:       ${flat.rr}`         : null,
-    conf,
-    tp1WrLine,
-    flat.session    ? `Session:  ${flat.session}`       : null,
+    `${instr} ${dir} ${flat.entry ?? ''}`,
+    flat.sl   != null ? `Stop loss ${flat.sl}`  : null,
+    flat.tp1  != null ? `Tp1 ${flat.tp1}`       : null,
+    flat.tp2  != null ? `Tp2 ${flat.tp2}`       : null,
+    flat.tp3  != null ? `Tp3 ${flat.tp3}`       : null,
+    flat.tp4  != null ? `Tp4 ${flat.tp4}`       : null,
   ].filter(Boolean).join('\n');
 }
 
 /**
  * Build ntfy headers (all ASCII — no emoji).
+ * Title mirrors the first line of the body so the phone lock-screen preview is clear.
  */
 function buildNtfyHeaders(p, cfg = {}) {
-  const flat   = p.v === SCHEMA_VERSION ? flattenPayload(p) : p;
-  const arrow  = flat.direction === 'LONG' ? '[LONG]' : '[SHORT]';
-  const tier   = flat.tier ? `[${flat.tier}]` : '';
-  const prio   = (flat.tier === 'S' || flat.grade === 'A+') ? 'urgent' : 'high';
-  const tags   = flat.direction === 'LONG'
+  const flat  = p.v === SCHEMA_VERSION ? flattenPayload(p) : p;
+  const dir   = flat.direction === 'LONG' ? 'buy' : 'sell';
+  const instr = flat.instrument ?? flat.ticker ?? '';
+  const prio  = (flat.tier === 'S' || flat.grade === 'A+') ? 'urgent' : 'high';
+  const tags  = flat.direction === 'LONG'
     ? 'chart_increasing,green_circle'
     : 'chart_decreasing,red_circle';
   const headers = {
     'Content-Type': 'text/plain',
-    'Title':    `${arrow} ${tier} ${flat.grade ?? ''} - ${flat.ticker ?? flat.instrument}`.trim(),
+    'Title':    `${instr} ${dir} ${flat.entry ?? ''}`.trim(),
     'Priority': prio,
     'Tags':     tags,
   };
