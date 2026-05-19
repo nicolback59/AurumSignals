@@ -33,7 +33,7 @@
  */
 
 const {
-  ema, calcAtr, calcVwap, calcRsi, calcMacd,
+  ema, calcAtr, calcVwap, calcRsi, calcMacd, calcAdx,
   calcHtfBias, emaStackScore,
   isBullishCandle, isBearishCandle,
   hadPullbackToLevel,
@@ -44,7 +44,7 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '4.2';
+const STRATEGY_VERSION = '4.3';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
 const MIN_BAR_GAP = 1;          // 1-bar spam guard — adaptive-cooldown.js handles strategy timing
@@ -88,7 +88,18 @@ function classifyRegime(bars5m, bars15m) {
     return emaSlope > 0 ? 'TREND_BULL' : 'TREND_BEAR';
   }
   if (efficiency < 0.22) return 'RANGE_CHOP';
+  // Forensic finding: the 0.22–0.45 band was all classified NORMAL, allowing
+  // continuation and breakout archetypes in indecisive / soft-chop conditions.
+  // Split into SOFT_CHOP (weak) and NORMAL (borderline) to gate archetypes properly.
+  if (efficiency < 0.35) return 'SOFT_CHOP';
   return 'NORMAL';
+}
+
+// ADX directional strength — requires ≥28 bars (2× period) for reliable reading
+function getAdxValue(bars) {
+  if (bars.length < 28) return null;
+  const { adx } = calcAdx(bars, 14);
+  return adx[bars.length - 1];
 }
 
 function getVolatilityRegime(bars, atr) {
@@ -273,28 +284,39 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
 
   const priorDay  = getPriorDayLevels(bars1h);
 
-  const isChop    = chopScore > 0.80;
+  // Earlier chop detection: block at 0.70 instead of 0.80.
+  // Forensic finding: 0.80 threshold was too permissive — moderate chop (0.70-0.80)
+  // was treated as normal, leading to continuation entries in choppy conditions.
+  const isChop    = chopScore > 0.70;
+  // SOFT_CHOP regime: indecisive price action, restrict to reversal archetypes only.
+  const isSoftChop = !isChop && regime === 'SOFT_CHOP';
   const rsiOB     = rsi != null && rsi > 76;
   const rsiOS     = rsi != null && rsi < 24;
+
+  const adxVal    = getAdxValue(exec);
 
   // ── Evaluation context object ───────────────────────────────────────────────
   const ctx = {
     exec, bars5m, bars15m, bars1h, n, last, closes, atr, vwap, vwapArr,
     ema9, ema21, ema9Arr, ema21Arr, rsi, rsiOB, rsiOS, hist, histPrev,
     regime, chopScore, vwapState, volRegime, htfBias, htf1hBias,
-    htf30mBias, htf45mBias, priorDay, isChop, sess,
+    htf30mBias, htf45mBias, priorDay, isChop, isSoftChop, adxVal, sess,
   };
 
   // ── Try each archetype ──────────────────────────────────────────────────────
   const candidates = [];
 
   if (!isChop) {
-    const cp = evalContinuationPullback(ctx);    if (cp) candidates.push(cp);
+    // SOFT_CHOP and RANGE_CHOP: only reversal-type setups (clear invalidation point).
+    // Continuation and breakout archetypes have poor expectancy in indecisive regimes.
+    if (!isSoftChop) {
+      const cp = evalContinuationPullback(ctx);  if (cp) candidates.push(cp);
+      const cb = evalCompressionBreakout(ctx);   if (cb) candidates.push(cb);
+    }
     const vr = evalVwapReclaimReject(ctx);       if (vr) candidates.push(vr);
     const sw = evalSweepReversal(ctx);           if (sw) candidates.push(sw);
-    const cb = evalCompressionBreakout(ctx);     if (cb) candidates.push(cb);
   } else {
-    // Chop regime: only high-conviction mean-revert setups
+    // Pure chop: only high-conviction mean-revert setups
     const mr = evalChopMeanRevert(ctx);          if (mr) candidates.push(mr);
   }
 
@@ -386,7 +408,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
     strategy_version: STRATEGY_VERSION,
     htf_bias:         htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
     session:       sess.name,
-    trigger_reason: `${best.archetype} | regime:${regime} | vwap:${vwapState} | vol:${volRegime} | ${agreedLayers.length}/${presentLayers.length} TFs`,
+    trigger_reason: `${best.archetype} | regime:${regime}${isSoftChop ? '(soft)' : ''} | vwap:${vwapState} | vol:${volRegime} | adx:${adxVal != null ? adxVal.toFixed(1) : 'n/a'} | ${agreedLayers.length}/${presentLayers.length} TFs`,
     indicators: {
       atr:    +atr.toFixed(2),
       vwap:   +vwap.toFixed(2),
@@ -409,9 +431,19 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
 
 function evalContinuationPullback(ctx) {
   const { exec, n, last, atr, vwap, vwapArr, ema9, ema21,
-          regime, htfBias, rsiOB, rsiOS, hist, histPrev, chopScore } = ctx;
+          regime, htfBias, rsiOB, rsiOS, hist, histPrev, chopScore,
+          adxVal, sess } = ctx;
 
-  if (regime === 'RANGE_CHOP') return null;
+  if (regime === 'RANGE_CHOP' || regime === 'SOFT_CHOP') return null;
+
+  // Require minimum session quality — continuation entries in thin/pre-market sessions
+  // have no reliable follow-through.  London (0.70) and above only.
+  if (sess.quality < 0.70) return null;
+
+  // Trend-following entries require ADX confirmation of directional strength.
+  // Without ADX > 16 the price is oscillating, not trending — continuation fails.
+  const trendRegime = regime === 'TREND_BULL' || regime === 'TREND_BEAR';
+  if (trendRegime && adxVal != null && adxVal < 16) return null;
 
   const dirs = [];
   if (ema9 > ema21 && htfBias >= 0 && last.close >= vwap * 0.9985) dirs.push('LONG');
@@ -422,11 +454,13 @@ function evalContinuationPullback(ctx) {
     if (isBull && rsiOB) continue;
     if (!isBull && rsiOS) continue;
 
-    // Must have pulled back to EMA or VWAP recently — wide tolerance for more signals
-    const tol   = 0.80 * atr;
-    const pull9  = hadPullbackToLevel(exec, ema9,  tol, dir, 15);
-    const pull21 = hadPullbackToLevel(exec, ema21, tol, dir, 15);
-    const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 15);
+    // Forensic finding: 15-bar / 0.80×ATR lookback allowed stale 75-min-old pullbacks
+    // as valid entry triggers.  Tightened to 10 bars (50 min on 5m / 30 min on 3m)
+    // and 0.65×ATR tolerance for a cleaner, fresher pullback requirement.
+    const tol    = 0.65 * atr;
+    const pull9  = hadPullbackToLevel(exec, ema9,  tol, dir, 10);
+    const pull21 = hadPullbackToLevel(exec, ema21, tol, dir, 10);
+    const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 10);
     if (!pull9 && !pull21 && !pullV) continue;
 
     // Retest holds (no close through EMA21)
@@ -455,13 +489,14 @@ function evalContinuationPullback(ctx) {
     const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
     if (srDist < 0.35) continue;
 
-    const trendBonus = (regime === 'TREND_BULL' || regime === 'TREND_BEAR') ? 5 : 0;
+    const trendBonus = trendRegime ? 5 : 0;
+    const adxBonus   = adxVal != null && adxVal >= 25 ? 3 : 0;
 
     return {
       dir, sl, rr, srDist,
       archetype: 'continuation_pullback',
-      bonus: trendBonus,
-      score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus,
+      bonus: trendBonus + adxBonus,
+      score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus + adxBonus,
     };
   }
   return null;
@@ -543,9 +578,12 @@ function evalSweepReversal(ctx) {
 }
 
 function evalCompressionBreakout(ctx) {
-  const { exec, n, last, atr, vwap, htfBias, hist, histPrev, regime } = ctx;
+  const { exec, n, last, atr, vwap, htfBias, hist, histPrev, regime, sess } = ctx;
 
   if (regime !== 'COMPRESSION' && regime !== 'NORMAL') return null;
+
+  // Breakouts in thin sessions (pre-market / close) fake out without volume support.
+  if (sess.quality < 0.70) return null;
 
   const lookback = 8;
   if (exec.length < lookback + 5) return null;

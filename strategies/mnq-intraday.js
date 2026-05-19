@@ -26,7 +26,7 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '2.3';
+const STRATEGY_VERSION = '2.4';
 
 // Minimum ATR in MNQ points for intraday to be worth trading
 const ATR_MIN_PTS = 8;  // restored from 5 — low-ATR sessions have weak follow-through
@@ -105,10 +105,15 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
 
     // ── Pullback detection ──────────────────────────────────────────────────
     // Price must have recently touched the VWAP, EMA9, or EMA21 zone.
-    const tolerance = 0.65 * atr;  // relaxed from 0.55 (v2.1) — catches more valid touches
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 15);
-    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 15);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 15);
+    // Forensic finding: 15-bar / 0.65×ATR lookback was too lenient — a pullback
+    // touch 75 minutes ago (15 bars × 5m) is no longer a valid entry trigger.
+    // Tightened to 8 bars (40 min) with 0.52×ATR tolerance for fresher setups.
+    // The v2.1 tightening was over-reverted; this restores selectivity without
+    // going back to the original strict 0.55 (which missed valid extended touches).
+    const tolerance = 0.52 * atr;
+    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 8);
+    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 8);
+    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 8);
     if (!pulledToVwap && !pulledTo9 && !pulledTo21) continue;
 
     // ── Pullback held (EMA support not broken) ──────────────────────────────
@@ -132,17 +137,27 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
     }
 
     // ── MACD momentum alignment (soft filter) ───────────────────────────────
-    // MACD alignment is scored as a bonus in confidence-scorer.
-    // Hard blocking caused too many missed setups; now only skip if strongly
-    // counter-trend (histogram on wrong side AND accelerating against us).
-    const { histogram } = calcMacd(closes);
+    // Block when: histogram strongly against (falling deeper on wrong side)
+    // OR when signal line has been consistently negative for 3+ bars on a LONG
+    // (persistent momentum divergence, not just a brief dip).
+    const { histogram, sigLine } = calcMacd(closes);
     const hist     = histogram[n];
     const histPrev = histogram[n - 1];
+    const sigNow   = sigLine[n];
+    const sig2     = sigLine[n - 1];
+    const sig3     = sigLine[n - 2];
     if (hist != null && histPrev != null) {
       const stronglyAgainst = isBull
         ? (hist < 0 && hist < histPrev)   // falling deeper negative
         : (hist > 0 && hist > histPrev);  // rising deeper positive
       if (stronglyAgainst) continue;
+    }
+    // Persistent signal-line divergence: MACD signal trending hard against direction
+    if (sigNow != null && sig2 != null && sig3 != null) {
+      const sigTrendingAgainst = isBull
+        ? (sigNow < 0 && sig2 < 0 && sig3 < 0 && sigNow < sig3)  // signal line falling for 3 bars
+        : (sigNow > 0 && sig2 > 0 && sig3 > 0 && sigNow > sig3);
+      if (sigTrendingAgainst) continue;
     }
 
     // ── Stop-loss ────────────────────────────────────────────────────────────
@@ -215,7 +230,7 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       strategy_version: STRATEGY_VERSION,
       htf_bias:         htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
-      trigger_reason: `EMA9/21 ${dir} (stack=${esScore}), pullback held, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF non-conflicting`,
+      trigger_reason: `EMA9/21 ${dir} (stack=${esScore}), fresh pullback ≤8 bars, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF non-conflicting`,
       indicators: {
         atr:   +atr.toFixed(2),
         vwap:  +vwap.toFixed(2),

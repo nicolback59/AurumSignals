@@ -69,10 +69,21 @@ const SESSION_MULTIPLIERS = {
   'After Hours':       2.50,  // illiquid → heavy restriction
 };
 
-// Sessions considered "liquid" for anti-starvation logic
+// Sessions considered "liquid" for anti-starvation logic (shared-indicators names)
 const LIQUID_SESSIONS = new Set([
   'NY Open ★', 'London/NY Overlap', 'London', 'Midday', 'Afternoon ✓',
 ]);
+
+// Same set using market-clock.js naming (MGC strategies use PT-zone names)
+// Forensic finding: MGC signals always returned 'NY_OPEN' etc., which never
+// matched LIQUID_SESSIONS, silently disabling anti-starvation for all MGC signals.
+const LIQUID_SESSIONS_MCK = new Set([
+  'NY_OPEN', 'POWER_HOUR', 'LONDON', 'NY_PRE', 'MIDDAY', 'NY_CLOSE',
+]);
+
+function _isLiquidSession(session) {
+  return LIQUID_SESSIONS.has(session) || LIQUID_SESSIONS_MCK.has(session);
+}
 
 // ── Market regime multipliers ─────────────────────────────────────────────────
 const REGIME_MULTIPLIERS = {
@@ -86,6 +97,10 @@ const REGIME_MULTIPLIERS = {
 // Index = number of consecutive losses.  Index ≥ KILL_SWITCH_STREAK → strategy disabled.
 const STREAK_MULTIPLIERS    = [1.0, 1.5, 2.5, Infinity];
 const KILL_SWITCH_STREAK    = 4;  // 4 consecutive losses → disabled until session reset
+
+// Minimum confidence required for the new-session probe after a kill switch.
+// High bar ensures only strong setups break the deadlock.
+const NEW_SESSION_PROBE_CONF = 75;
 
 // ── Anti-starvation ───────────────────────────────────────────────────────────
 // If no signal has fired for this long during a liquid session, cut cooldown pressure.
@@ -198,19 +213,37 @@ function checkAdaptiveCooldown({ strategyName, instrument, session, regime, conf
   const { lastResult, consecutiveLosses, lastSignal, lastOutcome } =
     getOutcomeContext(db, strategyName, instrument);
 
-  // ── Kill switch ───────────────────────────────────────────────────────────
+  // ── Kill switch with new-session escape valve ─────────────────────────────
+  // After KILL_SWITCH_STREAK consecutive losses the strategy is paused.
+  // The intended "reset after win in new session" behaviour requires a probe:
+  // allow ONE high-confidence attempt when we detect a session boundary crossed
+  // since the last loss.  If it wins, the consecutive loss count resets naturally.
+  // If it loses, the kill switch reactivates immediately.
   if (consecutiveLosses >= KILL_SWITCH_STREAK) {
-    return {
-      allowed: false, remainingMin: Infinity,
-      reason: `kill_switch`,
-      details: {
-        blocked_by:        'adaptive_cooldown_kill_switch',
-        consecutive_losses: consecutiveLosses,
-        kill_switch_at:    KILL_SWITCH_STREAK,
-        strategy:          strategyName, instrument,
-        reset_condition:   'win in new session or manual reset',
-      },
-    };
+    const lastLossSess     = lastSignal?.session ?? null;
+    const inNewSession     = lastLossSess != null && lastLossSess !== session;
+    const inLiquidSession  = _isLiquidSession(session);
+    const probeAllowed     = inNewSession && inLiquidSession && confidence >= NEW_SESSION_PROBE_CONF;
+
+    if (!probeAllowed) {
+      return {
+        allowed: false, remainingMin: Infinity,
+        reason: `kill_switch`,
+        details: {
+          blocked_by:           'adaptive_cooldown_kill_switch',
+          consecutive_losses:   consecutiveLosses,
+          kill_switch_at:       KILL_SWITCH_STREAK,
+          strategy:             strategyName, instrument,
+          last_loss_session:    lastLossSess,
+          current_session:      session,
+          probe_available:      inNewSession && inLiquidSession,
+          probe_conf_needed:    NEW_SESSION_PROBE_CONF,
+          probe_conf_current:   confidence,
+          reset_condition:      `high-conf (≥${NEW_SESSION_PROBE_CONF}) probe in next liquid session, then win to reset`,
+        },
+      };
+    }
+    // Escape: new liquid session + sufficient confidence → allow cautious probe
   }
 
   // ── Select base cooldown ──────────────────────────────────────────────────
@@ -251,7 +284,7 @@ function checkAdaptiveCooldown({ strategyName, instrument, session, regime, conf
 
   // ── Anti-starvation ───────────────────────────────────────────────────────
   let antiStarvation = false;
-  if (LIQUID_SESSIONS.has(session) && elapsedMin >= ANTI_STARVATION_MIN) {
+  if (_isLiquidSession(session) && elapsedMin >= ANTI_STARVATION_MIN) {
     computedMin   *= ANTI_STARVATION_SCALE;
     antiStarvation = true;
   }
