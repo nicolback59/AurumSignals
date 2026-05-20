@@ -26,21 +26,29 @@ CREATE TABLE IF NOT EXISTS signals (
   rr             REAL,          -- risk:reward ratio
   trade_status   TEXT    NOT NULL DEFAULT 'ACTIVE', -- ACTIVE | WIN | LOSS | BE | EXPIRED | INVALIDATED
   raw_payload    TEXT,
-  received_at    TEXT NOT NULL DEFAULT (datetime('now'))
+  received_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  quant_score    INTEGER,       -- composite quant score at signal time (0–100)
+  quant_grade    TEXT           -- S | A | B | IGNORE
 );
 
 -- Migration: add strategy_name to existing signals tables (safe no-op if already present)
 CREATE INDEX IF NOT EXISTS idx_signals_strategy ON signals(strategy_name);
 
 CREATE TABLE IF NOT EXISTS outcomes (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  signal_id   INTEGER NOT NULL REFERENCES signals(id),
-  result      TEXT    CHECK(result IN ('WIN','LOSS','BE','EXPIRED')),
-  exit_price  REAL,
-  exit_at     TEXT,
-  pnl_pts     REAL,
-  pnl_usd     REAL,
-  notes       TEXT,
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  signal_id      INTEGER NOT NULL REFERENCES signals(id),
+  result         TEXT    CHECK(result IN ('WIN','LOSS','BE','EXPIRED')),
+  exit_price     REAL,
+  exit_at        TEXT,
+  pnl_pts        REAL,
+  pnl_usd        REAL,
+  notes          TEXT,
+  mfe_pts        REAL,         -- Maximum Favorable Excursion (best price reached)
+  mae_pts        REAL,         -- Maximum Adverse Excursion (worst drawdown reached)
+  hold_time_min  REAL,         -- minutes from entry to exit
+  failure_reason TEXT,         -- chop_fakeout | volatility_sweep | exhaustion | late_entry | news | etc
+  quant_score    INTEGER,      -- composite quant score at signal time (0-100)
+  quant_grade    TEXT,         -- S | A | B | IGNORE
   UNIQUE (signal_id)
 );
 
@@ -382,3 +390,15 @@ CREATE TABLE IF NOT EXISTS report_schedule (
   enabled         INTEGER NOT NULL DEFAULT 1,
   tz              TEXT    NOT NULL DEFAULT 'America/Los_Angeles'
 );
+
+-- ── Quant-engine migration block (safe no-ops if columns already exist) ───────
+-- These run in server.js applyMigrations() via ALTER TABLE ... IF NOT EXISTS logic.
+-- Listed here as documentation; actual migration is handled by the migration runner.
+-- ALTER TABLE signals  ADD COLUMN quant_score INTEGER;
+-- ALTER TABLE signals  ADD COLUMN quant_grade  TEXT;
+-- ALTER TABLE outcomes ADD COLUMN mfe_pts          REAL;
+-- ALTER TABLE outcomes ADD COLUMN mae_pts          REAL;
+-- ALTER TABLE outcomes ADD COLUMN hold_time_min    REAL;
+-- ALTER TABLE outcomes ADD COLUMN failure_reason   TEXT;
+-- ALTER TABLE outcomes ADD COLUMN quant_score      INTEGER;
+-- ALTER TABLE outcomes ADD COLUMN quant_grade      TEXT;

@@ -20,10 +20,10 @@ const RESEARCH_THRESHOLDS = {
 // live notification.  MNQ_SWING and MNQ_50PT are intentionally strict
 // because weak setups in these strategies have produced losses historically.
 const LIVE_THRESHOLDS = {
-  MNQ_INTRADAY: 65,
+  MNQ_INTRADAY: 72,  // raised 65→72: only A-tier and above pass as live
   MNQ_SWING:    85,  // requires A+/S-tier conviction (4H bias + 1H alignment confirmed)
   MNQ_50PT:     86,  // requires clean displacement + open space + HTF support
-  MGC_SCALP:    55,
+  MGC_SCALP:    72,  // raised 55→72: quant scorer provides further S + strong-A filtering
   MGC_INTRADAY: 60,
 };
 

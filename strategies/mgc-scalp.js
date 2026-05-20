@@ -44,9 +44,10 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '4.3';
+const STRATEGY_VERSION = '4.4';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
+const MAX_RISK_PTS = 10;  // hard cap on SL distance — skip any setup requiring >10pt risk
 const MIN_BAR_GAP = 1;          // 1-bar spam guard — adaptive-cooldown.js handles strategy timing
 const TP = [10, 14, 20, 25];    // fixed MGC take-profit levels in points
 
@@ -295,12 +296,16 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
 
   const adxVal    = getAdxValue(exec);
 
+  // Displacement strength: current bar body vs average of prior 10 bars
+  const dispStrength = displacementStrength(exec);
+
   // ── Evaluation context object ───────────────────────────────────────────────
   const ctx = {
     exec, bars5m, bars15m, bars1h, n, last, closes, atr, vwap, vwapArr,
     ema9, ema21, ema9Arr, ema21Arr, rsi, rsiOB, rsiOS, hist, histPrev,
     regime, chopScore, vwapState, volRegime, htfBias, htf1hBias,
     htf30mBias, htf45mBias, priorDay, isChop, isSoftChop, adxVal, sess,
+    dispStrength,
   };
 
   // ── Try each archetype ──────────────────────────────────────────────────────
@@ -427,12 +432,25 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   };
 }
 
+// ── Displacement strength ──────────────────────────────────────────────────────
+// Ratio of the current bar's body size to the average body over the prior 10 bars.
+// Strong displacement (≥ 1.4×) indicates a decisive momentum move and earns an
+// extra +4 bonus in continuation and VWAP archetypes.
+
+function displacementStrength(bars) {
+  const n = bars.length - 1;
+  const bodies = bars.slice(-11, -1).map(b => Math.abs(b.close - b.open));
+  const avgBody = bodies.reduce((s, v) => s + v, 0) / (bodies.length || 1) || 1;
+  const curBody = Math.abs(bars[n].close - bars[n].open);
+  return curBody / avgBody;
+}
+
 // ── Archetype evaluators ───────────────────────────────────────────────────────
 
 function evalContinuationPullback(ctx) {
   const { exec, n, last, atr, vwap, vwapArr, ema9, ema21,
           regime, htfBias, rsiOB, rsiOS, hist, histPrev, chopScore,
-          adxVal, sess } = ctx;
+          adxVal, sess, dispStrength } = ctx;
 
   if (regime === 'RANGE_CHOP' || regime === 'SOFT_CHOP') return null;
 
@@ -481,7 +499,7 @@ function evalContinuationPullback(ctx) {
     const swHigh = recentSwingHigh(exec, 8);
     const sl     = isBull ? Math.min(swLow, ema21) - 0.3 * atr : Math.max(swHigh, ema21) + 0.3 * atr;
     const risk   = isBull ? last.close - sl : sl - last.close;
-    if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) continue;
+    if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) continue;
 
     const rr     = +(14 / risk).toFixed(2);
     if (rr < 0.8) continue;
@@ -491,19 +509,21 @@ function evalContinuationPullback(ctx) {
 
     const trendBonus = trendRegime ? 5 : 0;
     const adxBonus   = adxVal != null && adxVal >= 25 ? 3 : 0;
+    // Displacement strength: strong momentum bar adds conviction to the continuation
+    const dispBonus  = (dispStrength ?? 0) >= 1.4 ? 4 : 0;
 
     return {
       dir, sl, rr, srDist,
       archetype: 'continuation_pullback',
-      bonus: trendBonus + adxBonus,
-      score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus + adxBonus,
+      bonus: trendBonus + adxBonus + dispBonus,
+      score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus + adxBonus + dispBonus,
     };
   }
   return null;
 }
 
 function evalVwapReclaimReject(ctx) {
-  const { exec, n, last, atr, vwap, vwapArr, vwapState, htfBias, rsiOB, rsiOS } = ctx;
+  const { exec, n, last, atr, vwap, vwapArr, vwapState, htfBias, rsiOB, rsiOS, dispStrength } = ctx;
 
   if (vwapState === 'CHOPPING' || vwapState === 'ABOVE' || vwapState === 'BELOW' || vwapState === 'UNKNOWN') return null;
 
@@ -522,7 +542,7 @@ function evalVwapReclaimReject(ctx) {
   const swHigh = recentSwingHigh(exec, 6);
   const sl     = isBull ? Math.min(swLow, vwap) - 0.3 * atr : Math.max(swHigh, vwap) + 0.3 * atr;
   const risk   = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.4 || risk > 2.5 * atr) return null;
+  if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) return null;
 
   const rr     = +(14 / risk).toFixed(2);
   if (rr < 0.8) return null;
@@ -530,11 +550,14 @@ function evalVwapReclaimReject(ctx) {
   const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
   if (srDist < 0.35) return null;
 
+  // Displacement strength: strong momentum bar adds conviction to the VWAP reclaim/rejection
+  const dispBonus = (dispStrength ?? 0) >= 1.4 ? 4 : 0;
+
   return {
     dir, sl, rr, srDist,
     archetype: isBull ? 'vwap_reclaim' : 'vwap_rejection',
-    bonus: 5,
-    score: rr * 12 + srDist * 4,
+    bonus: 5 + dispBonus,
+    score: rr * 12 + srDist * 4 + dispBonus,
   };
 }
 
@@ -560,7 +583,7 @@ function evalSweepReversal(ctx) {
       ? sweepBar.low  - 0.25 * atr
       : sweepBar.high + 0.25 * atr;
     const risk = isBull ? last.close - sl : sl - last.close;
-    if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) continue;
+    if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) continue;
 
     const rr     = +(14 / risk).toFixed(2);
     if (rr < 0.7) continue;
@@ -616,7 +639,7 @@ function evalCompressionBreakout(ctx) {
 
   const sl   = isBull ? rangeLow - 0.2 * atr : rangeHigh + 0.2 * atr;
   const risk = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.4 || risk > 3 * atr) return null;
+  if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) return null;
 
   const rr     = +(14 / risk).toFixed(2);
   if (rr < 0.7) return null;
@@ -651,7 +674,7 @@ function evalChopMeanRevert(ctx) {
 
   const sl   = isBull ? exec[n-1].low  - 0.2 * atr : exec[n-1].high + 0.2 * atr;
   const risk = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.3 || risk > 2 * atr) return null;
+  if (risk < ATR_MIN_PTS * 0.3 || risk > MAX_RISK_PTS) return null;
 
   // Smaller target in chop (aim for VWAP, ~TP1)
   const rr = +(10 / risk).toFixed(2);

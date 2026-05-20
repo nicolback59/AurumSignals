@@ -26,7 +26,7 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '2.4';
+const STRATEGY_VERSION = '2.5';
 
 // Minimum ATR in MNQ points for intraday to be worth trading
 const ATR_MIN_PTS = 8;  // restored from 5 — low-ATR sessions have weak follow-through
@@ -38,14 +38,24 @@ let lastSignalBar = -999;
 /**
  * Evaluate MNQ intraday setup on confirmed bars.
  *
- * @param {object[]} bars    - 5m primary bars (last = most recent confirmed)
- * @param {object[]} htfBars - 15m bars
- * @param {object[]} htf2Bars - 1h bars
- * @param {object}   cfg     - { instrument?, cooldownBars? }
- * @param {number}   barIdx  - current absolute bar index (for backtest cooldown)
+ * @param {object[]} bars       - 5m primary bars (last = most recent confirmed)
+ * @param {object[]} htfBars    - 15m bars
+ * @param {object[]} htf2Bars   - 1h bars
+ * @param {object[]} htf4hBars  - 4h bars (optional; old callers may pass cfg here)
+ * @param {object}   cfg        - { instrument?, cooldownBars? }
+ * @param {number}   barIdx     - current absolute bar index (for backtest cooldown)
  * @returns {object|null} signal or null
  */
-function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
+function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
+  // Backward compat: old callers pass (bars, htfBars, htf2Bars, cfg, barIdx)
+  // Detect by checking if htf4hBars is a plain object (cfg) rather than an array.
+  if (htf4hBars !== null && htf4hBars !== undefined && !Array.isArray(htf4hBars)) {
+    // shift args: htf4hBars is actually cfg, cfg is actually barIdx
+    barIdx  = cfg == null || typeof cfg === 'number' ? cfg : barIdx;
+    cfg     = htf4hBars;
+    htf4hBars = [];
+  }
+
   const MIN_BARS = 60;
   if (bars.length < MIN_BARS || htfBars.length < 30) return null;
 
@@ -83,8 +93,9 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
   if (sess.quality < 0.35) return null;
 
   // ── HTF bias ──────────────────────────────────────────────────────────────────
-  const htfBias  = calcHtfBias(htfBars, 9, 21);
-  const htf2Bias = htf2Bars && htf2Bars.length >= 21 ? calcHtfBias(htf2Bars, 9, 21) : 0;
+  const htfBias   = calcHtfBias(htfBars, 9, 21);
+  const htf2Bias  = htf2Bars  && htf2Bars.length  >= 21 ? calcHtfBias(htf2Bars,  9, 21) : 0;
+  const htf4hBias = htf4hBars && htf4hBars.length >= 5  ? calcHtfBias(htf4hBars, 9, 21) : 0;
 
   // ── Determine direction candidates ───────────────────────────────────────────
   // Require 5m EMA stack + both HTFs not conflicting (neutral is allowed).
@@ -160,6 +171,27 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       if (sigTrendingAgainst) continue;
     }
 
+    // ── Opening drive detection ──────────────────────────────────────────────
+    // If within 30 minutes of session open AND price is moving strongly away from
+    // VWAP (> 0.8 × ATR), this is an opening drive — boost trigger reason context.
+    // Session open times (ET): NY_OPEN=930, LONDON=2300 (prev day), NY_PRE=800.
+    let openingDriveNote = null;
+    {
+      const vwapDist = Math.abs(last.close - vwap);
+      const d = new Date(last.timestamp);
+      const nowHhmm = (d.getUTCHours() - 4) * 100 + d.getUTCMinutes(); // rough ET
+      const sessName = (sess?.name ?? '').toUpperCase();
+      // NY_OPEN window: 9:30–10:00 ET (930–1000 hhmm)
+      // LONDON window: determined by whether sess.name is LONDON and within first 30 min
+      const inOpeningWindow =
+        (sessName === 'NY_OPEN'   && nowHhmm >= 930  && nowHhmm < 1000) ||
+        (sessName === 'NY_PRE'    && nowHhmm >= 800  && nowHhmm < 830)  ||
+        (sessName === 'LONDON'    && (nowHhmm >= 2300 || nowHhmm < 2330));
+      if (inOpeningWindow && vwapDist > 0.8 * atr) {
+        openingDriveNote = `opening_drive(+${Math.round(vwapDist / atr * 10) / 10}ATR)`;
+      }
+    }
+
     // ── Stop-loss ────────────────────────────────────────────────────────────
     const swLow  = recentSwingLow(bars, 10);
     const swHigh = recentSwingHigh(bars, 10);
@@ -230,15 +262,19 @@ function evaluate(bars, htfBars, htf2Bars, cfg = {}, barIdx = null) {
       strategy_version: STRATEGY_VERSION,
       htf_bias:         htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
-      trigger_reason: `EMA9/21 ${dir} (stack=${esScore}), fresh pullback ≤8 bars, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF non-conflicting`,
+      trigger_reason: [
+        `EMA9/21 ${dir} (stack=${esScore}), fresh pullback ≤8 bars, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF non-conflicting`,
+        htf4hBias !== 0 ? `4H:${htf4hBias === 1 ? 'BULL' : 'BEAR'}` : null,
+        openingDriveNote,
+      ].filter(Boolean).join(' | '),
       indicators: {
-        atr:   +atr.toFixed(2),
-        vwap:  +vwap.toFixed(2),
-        ema9:  +ema9.toFixed(2),
-        ema21: +ema21.toFixed(2),
-        ema50: +ema50.toFixed(2),
-        rsi:   rsi != null ? +rsi.toFixed(1) : null,
-        htfBias, htf2Bias,
+        atr:       +atr.toFixed(2),
+        vwap:      +vwap.toFixed(2),
+        ema9:      +ema9.toFixed(2),
+        ema21:     +ema21.toFixed(2),
+        ema50:     +ema50.toFixed(2),
+        rsi:       rsi != null ? +rsi.toFixed(1) : null,
+        htfBias, htf2Bias, htf4hBias,
       },
       timestamp:    last.timestamp,
       trade_status: 'PENDING',
