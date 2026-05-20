@@ -42,6 +42,7 @@ const {
 } = require('./signals/signal-state-machine');
 const {
   buildAlertPayload, flattenPayload, buildNtfyBody, buildNtfyHeaders,
+  buildNtfyOutcomeBody, buildNtfyOutcomeHeaders,
 } = require('./signals/alert-payload');
 const { evaluateTPViability } = require('./signals/tp-viability');
 const {
@@ -159,6 +160,9 @@ class Scanner extends EventEmitter {
     this._lastNtfySuccessAt = 0;   // epoch ms of last ntfy HTTP 2xx response
     this._lastNtfyStatus    = null; // last HTTP status code from ntfy
     this._lastNtfyError     = null; // last ntfy error message
+    // Idempotency: tracks outcome notifications already sent this process lifetime
+    // Key: `${signalId}_${eventType}` — prevents duplicate win/loss/expired pushes
+    this._notifiedOutcomes  = new Set();
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -656,6 +660,7 @@ class Scanner extends EventEmitter {
     const headers = buildNtfyHeaders(payload, { ntfyToken: this.cfg.ntfyToken });
     const url     = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
     this._lastNtfyAttemptAt = Date.now();
+    this._log(`NOTIFICATION_EVENT_CREATED event=TRADE_ENTRY instr=${payload.instrument ?? ''} dir=${payload.direction ?? ''}`, 'signal');
     this._log(`NOTIFICATION_SEND_START → ${url}`, 'signal');
     fetch(url, { method: 'POST', headers, body })
       .then(r => {
@@ -677,54 +682,73 @@ class Scanner extends EventEmitter {
   }
 
   // ── Outcome ntfy push ─────────────────────────────────────────────────────────
+  // Idempotency: each (signalId, eventType) pair is only sent once per process.
 
-  _sendNtfyOutcome(sig, result, pnlPts) {
+  _sendNtfyOutcome(sig, result, pnlPts, exitPrice = null, exitAt = null) {
     if (!this.cfg.ntfyTopic) return;
-    const { id: signalId, instrument, direction } = sig;
-    const pnlStr = pnlPts != null ? ` (${pnlPts >= 0 ? '+' : ''}${pnlPts} pts)` : '';
 
-    const STRAT_LABELS = {
-      MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing',
-      MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday',
-    };
+    const eventType = result === 'WIN'  ? 'TRADE_WIN'
+                    : result === 'LOSS' ? 'TRADE_LOSS'
+                    : 'TRADE_BREAKEVEN';
 
-    let title, tags, priority, body;
-
-    if (result === 'WIN') {
-      const stratLabel = STRAT_LABELS[sig.strategy_name] || sig.setup || sig.strategy_name || instrument;
-      const wrPct      = sig.predicted_wr_pct ?? sig.win_prob_tp1;
-      const wrStr      = wrPct != null ? ` | WR was ${wrPct}%` : '';
-      priority = 'high';
-      tags     = 'trophy,white_check_mark';
-      title    = `Win | ${instrument} ${direction}${pnlStr}`;
-      body     = [
-        `✅ Win — ${direction} ${stratLabel}`,
-        sig.entry != null ? `Entry: ${sig.entry}  →  TP1: ${sig.tp1}` : null,
-        pnlPts    != null ? `Gained: ${pnlPts >= 0 ? '+' : ''}${pnlPts} pts` : null,
-        sig.session       ? `Session: ${sig.session}` : null,
-        `Signal #${signalId}${wrStr}`,
-      ].filter(Boolean).join('\n');
-    } else if (result === 'LOSS') {
-      priority = 'default';
-      tags     = 'x';
-      title    = `Loss | ${instrument} ${direction}${pnlStr}`;
-      body     = `❌ Loss — ${direction} ${instrument}${pnlStr}\nSignal #${signalId}`;
-    } else {
-      priority = 'default';
-      tags     = 'warning';
-      title    = `[BE] ${instrument} ${direction}`;
-      body     = `⚠️ Break-even: ${direction} ${instrument}\nSignal #${signalId}`;
+    const idempKey = `${sig.id}_${eventType}`;
+    if (this._notifiedOutcomes.has(idempKey)) {
+      this._log(`NOTIFICATION_SKIPPED reason=already_sent event=${eventType} id=${sig.id}`, 'signal');
+      return;
     }
+    this._notifiedOutcomes.add(idempKey);
 
-    const headers = {
-      'Content-Type': 'text/plain',
-      'Title':    title,
-      'Priority': priority,
-      'Tags':     tags,
-    };
-    if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
-    fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
-      .catch(err => this._err('[ntfy-outcome] send failed', err));
+    this._log(`NOTIFICATION_EVENT_CREATED event=${eventType} id=${sig.id} instr=${sig.instrument} result=${result}`, 'signal');
+
+    const body    = buildNtfyOutcomeBody(eventType, sig, { exitPrice, exitAt, pnlPts });
+    const headers = buildNtfyOutcomeHeaders(eventType, sig, { ntfyToken: this.cfg.ntfyToken });
+    const url     = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
+
+    this._log(`NOTIFICATION_SEND_START event=${eventType} → ${url}`, 'signal');
+    fetch(url, { method: 'POST', headers, body })
+      .then(r => {
+        if (r.ok) {
+          this._log(`NOTIFICATION_SEND_SUCCESS HTTP ${r.status} event=${eventType}`, 'signal');
+        } else {
+          this._log(`NOTIFICATION_SEND_FAILED HTTP ${r.status} event=${eventType}`, 'signal');
+        }
+      })
+      .catch(err => this._err(`[ntfy-outcome] ${eventType} send failed`, err));
+  }
+
+  // ── Expired ntfy push ─────────────────────────────────────────────────────────
+
+  _sendNtfyExpired(sig, expReason) {
+    if (!this.cfg.ntfyTopic) return;
+
+    const eventType = expReason === 'EXPIRED_MARKET_CLOSE'  ? 'TRADE_EXPIRED_MARKET_CLOSE'
+                    : expReason === 'EXPIRED_WEEKEND_CLOSE' ? 'TRADE_EXPIRED_WEEKEND_CLOSE'
+                    : 'TRADE_EXPIRED_MAX_HOLD';
+
+    const idempKey = `${sig.id}_${eventType}`;
+    if (this._notifiedOutcomes.has(idempKey)) {
+      this._log(`NOTIFICATION_SKIPPED reason=already_sent event=${eventType} id=${sig.id}`, 'signal');
+      return;
+    }
+    this._notifiedOutcomes.add(idempKey);
+
+    this._log(`NOTIFICATION_EVENT_CREATED event=${eventType} id=${sig.id} instr=${sig.instrument} reason=${expReason}`, 'signal');
+
+    const now     = new Date().toISOString();
+    const body    = buildNtfyOutcomeBody(eventType, sig, { exitAt: now, expReason });
+    const headers = buildNtfyOutcomeHeaders(eventType, sig, { ntfyToken: this.cfg.ntfyToken });
+    const url     = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
+
+    this._log(`NOTIFICATION_SEND_START event=${eventType} → ${url}`, 'signal');
+    fetch(url, { method: 'POST', headers, body })
+      .then(r => {
+        if (r.ok) {
+          this._log(`NOTIFICATION_SEND_SUCCESS HTTP ${r.status} event=${eventType}`, 'signal');
+        } else {
+          this._log(`NOTIFICATION_SEND_FAILED HTTP ${r.status} event=${eventType}`, 'signal');
+        }
+      })
+      .catch(err => this._err(`[ntfy-expired] send failed`, err));
   }
 
   // ── TP2 / TP3 push notification ───────────────────────────────────────────────
@@ -1003,7 +1027,7 @@ class Scanner extends EventEmitter {
 
       this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolution.toState}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
       this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
-      if (result !== 'EXPIRED') this._sendNtfyOutcome(sig, result, pnlPts);
+      if (result !== 'EXPIRED') this._sendNtfyOutcome(sig, result, pnlPts, resolution.exitPrice, exitBar?.timestamp);
       resolvedCount++;
     }
 
@@ -1046,7 +1070,7 @@ class Scanner extends EventEmitter {
         if (result === 'WIN' || result === 'LOSS') signalDedup.releaseBySignal(sig);
         this._log(`RETRO-FIX #${sig.id} ${instrument}: EXPIRED → ${result}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
         this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
-        this._sendNtfyOutcome(sig, result, pnlPts);
+        this._sendNtfyOutcome(sig, result, pnlPts, resolution.exitPrice, bar.timestamp);
         resolvedCount++;
         break;
       }
@@ -1200,6 +1224,7 @@ class Scanner extends EventEmitter {
           this._stmts.updateSigExpReason.run(reason, sig.id);
           this._stmts.updateOutExpReason.run(reason, sig.id);
         } catch { /* ignore */ }
+        this._sendNtfyExpired(sig, reason);
         console.log(`[sweep] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason} age=${Math.round((now - new Date(sig.received_at)) / 60000)}m`);
       };
 

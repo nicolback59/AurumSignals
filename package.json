@@ -7,7 +7,11 @@
     "start": "node --max-old-space-size=400 --expose-gc server.js",
     "dev": "node --watch server.js",
     "scan": "node --max-old-space-size=400 scanner.js",
-    "scan:dev": "node --watch scanner.js"
+    "scan:dev": "node --watch scanner.js",
+    "test:ntfy-entry": "node scripts/test-ntfy.js entry",
+    "test:ntfy-win": "node scripts/test-ntfy.js win",
+    "test:ntfy-loss": "node scripts/test-ntfy.js loss",
+    "test:ntfy-expired": "node scripts/test-ntfy.js expired"
   },
   "dependencies": {
     "better-sqlite3": "^9.6.0",

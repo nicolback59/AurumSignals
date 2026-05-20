@@ -30,6 +30,14 @@ const STRIP_KEYS = new Set([
   'trade_status', // top-level; added separately as state.trade_status
 ]);
 
+const STRAT_LABELS = {
+  MGC_SCALP:    'MGC Scalp',
+  MGC_INTRADAY: 'MGC Intraday',
+  MNQ_INTRADAY: 'MNQ Intraday',
+  MNQ_SWING:    'MNQ Swing',
+  MNQ_50PT:     'MNQ 50-Point',
+};
+
 /**
  * Build the canonical alert payload from a raw strategy signal + enrichment.
  *
@@ -164,50 +172,167 @@ function flattenPayload(p) {
   };
 }
 
-/**
- * Build the ntfy notification body from a canonical payload.
- *
- * Format matches the Discord signal style:
- *   MGC buy 3295.00
- *   Stop loss 3285.00
- *   Tp1 3305.00
- *   Tp2 3309.00
- *   Tp3 3315.00
- *   Tp4 3320.00          ← only when present
- */
 function buildNtfyBody(p) {
-  const flat = p.v === SCHEMA_VERSION ? flattenPayload(p) : p;
-  const dir  = flat.direction === 'LONG' ? 'buy' : 'sell';
+  const flat  = p.v === SCHEMA_VERSION ? flattenPayload(p) : p;
+  const dir   = flat.direction === 'LONG' ? 'LONG' : 'SHORT';
   const instr = flat.instrument ?? flat.ticker ?? '';
+  const strat = flat.strategy_name ?? instr;
+  const stratLabel = STRAT_LABELS[strat] ?? strat;
+  const conf  = flat.adjusted_confidence ?? flat.confidence;
 
   return [
-    `${instr} ${dir} ${flat.entry ?? ''}`,
-    flat.sl   != null ? `Stop loss ${flat.sl}`  : null,
-    flat.tp1  != null ? `Tp1 ${flat.tp1}`       : null,
-    flat.tp2  != null ? `Tp2 ${flat.tp2}`       : null,
-    flat.tp3  != null ? `Tp3 ${flat.tp3}`       : null,
-    flat.tp4  != null ? `Tp4 ${flat.tp4}`       : null,
-    flat.quant_grade != null ? `Grade: ${flat.quant_grade}  Score: ${flat.quant_score ?? ''}` : null,
-  ].filter(Boolean).join('\n');
+    `Aurum Signals — ${instr} ${dir} Entry`,
+    '',
+    `Strategy: ${stratLabel}`,
+    flat.tier != null          ? `Tier: ${flat.tier}`                      : null,
+    conf != null               ? `Confidence: ${conf}%`                    : null,
+    flat.quant_grade != null   ? `Quant Grade: ${flat.quant_grade} (${flat.quant_score ?? '?'}/100)` : null,
+    '',
+    `Entry: ${flat.entry ?? ''}`,
+    flat.sl  != null           ? `SL: ${flat.sl}`                          : null,
+    flat.tp1 != null           ? `TP1: ${flat.tp1}`                        : null,
+    flat.tp2 != null           ? `TP2: ${flat.tp2}`                        : null,
+    flat.tp3 != null           ? `TP3: ${flat.tp3}`                        : null,
+    flat.tp4 != null           ? `TP4: ${flat.tp4}`                        : null,
+    flat.rr  != null           ? `RR: ${flat.rr}`                          : null,
+    '',
+    flat.session != null       ? `Session: ${flat.session}`                : null,
+    flat.trigger_reason != null ? `Reason: ${flat.trigger_reason}`         : null,
+    '',
+    'Not financial advice.',
+  ].filter(v => v !== null).join('\n');
 }
 
-/**
- * Build ntfy headers (all ASCII — no emoji).
- * Title mirrors the first line of the body so the phone lock-screen preview is clear.
- */
 function buildNtfyHeaders(p, cfg = {}) {
   const flat  = p.v === SCHEMA_VERSION ? flattenPayload(p) : p;
-  const dir   = flat.direction === 'LONG' ? 'buy' : 'sell';
+  const dir   = flat.direction === 'LONG' ? 'LONG' : 'SHORT';
   const instr = flat.instrument ?? flat.ticker ?? '';
+  const conf  = flat.adjusted_confidence ?? flat.confidence;
   const prio  = (flat.tier === 'S' || flat.grade === 'A+') ? 'urgent' : 'high';
   const tags  = flat.direction === 'LONG'
     ? 'chart_increasing,green_circle'
     : 'chart_decreasing,red_circle';
+  const confStr = conf != null ? ` ${conf}%` : '';
   const headers = {
     'Content-Type': 'text/plain',
-    'Title':    `${instr} ${dir} ${flat.entry ?? ''}`.trim(),
+    'Title':    `${instr} ${dir} Entry${confStr}`.trim(),
     'Priority': prio,
     'Tags':     tags,
+  };
+  if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
+  return headers;
+}
+
+/**
+ * Build ntfy body for trade outcome events.
+ *
+ * @param {string} eventType - TRADE_WIN | TRADE_LOSS | TRADE_BREAKEVEN |
+ *   TRADE_EXPIRED_MARKET_CLOSE | TRADE_EXPIRED_MAX_HOLD | TRADE_EXPIRED_WEEKEND_CLOSE
+ * @param {object} sig   - signal row from DB (id, instrument, direction, entry, sl, tp1, strategy_name, session, received_at)
+ * @param {object} extras - { exitPrice, exitAt, pnlPts, expReason }
+ */
+function buildNtfyOutcomeBody(eventType, sig, extras = {}) {
+  const { exitPrice, exitAt, pnlPts, expReason } = extras;
+  const dir        = sig.direction ?? '';
+  const instr      = sig.instrument ?? '';
+  const stratLabel = STRAT_LABELS[sig.strategy_name] ?? sig.strategy_name ?? instr;
+  const session    = sig.session ? `Session: ${sig.session}` : null;
+
+  // Duration
+  let durationStr = null;
+  if (sig.received_at && exitAt) {
+    const durationMin = Math.round((new Date(exitAt) - new Date(sig.received_at)) / 60000);
+    if (!isNaN(durationMin) && durationMin >= 0) durationStr = `Duration: ${durationMin} min`;
+  }
+
+  const pnlStr = pnlPts != null
+    ? `P/L: ${pnlPts >= 0 ? '+' : ''}${pnlPts} pts`
+    : null;
+
+  if (eventType === 'TRADE_WIN') {
+    const exitLabel = exitPrice != null ? `TP Hit: ${exitPrice}` : null;
+    return [
+      'Aurum Signals — WIN',
+      '',
+      `${stratLabel} ${dir}`,
+      `Entry: ${sig.entry ?? ''} → ${exitLabel ?? ''}`,
+      pnlStr,
+      durationStr,
+      session,
+    ].filter(Boolean).join('\n');
+  }
+
+  if (eventType === 'TRADE_LOSS') {
+    const exitLabel = exitPrice != null ? `SL Hit: ${exitPrice}` : null;
+    return [
+      'Aurum Signals — LOSS',
+      '',
+      `${stratLabel} ${dir}`,
+      `Entry: ${sig.entry ?? ''} → ${exitLabel ?? ''}`,
+      pnlStr,
+      durationStr,
+      session,
+    ].filter(Boolean).join('\n');
+  }
+
+  if (eventType === 'TRADE_BREAKEVEN') {
+    return [
+      'Aurum Signals — Breakeven',
+      '',
+      `${stratLabel} ${dir}`,
+      `Entry: ${sig.entry ?? ''}`,
+      durationStr,
+      session,
+    ].filter(Boolean).join('\n');
+  }
+
+  // All expired variants
+  const reasonLabel = {
+    TRADE_EXPIRED_MARKET_CLOSE:   'Market close',
+    TRADE_EXPIRED_MAX_HOLD:       'Max hold time',
+    TRADE_EXPIRED_WEEKEND_CLOSE:  'Weekend close',
+  }[eventType] ?? expReason ?? 'Expired';
+
+  return [
+    'Aurum Signals — Expired',
+    '',
+    `${stratLabel} ${dir}`,
+    `Entry: ${sig.entry ?? ''}`,
+    `Reason: ${reasonLabel}`,
+    durationStr,
+    session,
+  ].filter(Boolean).join('\n');
+}
+
+function buildNtfyOutcomeHeaders(eventType, sig, cfg = {}) {
+  const instr = sig.instrument ?? '';
+  const dir   = sig.direction ?? '';
+
+  let title, priority, tags;
+
+  if (eventType === 'TRADE_WIN') {
+    title    = `WIN | ${instr} ${dir}`;
+    priority = 'high';
+    tags     = 'trophy,white_check_mark';
+  } else if (eventType === 'TRADE_LOSS') {
+    title    = `LOSS | ${instr} ${dir}`;
+    priority = 'default';
+    tags     = 'x,red_circle';
+  } else if (eventType === 'TRADE_BREAKEVEN') {
+    title    = `BE | ${instr} ${dir}`;
+    priority = 'default';
+    tags     = 'wave';
+  } else {
+    title    = `Expired | ${instr} ${dir}`;
+    priority = 'low';
+    tags     = 'hourglass_done';
+  }
+
+  const headers = {
+    'Content-Type': 'text/plain',
+    Title:    title,
+    Priority: priority,
+    Tags:     tags,
   };
   if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
   return headers;
@@ -238,4 +363,9 @@ function _compactIndicators(ind) {
   return Object.keys(compact).length ? compact : null;
 }
 
-module.exports = { buildAlertPayload, flattenPayload, buildNtfyBody, buildNtfyHeaders, SCHEMA_VERSION };
+module.exports = {
+  buildAlertPayload, flattenPayload,
+  buildNtfyBody, buildNtfyHeaders,
+  buildNtfyOutcomeBody, buildNtfyOutcomeHeaders,
+  SCHEMA_VERSION,
+};
