@@ -84,6 +84,14 @@ function applyMigrations() {
       db.exec("ALTER TABLE signals ADD COLUMN live_gated INTEGER DEFAULT 0");
       console.log('[migration] Added live_gated to signals');
     }
+    if (!cols.includes('quant_score')) {
+      db.exec("ALTER TABLE signals ADD COLUMN quant_score INTEGER");
+      console.log('[migration] Added quant_score to signals');
+    }
+    if (!cols.includes('quant_grade')) {
+      db.exec("ALTER TABLE signals ADD COLUMN quant_grade TEXT");
+      console.log('[migration] Added quant_grade to signals');
+    }
   }
   // ── strategy_status table (create + seed defaults) ──────────────────────
   db.exec(`
@@ -96,14 +104,26 @@ function applyMigrations() {
       updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
     )
   `);
+  // Seed defaults — use INSERT OR IGNORE for research-only (preserve manual overrides)
+  // but INSERT OR REPLACE for live strategies to prevent silent disabling.
   for (const [name, mode] of Object.entries({
-    MNQ_INTRADAY: 'LIVE_ENABLED',
     MNQ_SWING:    'RESEARCH_ONLY',
     MNQ_50PT:     'RESEARCH_ONLY',
-    MGC_SCALP:    'LIVE_ENABLED',
-    MGC_INTRADAY: 'LIVE_ENABLED',
+    MGC_INTRADAY: 'RESEARCH_ONLY',
   })) {
     db.prepare('INSERT OR IGNORE INTO strategy_status (strategy_name, mode) VALUES (?, ?)').run(name, mode);
+  }
+  // Live strategies: always enforce on startup — prevents accidental silent disabling
+  for (const name of ['MGC_SCALP', 'MNQ_INTRADAY']) {
+    const existing = db.prepare('SELECT mode FROM strategy_status WHERE strategy_name = ?').get(name);
+    if (existing && existing.mode === 'RESEARCH_ONLY') {
+      console.log(`[migration] CRITICAL_STRATEGY_DISABLED_DETECTED: ${name} was RESEARCH_ONLY — auto-restoring to LIVE_ENABLED`);
+    }
+    db.prepare(`
+      INSERT INTO strategy_status (strategy_name, mode, live_since, updated_at)
+      VALUES (?, 'LIVE_ENABLED', datetime('now'), datetime('now'))
+      ON CONFLICT(strategy_name) DO UPDATE SET mode = 'LIVE_ENABLED', updated_at = datetime('now')
+    `).run(name);
   }
   const hasOutcomes = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='outcomes'").get();
   if (hasOutcomes) {
@@ -112,7 +132,66 @@ function applyMigrations() {
       db.exec("ALTER TABLE outcomes ADD COLUMN expiration_reason TEXT");
       console.log('[migration] Added expiration_reason to outcomes');
     }
+    if (!outCols.includes('mfe_pts')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN mfe_pts REAL");
+      console.log('[migration] Added mfe_pts to outcomes');
+    }
+    if (!outCols.includes('mae_pts')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN mae_pts REAL");
+      console.log('[migration] Added mae_pts to outcomes');
+    }
+    if (!outCols.includes('hold_time_min')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN hold_time_min REAL");
+      console.log('[migration] Added hold_time_min to outcomes');
+    }
+    if (!outCols.includes('failure_reason')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN failure_reason TEXT");
+      console.log('[migration] Added failure_reason to outcomes');
+    }
+    if (!outCols.includes('quant_score')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN quant_score INTEGER");
+      console.log('[migration] Added quant_score to outcomes');
+    }
+    if (!outCols.includes('quant_grade')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN quant_grade TEXT");
+      console.log('[migration] Added quant_grade to outcomes');
+    }
   }
+  // Create loss_forensics table
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS loss_forensics (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      signal_id            INTEGER NOT NULL,
+      strategy_name        TEXT    NOT NULL,
+      instrument           TEXT    NOT NULL,
+      direction            TEXT,
+      result               TEXT    NOT NULL,
+      failure_category     TEXT    NOT NULL,
+      failure_subcategory  TEXT,
+      classifier_version   TEXT    DEFAULT '1.0',
+      session              TEXT,
+      day_of_week          INTEGER,
+      regime               TEXT,
+      htf_bias             TEXT,
+      confidence           INTEGER,
+      quant_score          INTEGER,
+      quant_grade          TEXT,
+      setup_type           TEXT,
+      hold_time_min        REAL,
+      mfe_pts              REAL,
+      mae_pts              REAL,
+      pnl_pts              REAL,
+      entry                REAL,
+      sl                   REAL,
+      data_quality         TEXT,
+      auto_flagged         INTEGER DEFAULT 0,
+      analyst_note         TEXT,
+      created_at           TEXT    NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_loss_forensics_strategy ON loss_forensics(strategy_name, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_loss_forensics_category ON loss_forensics(failure_category);
+    CREATE INDEX IF NOT EXISTS idx_loss_forensics_signal   ON loss_forensics(signal_id);
+  `);
   const hasBtTrades = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_trades'").get();
   if (hasBtTrades) {
     const btCols = db.prepare("PRAGMA table_info(backtest_trades)").all().map(r => r.name);
