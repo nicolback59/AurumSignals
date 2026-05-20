@@ -80,6 +80,9 @@ const {
   getOpeningCandleReport, getEtDateKey,
 } = require('./opening-candle');
 const { computeQuantScore } = require('./strategies/quant-scorer');
+const {
+  writeLossForensic, computeMfeMae, detectClusters, formatClusterLog,
+} = require('./signals/loss-forensics');
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 function ts() { return new Date().toISOString(); }
@@ -1012,6 +1015,9 @@ class Scanner extends EventEmitter {
 
       const pnlPts = result === 'EXPIRED' ? 0 : +resolution.pnlPts.toFixed(2);
 
+      // Compute MFE / MAE and hold time from bars before writing outcome
+      const { mfePts, maePts, holdTimeMin } = computeMfeMae(futureBars, sig, exitBar);
+
       this._stmts.insertOutcome.run(
         sig.id, result, resolution.exitPrice,
         exitBar?.timestamp ?? now.toISOString(),
@@ -1019,15 +1025,40 @@ class Scanner extends EventEmitter {
       );
       this._stmts.updateTradeStatus.run(resolution.toState, sig.id);
 
+      // Backfill enriched columns into outcome row
+      try {
+        this.db.prepare(`
+          UPDATE outcomes SET
+            mfe_pts = ?, mae_pts = ?, hold_time_min = ?,
+            quant_score = ?, quant_grade = ?
+          WHERE signal_id = ?
+        `).run(mfePts, maePts, holdTimeMin, sig.quant_score ?? null, sig.quant_grade ?? null, sig.id);
+      } catch { /* never crash */ }
+
       // Release the dedup slot so a genuinely new setup at the same zone can
       // alert immediately rather than waiting for the suppression window.
       if (result === 'WIN' || result === 'LOSS') {
         signalDedup.releaseBySignal(sig);
       }
 
-      this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolution.toState}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
+      this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolution.toState}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}${mfePts != null ? ` MFE=${mfePts} MAE=${maePts}` : ''}`, 'signal');
       this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
       if (result !== 'EXPIRED') this._sendNtfyOutcome(sig, result, pnlPts, resolution.exitPrice, exitBar?.timestamp);
+
+      // Loss forensics — classify and write for all non-WIN outcomes
+      if (result === 'LOSS' || result === 'EXPIRED' || result === 'BE') {
+        try {
+          const forensicCtx = { mfePts, maePts, holdTimeMin, pnlPts, regime: null, atr: null };
+          const classification = writeLossForensic(this.db, sig, result, forensicCtx);
+          if (classification) {
+            this._log(`LOSS_FORENSIC #${sig.id} strategy=${sig.strategy_name} category=${classification.category} sub=${classification.subcategory ?? '-'}`, 'signal');
+            // Cluster detection — check last 10 losses for this strategy
+            const cluster = detectClusters(this.db, sig.strategy_name, 10);
+            if (cluster) this._log(formatClusterLog(cluster), 'signal');
+          }
+        } catch { /* never crash on forensics */ }
+      }
+
       resolvedCount++;
     }
 
@@ -1225,6 +1256,20 @@ class Scanner extends EventEmitter {
           this._stmts.updateOutExpReason.run(reason, sig.id);
         } catch { /* ignore */ }
         this._sendNtfyExpired(sig, reason);
+        // Loss forensics for sweep-expired signals (no bars available — limited context)
+        try {
+          const holdMs  = now.getTime() - new Date(sig.received_at).getTime();
+          const holdMin = +(holdMs / 60000).toFixed(1);
+          const classification = writeLossForensic(this.db, sig, 'EXPIRED', {
+            holdTimeMin: holdMin,
+            pnlPts:      0,
+            regime:      null,
+            atr:         null,
+          });
+          if (classification) {
+            this._log(`LOSS_FORENSIC #${sig.id} strategy=${sig.strategy_name} category=${classification.category} reason=${reason}`, 'signal');
+          }
+        } catch { /* never crash on forensics */ }
         console.log(`[sweep] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason} age=${Math.round((now - new Date(sig.received_at)) / 60000)}m`);
       };
 
@@ -3169,17 +3214,34 @@ class Scanner extends EventEmitter {
     this._log(`SCANNER_BOOT_START platform=${process.env.NODE_ENV ?? 'dev'} feed=${this.feedType} logLevel=${cfg.logLevel} scanInterval=${cfg.scanInterval / 1000}s`, 'signal');
     this._log('REGISTERED_STRATEGIES MNQ: MNQ_INTRADAY(LIVE) MNQ_SWING(LIVE) MNQ_50PT(LIVE) | MGC: MGC_SCALP(LIVE) MGC_INTRADAY(LIVE)', 'signal');
 
-    // Lock non-live strategies to RESEARCH_ONLY — only MGC_SCALP and MNQ_INTRADAY are live
+    // Enforce correct strategy modes and log verified state
     try {
+      // Lock research-only strategies
       const RESEARCH_ONLY_STRATEGIES = ['MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
       for (const strat of RESEARCH_ONLY_STRATEGIES) {
         this.db.prepare(`
           INSERT INTO strategy_status (strategy_name, mode, notes, updated_at)
-          VALUES (?, 'RESEARCH_ONLY', 'Demoted to research — focus on MGC_SCALP + MNQ_INTRADAY only', datetime('now'))
+          VALUES (?, 'RESEARCH_ONLY', 'Locked to research — only MGC_SCALP + MNQ_INTRADAY are live', datetime('now'))
           ON CONFLICT(strategy_name) DO UPDATE SET mode = 'RESEARCH_ONLY', updated_at = datetime('now')
         `).run(strat);
       }
-      this._log('STRATEGY_STATUS MGC_SCALP=LIVE MNQ_INTRADAY=LIVE | MNQ_SWING/MNQ_50PT/MGC_INTRADAY=RESEARCH_ONLY', 'signal');
+      // Enforce live strategies — auto-recover if accidentally disabled
+      for (const strat of ['MGC_SCALP', 'MNQ_INTRADAY']) {
+        const before = this.db.prepare('SELECT mode FROM strategy_status WHERE strategy_name = ?').get(strat);
+        if (before?.mode === 'RESEARCH_ONLY') {
+          this._log(`CRITICAL_STRATEGY_DISABLED_DETECTED strategy=${strat} was RESEARCH_ONLY — auto-restoring LIVE_ENABLED`, 'signal');
+        }
+        this.db.prepare(`
+          INSERT INTO strategy_status (strategy_name, mode, live_since, updated_at)
+          VALUES (?, 'LIVE_ENABLED', datetime('now'), datetime('now'))
+          ON CONFLICT(strategy_name) DO UPDATE SET mode = 'LIVE_ENABLED', updated_at = datetime('now')
+        `).run(strat);
+      }
+      // Log verified state from DB
+      const allStatus = this.db.prepare('SELECT strategy_name, mode FROM strategy_status ORDER BY strategy_name').all();
+      for (const row of allStatus) {
+        this._log(`STRATEGY_STATUS_LOAD strategy=${row.strategy_name} mode=${row.mode} source=DB`, 'signal');
+      }
     } catch (e) { this._log(`STRATEGY_STATUS_INIT_ERROR ${e.message}`, 'signal'); }
 
     if (cfg.ntfyTopic) {
