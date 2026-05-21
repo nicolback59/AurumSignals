@@ -1,4 +1,6 @@
 'use strict';
+// Load .env file before anything else — safe no-op if file doesn't exist
+require('dotenv').config();
 const express  = require('express');
 const Database = require('better-sqlite3');
 const crypto   = require('crypto');
