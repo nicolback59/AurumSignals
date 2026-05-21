@@ -123,7 +123,7 @@ class Scanner extends EventEmitter {
     this.cfg = {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
       symbolMgc:       config.symbolMgc       || process.env.SCANNER_SYMBOL_MGC   || 'GC=F',
-      scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '120') * 1000, 300_000),
+      scanInterval:    config.scanInterval    || Math.min(parseInt(process.env.SCAN_INTERVAL || '30') * 1000, 300_000),
       duplicateGuardMin: config.duplicateGuardMin || parseInt(process.env.SCANNER_DUPLICATE_GUARD_MIN || '5'),
       baseScore:       config.baseScore       || parseInt(process.env.SCANNER_MIN_SCORE   || '6'),
       dailySignalCap:  config.dailySignalCap  || parseInt(process.env.DAILY_SIGNAL_CAP    || '20'),
@@ -185,7 +185,7 @@ class Scanner extends EventEmitter {
         MNQ: process.env.TRADOVATE_SYMBOL_MNQ || '',
         MGC: process.env.TRADOVATE_SYMBOL_MGC || '',
       },
-      pollMs: this.cfg.scanInterval,  // Yahoo poll interval matches scan interval
+      pollMs: this.cfg.scanInterval,  // Tradovate: used for reconnect; Yahoo: adaptive internally
     });
     this.feedType = this._feed.constructor.name;  // 'TradovateFeed' | 'YahooFeed'
 
@@ -3304,9 +3304,9 @@ class Scanner extends EventEmitter {
     });
 
     // ── Timer fallback ───────────────────────────────────────────────────────────
-    // For Yahoo mode: the feed already polls on scanInterval; the timer-based
-    // scan() below acts as a safety net and handles the 1h bar refresh cycle.
-    // For Tradovate mode: widen the safety interval to 5 min (events handle the rest).
+    // Yahoo: feed handles adaptive polling (30s RTH, 45s Globex); timer is a
+    // safety net that also refreshes 1h bars and sweeps outcome resolution.
+    // Tradovate: widen to 5 min — events drive the scan, timer is truly fallback.
     const isTradovate = this.feedType === 'TradovateFeed';
     const fallbackMs  = isTradovate ? 5 * 60_000 : cfg.scanInterval;
 
