@@ -1777,7 +1777,7 @@ class Scanner extends EventEmitter {
   _isMarketOpen() {
     if (isBlackout()) return false;
     const { meta } = classifyNow();
-    if (meta.minTier === 'IGNORE') return false; // skip OVERNIGHT — no signals can fire
+    if (meta.minTier === 'IGNORE') return false;
     return true;
   }
 

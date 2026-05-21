@@ -4,19 +4,20 @@
  * MARKET CLOCK — Pacific-time market hours + session classification
  *
  * All logic is America/Los_Angeles (PT). Times shown are PT:
- *   Weekly blackout  : Fri 13:00 → Sun 14:00  (CME Globex weekend close)
- *   Daily blackout   : Mon–Thu 13:00–13:59     (CME daily maintenance window)
+ *   Scanner active   : 15:00 → next day 13:00  (CME Globex hours, Mon–Fri)
+ *   Daily blackout   : 13:00–14:59 PT           (CME maintenance + buffer)
+ *   Weekly blackout  : Fri 13:00 → Sun 15:00   (CME Globex weekend close)
  *
  * Session windows (all PT):
- *   ASIAN       : 18:00–22:59 (prior day)
+ *   NY_CLOSE    : 15:00–16:59  (Globex open / post-RTH — starts at 3 PM PT)
+ *   OVERNIGHT   : 17:00–17:59  (early Globex evening)
+ *   ASIAN       : 18:00–22:59
  *   LONDON      : 23:00–05:59
  *   NY_PRE      : 06:00–08:29
  *   NY_OPEN     : 08:30–09:44  (RTH open — highest volatility)
  *   POWER_HOUR  : 09:45–10:59
  *   MIDDAY      : 11:00–12:59
- *   NY_CLOSE    : 15:00–16:59  (RTH close)
- *   OVERNIGHT   : 17:00–17:59  (brief globex transition)
- *   BLACKOUT    : maintenance / weekend
+ *   BLACKOUT    : 13:00–14:59 daily + weekend
  */
 
 const { DateTime } = require('luxon');
@@ -83,15 +84,15 @@ const SESSIONS = [
   {
     name: 'OVERNIGHT',
     startH: 17, startM: 0, endH: 17, endM: 59,
-    confidenceModifier: 0.70,
-    sessionWeight: 1,
-    minTier: 'IGNORE',
+    confidenceModifier: 0.80,
+    sessionWeight: 3,
+    minTier: 'B',
   },
 ];
 
 /**
  * Determine if a given DateTime (PT) falls in a hard blackout.
- * Blackout = weekly (Fri 13:00 → Sun 15:00) or daily maintenance (Mon–Fri 13:00–14:59).
+ * Blackout = weekly (Fri 13:00 → Sun 15:00) or daily maintenance (Mon–Thu 13:00–14:59).
  * If called with no argument, defaults to the current PT time.
  */
 function isBlackout(dt) {
@@ -101,15 +102,15 @@ function isBlackout(dt) {
   const min  = dt.minute;
   const hm   = hour * 60 + min;
 
-  // Weekly: Friday 13:00 PT onward
+  // Weekly: Friday 13:00 PT onward (NQ week closes ~1:15 PM PT)
   if (dow === 5 && hm >= 13 * 60) return true;
   // Weekly: Saturday all day
   if (dow === 6) return true;
-  // Weekly: Sunday before 14:00 PT (Globex reopens 4PM CT = 14:00 PT)
-  if (dow === 7 && hm < 14 * 60) return true;
+  // Weekly: Sunday before 15:00 PT (Globex reopens 6 PM ET = 3 PM PT)
+  if (dow === 7 && hm < 15 * 60) return true;
 
-  // Daily maintenance: Mon–Thu 13:00–13:59 PT (CME 1-hour maintenance window)
-  if (dow >= 1 && dow <= 4 && hm >= 13 * 60 && hm < 14 * 60) return true;
+  // Daily maintenance: Mon–Thu 13:00–14:59 PT (CME 2 PM maintenance + buffer)
+  if (dow >= 1 && dow <= 4 && hm >= 13 * 60 && hm < 15 * 60) return true;
   // Friday maintenance: 13:00+ already covered by weekly blackout above
 
   return false;
