@@ -36,7 +36,28 @@ const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/
 const NTFY_TOPIC     = process.env.NTFY_TOPIC || '';
 const NTFY_TOKEN     = process.env.NTFY_TOKEN || '';
 
+const FRONTEND_URL = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
+
 const app = express();
+
+// ── CORS — allow Render frontend (and localhost in dev) to call this API ──────
+app.use((req, res, next) => {
+  const origin = req.headers.origin || '';
+  const allowed = [
+    FRONTEND_URL,
+    'http://localhost:3001',
+    'http://localhost:3000',
+  ].filter(Boolean);
+  if (allowed.includes(origin)) {
+    res.setHeader('Access-Control-Allow-Origin',      origin);
+    res.setHeader('Access-Control-Allow-Credentials', 'true');
+    res.setHeader('Access-Control-Allow-Methods',     'GET,POST,PUT,DELETE,OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers',     'Content-Type,Authorization,x-webhook-secret');
+  }
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
+
 // Stripe webhook needs raw body — skip JSON parsing for that path only
 app.use((req, res, next) => {
   if (req.path === '/api/stripe/webhook') return express.raw({ type: 'application/json' })(req, res, next);
