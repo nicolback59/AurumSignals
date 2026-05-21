@@ -66,10 +66,10 @@ class YahooFeed extends FeedInterface {
   _marketPhase() {
     const now = new Date();
     const utc = now.getUTCHours() + now.getUTCMinutes() / 60;
-    // RTH: 09:30–16:00 ET = 13:30–20:00 UTC
+    // RTH: 06:30–13:00 PT = 13:30–20:00 UTC
     if (utc >= 13.5 && utc < 20) return 'RTH';
-    // CME settlement break: 17:00–18:00 ET = 21:00–22:00 UTC
-    if (utc >= 21 && utc < 22)   return 'SETTLE';
+    // Blackout: 13:00–15:00 PT = 20:00–22:00 UTC — poll slowly, scanner is paused
+    if (utc >= 20 && utc < 22)   return 'SETTLE';
     return 'GLOBEX';
   }
 
