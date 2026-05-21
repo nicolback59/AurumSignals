@@ -706,6 +706,32 @@ app.post('/api/outcome', (req, res) => {
     pnl_usd:    pnl_usd    ?? null,
     notes:      notes      ?? null,
   });
+  // Backfill quant context from signal row into outcome
+  try {
+    const sig = db.prepare(
+      'SELECT quant_score, quant_grade, confidence, htf_bias, strategy_name, instrument, direction, session, setup, entry, sl, received_at, raw_payload FROM signals WHERE id = ?'
+    ).get(signal_id);
+    if (sig) {
+      db.prepare(`UPDATE outcomes SET quant_score = ?, quant_grade = ? WHERE signal_id = ?`)
+        .run(sig.quant_score ?? null, sig.quant_grade ?? null, signal_id);
+      // Write forensics for non-WIN manual outcomes
+      if (result !== 'WIN') {
+        const { writeLossForensic, detectClusters, formatClusterLog } = require('./signals/loss-forensics');
+        const holdMs = Date.now() - new Date(sig.received_at).getTime();
+        const classification = writeLossForensic(db, sig, result, {
+          holdTimeMin: +(holdMs / 60000).toFixed(1),
+          pnlPts:      pnl_pts ?? 0,
+          regime:      null,
+          atr:         null,
+        });
+        if (classification) {
+          console.log(`[api/outcome] LOSS_FORENSIC #${signal_id} strategy=${sig.strategy_name} category=${classification.category}`);
+          const cluster = detectClusters(db, sig.strategy_name, 10);
+          if (cluster) console.log(`[api/outcome] ${formatClusterLog(cluster)}`);
+        }
+      }
+    }
+  } catch (e) { console.error('[api/outcome] backfill error:', e.message); }
   res.json({ ok: true });
 });
 
@@ -713,6 +739,52 @@ app.post('/api/outcome', (req, res) => {
 app.get('/api/learning', (req, res) => {
   try { res.json(getLearningStats(db)); }
   catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── LOSS FORENSICS ────────────────────────────────────────────────────────────────────────
+const { getForensicsSummary, detectClusters: _detectClusters } = require('./signals/loss-forensics');
+
+// Per-strategy forensics breakdown — top failure modes, avg MFE/MAE, quant stats
+app.get('/api/forensics/summary', (req, res) => {
+  try {
+    const strategy = (req.query.strategy || '').toUpperCase() || null;
+    const days     = Math.min(Number(req.query.days) || 14, 90);
+    const strategies = strategy
+      ? [strategy]
+      : ['MGC_SCALP', 'MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
+    const result = {};
+    for (const s of strategies) {
+      result[s] = getForensicsSummary(db, s, days);
+    }
+    res.json(result);
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Active cluster warnings across all live strategies
+app.get('/api/forensics/clusters', (req, res) => {
+  try {
+    const strategies = ['MGC_SCALP', 'MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
+    const clusters = [];
+    for (const s of strategies) {
+      const c = _detectClusters(db, s, 10);
+      if (c) clusters.push(c);
+    }
+    res.json({ clusters, count: clusters.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Recent forensic records — last N losses with full context
+app.get('/api/forensics/recent', (req, res) => {
+  try {
+    const limit    = Math.min(Number(req.query.limit) || 50, 200);
+    const strategy = (req.query.strategy || '').toUpperCase() || null;
+    const rows = db.prepare(
+      strategy
+        ? `SELECT * FROM loss_forensics WHERE strategy_name = ? ORDER BY created_at DESC LIMIT ?`
+        : `SELECT * FROM loss_forensics ORDER BY created_at DESC LIMIT ?`
+    ).all(...(strategy ? [strategy, limit] : [limit]));
+    res.json({ rows, count: rows.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── BACKTEST ──────────────────────────────────────────────────────────────────────────────

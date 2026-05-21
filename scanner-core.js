@@ -242,7 +242,8 @@ class Scanner extends EventEmitter {
       getPendingSignals: db.prepare(`
         SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
                s.trade_style, s.strategy_name, s.session, s.setup,
-               s.win_prob_tp1,
+               s.win_prob_tp1, s.quant_score, s.quant_grade, s.confidence,
+               s.htf_bias, s.raw_payload,
                json_extract(s.raw_payload, '$.context.prediction.win_rate_pct') AS predicted_wr_pct
         FROM   signals s
         LEFT JOIN outcomes o ON o.signal_id = s.id
@@ -257,7 +258,8 @@ class Scanner extends EventEmitter {
       getAllPendingSignals: db.prepare(`
         SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
                s.trade_style, s.strategy_name, s.session, s.setup,
-               s.win_prob_tp1
+               s.win_prob_tp1, s.quant_score, s.quant_grade, s.confidence,
+               s.htf_bias, s.raw_payload
         FROM   signals s
         LEFT JOIN outcomes o ON o.signal_id = s.id
         WHERE  o.id IS NULL
@@ -1069,6 +1071,7 @@ class Scanner extends EventEmitter {
     const recentlyExpired = this.db.prepare(`
       SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
              s.trade_style, s.strategy_name, s.session, s.setup, s.win_prob_tp1,
+             s.quant_score, s.quant_grade, s.confidence, s.htf_bias, s.raw_payload,
              json_extract(s.raw_payload, '$.context.prediction.win_rate_pct') AS predicted_wr_pct,
              o.exit_at AS expired_at
       FROM   signals s
@@ -1098,6 +1101,29 @@ class Scanner extends EventEmitter {
           `UPDATE outcomes SET result = ?, exit_price = ?, exit_at = ?, pnl_pts = ?, expiration_reason = NULL WHERE signal_id = ?`
         ).run(result, resolution.exitPrice, bar.timestamp, pnlPts, sig.id);
         this._stmts.updateTradeStatus.run(resolution.toState, sig.id);
+        // Backfill enrichment columns for retro-fixed outcomes
+        try {
+          const { mfePts, maePts, holdTimeMin } = computeMfeMae(validBars, sig, bar);
+          this.db.prepare(`
+            UPDATE outcomes SET
+              mfe_pts = ?, mae_pts = ?, hold_time_min = ?,
+              quant_score = ?, quant_grade = ?
+            WHERE signal_id = ?
+          `).run(mfePts, maePts, holdTimeMin, sig.quant_score ?? null, sig.quant_grade ?? null, sig.id);
+          // Forensics for retro-fixed LOSS outcomes
+          if (result === 'LOSS') {
+            try {
+              const classification = writeLossForensic(this.db, sig, 'LOSS', {
+                mfePts, maePts, holdTimeMin, pnlPts, regime: null, atr: null,
+              });
+              if (classification) {
+                this._log(`LOSS_FORENSIC #${sig.id} strategy=${sig.strategy_name} category=${classification.category} (retro-fix)`, 'signal');
+                const cluster = detectClusters(this.db, sig.strategy_name, 10);
+                if (cluster) this._log(formatClusterLog(cluster), 'signal');
+              }
+            } catch { /* never crash */ }
+          }
+        } catch { /* never crash on backfill */ }
         if (result === 'WIN' || result === 'LOSS') signalDedup.releaseBySignal(sig);
         this._log(`RETRO-FIX #${sig.id} ${instrument}: EXPIRED → ${result}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
         this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
@@ -1255,6 +1281,15 @@ class Scanner extends EventEmitter {
           this._stmts.updateSigExpReason.run(reason, sig.id);
           this._stmts.updateOutExpReason.run(reason, sig.id);
         } catch { /* ignore */ }
+        // Backfill enrichment columns into the outcome row
+        try {
+          const holdMs  = now.getTime() - new Date(sig.received_at).getTime();
+          const holdMin = +(holdMs / 60000).toFixed(1);
+          this.db.prepare(`
+            UPDATE outcomes SET hold_time_min = ?, quant_score = ?, quant_grade = ?
+            WHERE signal_id = ?
+          `).run(holdMin, sig.quant_score ?? null, sig.quant_grade ?? null, sig.id);
+        } catch { /* never crash */ }
         this._sendNtfyExpired(sig, reason);
         // Loss forensics for sweep-expired signals (no bars available — limited context)
         try {
@@ -1268,6 +1303,8 @@ class Scanner extends EventEmitter {
           });
           if (classification) {
             this._log(`LOSS_FORENSIC #${sig.id} strategy=${sig.strategy_name} category=${classification.category} reason=${reason}`, 'signal');
+            const cluster = detectClusters(this.db, sig.strategy_name, 10);
+            if (cluster) this._log(formatClusterLog(cluster), 'signal');
           }
         } catch { /* never crash on forensics */ }
         console.log(`[sweep] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason} age=${Math.round((now - new Date(sig.received_at)) / 60000)}m`);
@@ -3212,7 +3249,7 @@ class Scanner extends EventEmitter {
     const cfg = this.cfg;
 
     this._log(`SCANNER_BOOT_START platform=${process.env.NODE_ENV ?? 'dev'} feed=${this.feedType} logLevel=${cfg.logLevel} scanInterval=${cfg.scanInterval / 1000}s`, 'signal');
-    this._log('REGISTERED_STRATEGIES MNQ: MNQ_INTRADAY(LIVE) MNQ_SWING(LIVE) MNQ_50PT(LIVE) | MGC: MGC_SCALP(LIVE) MGC_INTRADAY(LIVE)', 'signal');
+    this._log('REGISTERED_STRATEGIES LIVE: MGC_SCALP, MNQ_INTRADAY | RESEARCH_ONLY: MNQ_SWING, MNQ_50PT, MGC_INTRADAY', 'signal');
 
     // Enforce correct strategy modes and log verified state
     try {

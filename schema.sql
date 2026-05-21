@@ -24,11 +24,13 @@ CREATE TABLE IF NOT EXISTS signals (
   trade_style    TEXT,          -- 'scalp' | 'intraday' | 'swing'
   instrument     TEXT,          -- 'MNQ' | 'MGC' | 'NQ'
   rr             REAL,          -- risk:reward ratio
-  trade_status   TEXT    NOT NULL DEFAULT 'ACTIVE', -- ACTIVE | WIN | LOSS | BE | EXPIRED | INVALIDATED
-  raw_payload    TEXT,
-  received_at    TEXT NOT NULL DEFAULT (datetime('now')),
-  quant_score    INTEGER,       -- composite quant score at signal time (0–100)
-  quant_grade    TEXT           -- S | A | B | IGNORE
+  trade_status       TEXT    NOT NULL DEFAULT 'ACTIVE', -- ACTIVE | WIN | LOSS | BE | EXPIRED | INVALIDATED
+  raw_payload        TEXT,
+  received_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  quant_score        INTEGER,       -- composite quant score at signal time (0–100)
+  quant_grade        TEXT,          -- S | A | B | IGNORE
+  live_gated         INTEGER DEFAULT 0,  -- 1 = research-only at emit time
+  expiration_reason  TEXT               -- EXPIRED_MARKET_CLOSE | EXPIRED_WEEKEND_CLOSE | EXPIRED_MAX_HOLD | EXPIRED_STUCK_TRADE
 );
 
 -- Migration: add strategy_name to existing signals tables (safe no-op if already present)
@@ -46,9 +48,10 @@ CREATE TABLE IF NOT EXISTS outcomes (
   mfe_pts        REAL,         -- Maximum Favorable Excursion (best price reached)
   mae_pts        REAL,         -- Maximum Adverse Excursion (worst drawdown reached)
   hold_time_min  REAL,         -- minutes from entry to exit
-  failure_reason TEXT,         -- chop_fakeout | volatility_sweep | exhaustion | late_entry | news | etc
-  quant_score    INTEGER,      -- composite quant score at signal time (0-100)
-  quant_grade    TEXT,         -- S | A | B | IGNORE
+  failure_reason    TEXT,         -- chop_fakeout | volatility_sweep | exhaustion | late_entry | news | etc
+  quant_score       INTEGER,      -- composite quant score at signal time (0-100)
+  quant_grade       TEXT,         -- S | A | B | IGNORE
+  expiration_reason TEXT,         -- EXPIRED_MARKET_CLOSE | EXPIRED_WEEKEND_CLOSE | EXPIRED_MAX_HOLD | EXPIRED_STUCK_TRADE
   UNIQUE (signal_id)
 );
 
@@ -348,6 +351,40 @@ CREATE TABLE IF NOT EXISTS historical_bars (
   PRIMARY KEY (symbol, interval, timestamp)
 );
 CREATE INDEX IF NOT EXISTS idx_hist_bars ON historical_bars(symbol, interval, timestamp DESC);
+
+-- ── Loss forensics — one row per non-WIN outcome ────────────────────────────────
+CREATE TABLE IF NOT EXISTS loss_forensics (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  signal_id            INTEGER NOT NULL,
+  strategy_name        TEXT    NOT NULL,
+  instrument           TEXT    NOT NULL,
+  direction            TEXT,
+  result               TEXT    NOT NULL,
+  failure_category     TEXT    NOT NULL,
+  failure_subcategory  TEXT,
+  classifier_version   TEXT    DEFAULT '1.0',
+  session              TEXT,
+  day_of_week          INTEGER,
+  regime               TEXT,
+  htf_bias             TEXT,
+  confidence           INTEGER,
+  quant_score          INTEGER,
+  quant_grade          TEXT,
+  setup_type           TEXT,
+  hold_time_min        REAL,
+  mfe_pts              REAL,
+  mae_pts              REAL,
+  pnl_pts              REAL,
+  entry                REAL,
+  sl                   REAL,
+  data_quality         TEXT,
+  auto_flagged         INTEGER DEFAULT 0,
+  analyst_note         TEXT,
+  created_at           TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_loss_forensics_strategy ON loss_forensics(strategy_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_loss_forensics_category ON loss_forensics(failure_category);
+CREATE INDEX IF NOT EXISTS idx_loss_forensics_signal   ON loss_forensics(signal_id);
 
 -- These are handled via the migration runner in server.js startup instead of
 -- raw SQL here, since SQLite does not support IF NOT EXISTS on ALTER TABLE.
