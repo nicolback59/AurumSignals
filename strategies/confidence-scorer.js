@@ -17,13 +17,13 @@ const RESEARCH_THRESHOLDS = {
 
 // LIVE_THRESHOLDS — minimum raw confidence to fire a live ntfy alert.
 // Signals below this are stored for backtest/research but do NOT send a
-// live notification.  MNQ_SWING and MNQ_50PT are intentionally strict
-// because weak setups in these strategies have produced losses historically.
+// live notification.  Keep close to RESEARCH_THRESHOLDS — the quant scorer
+// second gate (STRONG_A_THRESHOLD) is the real quality filter for live alerts.
 const LIVE_THRESHOLDS = {
-  MNQ_INTRADAY: 72,  // raised 65→72: only A-tier and above pass as live
+  MNQ_INTRADAY: 67,  // 2 pts above research min (65) — quant scorer handles quality
   MNQ_SWING:    85,  // requires A+/S-tier conviction (4H bias + 1H alignment confirmed)
   MNQ_50PT:     86,  // requires clean displacement + open space + HTF support
-  MGC_SCALP:    72,  // raised 55→72: quant scorer provides further S + strong-A filtering
+  MGC_SCALP:    60,  // 5 pts above research min (55) — quant scorer handles quality
   MGC_INTRADAY: 60,
 };
 

@@ -38,7 +38,7 @@ const GRADE_THRESHOLDS = {
   IGNORE: 0,
 };
 
-const STRONG_A_THRESHOLD = 74;   // A signals ≥ 74 fire live (lowered from 78 — backtest shows valid A-tier setups were research-gated)
+const STRONG_A_THRESHOLD = 71;   // A signals ≥ 71 fire live (lowered from 74 — paired with lower LIVE_THRESHOLDS)
 
 // ── Sub-score: regime (0–18) ──────────────────────────────────────────────────
 
