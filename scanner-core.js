@@ -56,6 +56,7 @@ const {
   generateMidWeekReport, generateWeeklyDeepReport,
   listReports, getReportScheduleStatus,
 } = require('./performance-reporter');
+const { runForensicsAnalysis } = require('./agents/forensics-analyst');
 const { runBacktest, runBacktest5m, runSwingBacktest1h, calcEnhancedMetrics } = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
@@ -2692,6 +2693,40 @@ class Scanner extends EventEmitter {
         `Trades=${report.metrics?.total_trades ?? 0} | ` +
         `BT runs=${report.backtest?.total_runs ?? 0}`
       );
+
+      // ── Layer 2: AI forensics analysis ─────────────────────────────────────────
+      // Fire-and-forget — doesn't block report delivery or ntfy notification.
+      // Persists to strategy_params as AI_FORENSICS_<weekStart>.
+      runForensicsAnalysis(this.db, report.metrics ?? {}, weekStart)
+        .then(analysis => {
+          if (!analysis) return;
+          this._log(
+            `🤖 AI Forensics Analysis complete — ` +
+            `${analysis.strategies_analyzed?.length ?? '?'} strategies | ` +
+            `${analysis.output_tokens ?? '?'} tokens out`,
+            'signal'
+          );
+          // Surface top AI recommendations to ntfy
+          if (this.cfg.ntfyTopic) {
+            const preview = (analysis.adjustments ?? '').split('\n')
+              .filter(l => l.trim() && !l.startsWith('#'))
+              .slice(0, 5)
+              .join('\n');
+            const headers = {
+              'Content-Type': 'text/plain',
+              'Title': `AI Forensics Analysis — Week of ${weekStart}`,
+              'Priority': 'default',
+              'Tags': 'robot,bar_chart',
+            };
+            if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+            fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
+              method: 'POST',
+              headers,
+              body: `🤖 AI Strategy Adjustments — Week of ${weekStart}\n\n${preview}\n\nFull analysis: /reports`,
+            }).catch(() => {});
+          }
+        })
+        .catch(err => this._log(`AI_FORENSICS_ERR: ${err.message}`, 'signal'));
 
       // Surface to ntfy
       if (this.cfg.ntfyTopic) {

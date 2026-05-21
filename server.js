@@ -764,6 +764,7 @@ app.get('/api/learning', (req, res) => {
 
 // ── LOSS FORENSICS ────────────────────────────────────────────────────────────────────────
 const { getForensicsSummary, detectClusters: _detectClusters } = require('./signals/loss-forensics');
+const { loadForensicsAnalysis, runForensicsAnalysis: _runForensicsAnalysis } = require('./agents/forensics-analyst');
 
 // Per-strategy forensics breakdown — top failure modes, avg MFE/MAE, quant stats
 app.get('/api/forensics/summary', (req, res) => {
@@ -805,6 +806,37 @@ app.get('/api/forensics/recent', (req, res) => {
         : `SELECT * FROM loss_forensics ORDER BY created_at DESC LIMIT ?`
     ).all(...(strategy ? [strategy, limit] : [limit]));
     res.json({ rows, count: rows.length });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Latest AI forensics analysis — returns Claude's strategy adjustments
+app.get('/api/forensics/ai-analysis', (req, res) => {
+  try {
+    const weekStart = req.query.week || null;
+    const analysis  = loadForensicsAnalysis(db, weekStart);
+    if (!analysis) {
+      return res.json({
+        available: false,
+        message: process.env.ANTHROPIC_API_KEY
+          ? 'No AI analysis generated yet — will run after next weekly report'
+          : 'Set ANTHROPIC_API_KEY to enable AI forensics analysis',
+      });
+    }
+    res.json({ available: true, ...analysis });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Manually trigger an AI forensics analysis (useful for testing)
+app.post('/api/forensics/ai-analysis/run', async (req, res) => {
+  if (!process.env.ANTHROPIC_API_KEY) {
+    return res.status(400).json({ error: 'ANTHROPIC_API_KEY not set' });
+  }
+  try {
+    res.json({ status: 'running', message: 'AI analysis started — check /api/forensics/ai-analysis in ~30 seconds' });
+    // Run in background after response is sent
+    _runForensicsAnalysis(db, {}, null)
+      .then(r => r && console.log(`[server] Manual AI forensics done (${r.output_tokens} tokens)`))
+      .catch(e => console.error('[server] Manual AI forensics error:', e.message));
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
