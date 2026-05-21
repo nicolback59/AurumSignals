@@ -1,5 +1,7 @@
 'use strict';
 
+const { getForensicsSummary, detectClusters, formatClusterLog } = require('./signals/loss-forensics');
+
 /**
  * PERFORMANCE REPORTER
  *
@@ -397,11 +399,21 @@ function generateMidWeekReport(db) {
 
   const divergence = analyzeDivergence(db);
   const weekEnd    = _addDays(weekStart, 7);
+
+  // Forensics — top failure modes and active cluster warnings
+  const LIVE_STRATEGIES = ['MGC_SCALP', 'MNQ_INTRADAY'];
+  const forensicsSummary = {};
+  const clusterWarnings  = [];
+  for (const strat of ['MGC_SCALP', 'MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY']) {
+    forensicsSummary[strat] = getForensicsSummary(db, strat, 14);
+    const cluster = detectClusters(db, strat, 10);
+    if (cluster) clusterWarnings.push(cluster);
+  }
   const backtestSection = _getBacktestSection(db, weekStart, weekEnd);
   const narrative  = _buildMidWeekNarrative({
     wr, total, byStrategy, bySession, byInstrument, byDay,
     byConfBand, htfMismatches, maxLoss, maxWin, divergence, pf, expectancy,
-    backtestSection,
+    backtestSection, forensicsSummary, clusterWarnings,
   });
 
   const report = {
@@ -410,6 +422,7 @@ function generateMidWeekReport(db) {
     report_type:  'MID_WEEK',
     scope:        'COMBINED',
     backtest:     backtestSection,
+    forensics:    { summary: forensicsSummary, clusters: clusterWarnings },
     metrics: {
       total_trades:    total,
       win_rate_pct:    wr != null ? +(wr * 100).toFixed(1) : null,
@@ -525,6 +538,17 @@ function _buildMidWeekNarrative(d) {
     warnings.push(`UNDERPERFORMING [${s.strategy_name}]: WR=${_pct(_wr(s.wins, s.wins+s.losses))} on ${s.wins+s.losses} trades — threshold review needed`);
   }
 
+  // Cluster warnings in the main WARNINGS block
+  for (const c of (d.clusterWarnings ?? [])) {
+    if (c.type === 'EDGE_DEGRADATION_WARNING') {
+      warnings.push(`EDGE_DEGRADATION [${c.strategy}]: ${c.category} repeated ${c.consecutive}+ times consecutively — strategy edge may be degrading`);
+    } else if (c.type === 'STRATEGY_REGIME_MISMATCH') {
+      warnings.push(`REGIME_MISMATCH_CLUSTER [${c.strategy}]: multi-dimension loss pattern — ${(c.patterns ?? []).map(p => `${p.dimension}:${p.value}`).join(', ')}`);
+    } else {
+      warnings.push(`LOSS_CLUSTER [${c.strategy}]: ${c.category} ${c.count}/${c.total} losses (${c.pct}%)`);
+    }
+  }
+
   if (warnings.length === 0) warnings.push('No critical warnings — system operating within normal parameters');
   for (const w of warnings) lines.push(`  ⚠ ${w}`);
 
@@ -563,6 +587,32 @@ function _buildMidWeekNarrative(d) {
         lines.push(`  ⚠ ${s.strategy_name}: WR declining by ${Math.abs(s.wr_delta_vs_prior ?? 0).toFixed(1)}% vs prior week`);
         lines.push(`    → Investigate parameter drift or market regime change before week end`);
       }
+    }
+  }
+
+  // ── Loss forensics ────────────────────────────────────────────────────────
+  const { forensicsSummary, clusterWarnings } = d;
+  if (forensicsSummary) {
+    const hasData = Object.values(forensicsSummary).some(rows => rows.length > 0);
+    if (hasData) {
+      lines.push('');
+      lines.push('LOSS FORENSICS — TOP FAILURE MODES (last 14 days):');
+      for (const [strat, rows] of Object.entries(forensicsSummary)) {
+        if (!rows.length) continue;
+        const top = rows.slice(0, 3).map(r =>
+          `${r.failure_category}(${r.count})`
+        ).join(', ');
+        const avgMfe = rows[0].avg_mfe != null ? ` avgMFE=${rows[0].avg_mfe.toFixed(2)}` : '';
+        const avgMae = rows[0].avg_mae != null ? ` avgMAE=${rows[0].avg_mae.toFixed(2)}` : '';
+        lines.push(`  ${strat}: ${top}${avgMfe}${avgMae}`);
+      }
+    }
+  }
+  if (clusterWarnings?.length) {
+    lines.push('');
+    lines.push('ACTIVE CLUSTER WARNINGS:');
+    for (const c of clusterWarnings) {
+      lines.push(`  ⚠ ${formatClusterLog(c)}`);
     }
   }
 
