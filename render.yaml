@@ -1,64 +1,25 @@
 services:
-  # ── Single Web Service — API + Scanner + Backtester ───────────────────────────
-  # The scanner runs inside the same process as the web server (scanner-core.js).
-  # This eliminates the separate worker and the "scanner not responding" bug that
-  # occurred when Render could only mount one disk to one service.
+  # ── Frontend — serves HTML/CSS/JS and proxies API to Droplet ──────────────────
+  # The Droplet runs server.js (scanner + API + DB).
+  # This Render service ONLY serves static pages and proxies /api/* to the Droplet.
+  # No database, no scanner, no disk mount needed on Render.
   - type: web
-    name: nq-signal-pro-api
+    name: aurum-signals-frontend
     runtime: node
-    buildCommand: npm install
-    startCommand: node --max-old-space-size=400 --expose-gc server.js
+    buildCommand: npm install --omit=dev
+    startCommand: node render-server.js
     plan: starter
-    healthCheckPath: /api/health
+    healthCheckPath: /
     envVars:
       - key: NODE_VERSION
-        value: 20.18.0
+        value: "20.18.0"
       - key: NODE_ENV
         value: production
       - key: PORT
-        value: 3000
-      - key: DB_PATH
-        value: /data/signals.db
+        value: "3001"
 
-      # ── Notifications (set manually in Render dashboard) ──
-      - key: NTFY_TOPIC
-        sync: false      # your ntfy.sh topic name
-      - key: NTFY_TOKEN
-        sync: false      # optional — leave blank for public ntfy.sh
-      - key: WEBHOOK_SECRET
-        sync: false      # optional — protects the /webhook endpoint
-
-      # ── Scanner settings ──────────────────────────────────
-      - key: SCANNER_SYMBOL
-        value: NQ=F
-      - key: SCANNER_SYMBOL_MGC
-        value: GC=F
-      - key: SCAN_INTERVAL
-        value: 15        # seconds between scans (15 = default, max 60)
-      - key: SCANNER_DUPLICATE_GUARD_MIN
-        value: 5         # spam/same-bar guard only — adaptive-cooldown.js controls strategy timing
-      - key: SCANNER_MIN_SCORE
-        value: 6         # base confidence floor (adaptive learning raises/lowers)
-      - key: DAILY_SIGNAL_CAP
-        value: 15        # max signals per instrument per day
-      - key: SCANNER_RTH_ONLY
-        value: false     # false = scan 24/5 (futures), true = NY RTH only
-      - key: SCANNER_LOG_LEVEL
-        value: signal    # full | signal | quiet  (use 'signal' after first week)
-
-      # ── Backtesting & optimizer ───────────────────────────
-      - key: BACKTEST_INTERVAL_H
-        value: 4         # hours between scheduled backtests
-      - key: BACKTEST_BARS
-        value: 2000      # 1m bars (~1.4 days); 5000 OOMs on 512MB with walkForward=true (6×O(n²) runs)
-      - key: BT_TARGET_TRADES
-        value: 400       # stop backtest early once this many trades are found (raised for multi-strategy coverage)
-      - key: BT_SLIPPAGE
-        value: 0.5       # execution slippage in price points
-      - key: OPTIMIZER_INTERVAL_H
-        value: 4         # hours between parameter optimization cycles
-
-    disk:
-      name: signals-db
-      mountPath: /data
-      sizeGB: 1
+      # ── Backend Droplet URL (REQUIRED — set in Render dashboard) ─────────────
+      # Point this to your Digital Ocean droplet, e.g.: http://165.232.1.2:3000
+      # If you have a domain pointing to the droplet use that instead.
+      - key: DROPLET_URL
+        sync: false   # set manually in Render dashboard — never commit the real IP
