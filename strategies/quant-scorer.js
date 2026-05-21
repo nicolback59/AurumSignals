@@ -28,6 +28,7 @@
  */
 
 const { detectMarketStructure } = require('./shared-indicators');
+const thresholdManager = require('../agents/threshold-manager');
 
 // ── Grade thresholds ──────────────────────────────────────────────────────────
 
@@ -219,8 +220,11 @@ function computeQuantScore(sig, ctx) {
   const total = Object.values(subscores).reduce((s, v) => s + v, 0);
   const grade = deriveQuantGrade(total);
 
-  // isLive: must be at least S-tier OR strong-A (A with score ≥ 78)
-  const strongA = grade === 'A' && total >= STRONG_A_THRESHOLD;
+  // isLive: must be at least S-tier OR strong-A (A with score ≥ dynamic STRONG_A)
+  const effectiveStrongA = thresholdManager.initialized
+    ? thresholdManager.getStrongA()
+    : STRONG_A_THRESHOLD;
+  const strongA = grade === 'A' && total >= effectiveStrongA;
   const isLive  = grade === 'S' || strongA;
 
   return { subscores, total, grade, isLive, strongA };

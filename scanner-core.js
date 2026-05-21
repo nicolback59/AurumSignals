@@ -57,6 +57,7 @@ const {
   listReports, getReportScheduleStatus,
 } = require('./performance-reporter');
 const { runForensicsAnalysis } = require('./agents/forensics-analyst');
+const thresholdManager         = require('./agents/threshold-manager');
 const { runBacktest, runBacktest5m, runSwingBacktest1h, calcEnhancedMetrics } = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
@@ -119,7 +120,8 @@ class Scanner extends EventEmitter {
   constructor(db, config = {}) {
     super();
     this.db = db;
-    signalDedup.init(db);  // load persisted ideas + prep SQLite statements
+    signalDedup.init(db);        // load persisted ideas + prep SQLite statements
+    thresholdManager.init(db);   // create ai_thresholds table, warm cache
 
     this.cfg = {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
