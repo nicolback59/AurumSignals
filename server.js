@@ -441,6 +441,18 @@ db.exec(`
     enabled         INTEGER NOT NULL DEFAULT 1,
     tz              TEXT    NOT NULL DEFAULT 'America/Los_Angeles'
   );
+
+  CREATE TABLE IF NOT EXISTS agent_scores (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id    INTEGER REFERENCES signals(id) ON DELETE CASCADE,
+    agent_name   TEXT    NOT NULL,
+    score        REAL,
+    bias         TEXT,
+    approved     INTEGER,
+    reason       TEXT,
+    evaluated_at TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_agent_scores_signal ON agent_scores(signal_id);
 `);
 
 thresholdManager.init(db);
@@ -842,6 +854,17 @@ app.post('/api/forensics/ai-analysis/run', async (req, res) => {
     _runForensicsAnalysis(db, {}, null)
       .then(r => r && console.log(`[server] Manual AI forensics done (${r.output_tokens} tokens)`))
       .catch(e => console.error('[server] Manual AI forensics error:', e.message));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Agent scores for a specific signal
+app.get('/api/signals/:id/agents', (req, res) => {
+  try {
+    const id   = Number(req.params.id);
+    const rows = db.prepare(
+      'SELECT agent_name, score, bias, approved, reason, evaluated_at FROM agent_scores WHERE signal_id = ? ORDER BY agent_name'
+    ).all(id);
+    res.json({ signal_id: id, agents: rows });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
