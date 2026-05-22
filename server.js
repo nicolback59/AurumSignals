@@ -782,6 +782,7 @@ app.get('/api/learning', (req, res) => {
 const { getForensicsSummary, detectClusters: _detectClusters } = require('./signals/loss-forensics');
 const { loadForensicsAnalysis, runForensicsAnalysis: _runForensicsAnalysis } = require('./agents/forensics-analyst');
 const thresholdManager = require('./agents/threshold-manager');
+const { mine: mineBacktestData } = require('./backtest-data-miner');
 
 // Per-strategy forensics breakdown — top failure modes, avg MFE/MAE, quant stats
 app.get('/api/forensics/summary', (req, res) => {
@@ -1089,6 +1090,62 @@ app.get('/api/market/candles/:instrument', (req, res) => {
     v: b.volume ?? 0,
   }));
   res.json(out);
+});
+
+// ── BACKTEST DATA MINER ────────────────────────────────────────────────────────
+// GET  /api/backtest/mine-data              — analyse + report (no changes)
+// POST /api/backtest/mine-data?apply=true   — analyse + apply winning config
+
+app.get('/api/backtest/mine-data', (req, res) => {
+  try {
+    const report = mineBacktestData(db, { apply: false });
+    res.json(report);
+  } catch (err) {
+    console.error('[api] mine-data error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/backtest/mine-data', (req, res) => {
+  try {
+    const apply  = req.query.apply === 'true' || req.body?.apply === true;
+    const report = mineBacktestData(db, { apply });
+    res.json(report);
+  } catch (err) {
+    console.error('[api] mine-data error:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Rollback a params change made by the miner (restores previous style_params)
+app.post('/api/backtest/mine-data/rollback', (req, res) => {
+  try {
+    const { strategy } = req.body ?? {};
+    if (!strategy) return res.status(400).json({ error: 'strategy required (MNQ_INTRADAY or MGC_SCALP)' });
+    const instrMap = { MNQ_INTRADAY: 'MNQ', MGC_SCALP: 'MGC' };
+    const styleMap = { MNQ_INTRADAY: 'INTRADAY', MGC_SCALP: 'SCALP' };
+    const instrument = instrMap[strategy.toUpperCase()];
+    const style      = styleMap[strategy.toUpperCase()];
+    if (!instrument) return res.status(400).json({ error: 'unknown strategy' });
+
+    const rev = db.prepare(`
+      SELECT id, old_params_json FROM strategy_revisions
+      WHERE instrument = ? AND status = 'active'
+      ORDER BY revised_at DESC LIMIT 1
+    `).get(instrument);
+    if (!rev) return res.status(404).json({ error: 'no active revision to roll back' });
+
+    const oldParams = JSON.parse(rev.old_params_json ?? '{}');
+    db.prepare(`INSERT INTO style_params (key, params_json, updated_at, version)
+      VALUES (?, ?, datetime('now'), 1)
+      ON CONFLICT(key) DO UPDATE SET params_json=excluded.params_json, updated_at=excluded.updated_at, version=version+1
+    `).run(`${instrument}_${style}`, JSON.stringify(oldParams));
+    db.prepare(`UPDATE strategy_revisions SET status='rolled_back' WHERE id=?`).run(rev.id);
+
+    res.json({ ok: true, rolled_back_revision: rev.id, restored_params: oldParams });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // ── HISTORICAL BACKTEST — manual trigger ─────────────────────────────────────
