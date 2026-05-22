@@ -26,8 +26,8 @@
  * signals; ASIAN multiplies by 0.80, making it harder to reach S).
  */
 
-const { classifyNow }   = require('../clock/market-clock');
-const { LIVE_THRESHOLDS } = require('../strategies/confidence-scorer');
+const { classifyNow }      = require('../clock/market-clock');
+const thresholdManager     = require('../agents/threshold-manager');
 
 // Tier thresholds (confidence 0–100)
 const TIER_THRESHOLDS = {
@@ -116,7 +116,7 @@ function rankSignal(sig, now = null) {
 
   // Per-strategy live confidence gate — signal is accepted (stored) but live
   // ntfy is suppressed when raw confidence is below the strategy's live minimum.
-  const liveMin  = LIVE_THRESHOLDS[sig.strategy_name] ?? 0;
+  const liveMin   = thresholdManager.getLiveThreshold(sig.strategy_name);
   const liveGated = sig.confidence != null && sig.confidence < liveMin;
 
   return {

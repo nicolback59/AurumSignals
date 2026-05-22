@@ -199,6 +199,9 @@ function buildNtfyBody(p) {
     flat.session != null       ? `Session: ${flat.session}`                : null,
     flat.trigger_reason != null ? `Reason: ${flat.trigger_reason}`         : null,
     '',
+    flat.id != null            ? `Trade ID: #${flat.id}`                   : null,
+    flat.received_at != null   ? `Time: ${new Date(flat.received_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles', month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', hour12: true })} PT` : null,
+    '',
     'Not financial advice.',
   ].filter(v => v !== null).join('\n');
 }

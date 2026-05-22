@@ -3,10 +3,9 @@
 /**
  * FORENSICS ANALYST AGENT — Layer 2
  *
- * Sends loss forensics data to the Claude API weekly and returns
- * plain-English strategy adjustments. This is the first real AI agent
- * layer — it reads proprietary labeled failure data and recommends
- * specific, quantitative threshold changes.
+ * Sends loss forensics data to the Claude API weekly. Uses tool use to
+ * apply concrete threshold changes directly to the DB via ThresholdManager,
+ * and returns plain-English strategy adjustments.
  *
  * Required env var : ANTHROPIC_API_KEY
  * Optional env var : FORENSICS_MODEL  (default: claude-sonnet-4-6)
@@ -16,6 +15,7 @@
  */
 
 const { getForensicsSummary, detectClusters } = require('../signals/loss-forensics');
+const thresholdManager = require('./threshold-manager');
 
 const MODEL       = process.env.FORENSICS_MODEL || 'claude-sonnet-4-6';
 const MAX_TOKENS  = 2048;
@@ -24,10 +24,70 @@ const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // re-run at most every 6 h
 const ALL_STRATEGIES  = ['MGC_SCALP', 'MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
 const LIVE_STRATEGIES = new Set(['MGC_SCALP', 'MNQ_INTRADAY']);
 
+// ── Tool definition for threshold adjustments ────────────────────────────────
+
+const ADJUST_TOOL = {
+  name: 'apply_adjustments',
+  description: [
+    'Apply quantitative threshold adjustments based on loss forensics analysis.',
+    'Call this once with all changes. Omit a field to leave it unchanged.',
+    'Safety bounds are enforced server-side — propose the ideal value; the system will clamp if needed.',
+    'Only adjust LIVE strategies (MGC_SCALP, MNQ_INTRADAY) unless clearly specified.',
+  ].join(' '),
+  input_schema: {
+    type: 'object',
+    properties: {
+      live_threshold_changes: {
+        type: 'array',
+        description: 'Changes to per-strategy minimum confidence thresholds (MNQ_INTRADAY or MGC_SCALP only).',
+        items: {
+          type: 'object',
+          properties: {
+            strategy:  { type: 'string', description: 'e.g. MNQ_INTRADAY or MGC_SCALP' },
+            new_value: { type: 'number', description: 'New confidence minimum (integer 0–100)' },
+            rationale: { type: 'string', description: '1-sentence reason' },
+          },
+          required: ['strategy', 'new_value', 'rationale'],
+        },
+      },
+      strong_a_change: {
+        type: 'object',
+        description: 'Change to the quant score minimum for an A-grade signal to fire live.',
+        properties: {
+          new_value: { type: 'number', description: 'New STRONG_A threshold (integer 60–85)' },
+          rationale: { type: 'string' },
+        },
+        required: ['new_value', 'rationale'],
+      },
+      session_blocks: {
+        type: 'array',
+        description: 'Block or unblock a strategy from trading during a specific session.',
+        items: {
+          type: 'object',
+          properties: {
+            strategy: { type: 'string', description: 'e.g. MGC_SCALP' },
+            session:  { type: 'string', description: 'e.g. ASIAN, OVERNIGHT, NY_PRE' },
+            action:   { type: 'string', enum: ['BLOCK', 'ALLOW'], description: 'Block or re-allow' },
+            rationale: { type: 'string' },
+          },
+          required: ['strategy', 'session', 'action', 'rationale'],
+        },
+      },
+      summary: {
+        type: 'string',
+        description: '2–4 sentence plain-English summary of what changes were made and why.',
+      },
+    },
+    required: ['summary'],
+  },
+};
+
 // ── Prompt builder ────────────────────────────────────────────────────────────
 
-function _buildPrompt(forensicsData, metrics) {
-  const m = metrics ?? {};
+function _buildPrompt(forensicsData, metrics, effectiveThresholds) {
+  const m  = metrics ?? {};
+  const et = effectiveThresholds ?? {};
+  const lt = et.live_thresholds ?? {};
 
   const lines = [
     '# AurumSignals — Weekly Loss Forensics Analysis',
@@ -47,6 +107,11 @@ function _buildPrompt(forensicsData, metrics) {
     '## Strategy Status',
     '- LIVE  (real money): MGC_SCALP, MNQ_INTRADAY',
     '- RESEARCH (paper)  : MNQ_SWING, MNQ_50PT, MGC_INTRADAY',
+    '',
+    '## Current Effective Thresholds',
+    `- MNQ_INTRADAY live confidence min : ${lt.MNQ_INTRADAY ?? 67}`,
+    `- MGC_SCALP    live confidence min : ${lt.MGC_SCALP    ?? 60}`,
+    `- STRONG_A quant score min         : ${et.strong_a     ?? 71}  (A-grade signals below this are research-only)`,
     '',
     '## Loss Forensics by Strategy — last 14 days',
     '',
@@ -96,22 +161,20 @@ function _buildPrompt(forensicsData, metrics) {
   lines.push(
     '## Your Task',
     '',
-    'Analyze the failure taxonomy above and return **specific, quantitative, actionable adjustments**.',
-    'You have access to these levers:',
-    '  • Confidence score minimum per strategy (currently ~60–68 range)',
-    '  • Quant score minimum per strategy (currently ~60–65 range)',
-    '  • Session blocklist (which sessions to skip signals for)',
-    '  • HTF bias strictness (require BULL/BEAR, reject MIXED)',
-    '  • Regime filter (pause in RANGE_CHOP, SOFT_CHOP)',
-    '  • Hold-time caps (exit after N minutes if no progress)',
+    'Analyze the failure taxonomy above and use the `apply_adjustments` tool to make specific,',
+    'quantitative threshold changes. You MUST call the tool — even if only to confirm no changes',
+    'are needed (set changes to empty arrays and explain in the summary field).',
     '',
-    'Prioritise LIVE strategies (MGC_SCALP, MNQ_INTRADAY) for immediate action.',
-    'Be specific — say "raise MGC_SCALP confidence minimum from 62 to 68" not "increase confidence".',
+    'Levers available via the tool:',
+    '  • live_threshold_changes — raise/lower confidence minimum for MGC_SCALP or MNQ_INTRADAY',
+    '  • strong_a_change        — raise/lower the quant score minimum for live A-grade signals',
+    '  • session_blocks         — block a strategy from trading in a specific session',
     '',
-    '**Response format (use exactly these section headers):**',
+    'Prioritise LIVE strategies. Be conservative — max ±5 pts/week on confidence thresholds.',
+    'After calling the tool, write a plain-English analysis with these sections:',
     '',
     '## PRIORITY ADJUSTMENTS',
-    '1–3 numbered items. LIVE strategies only. Implement this week.',
+    '1–3 numbered items explaining what was adjusted and why.',
     '',
     '## PER-STRATEGY ANALYSIS',
     'For each strategy with meaningful data (≥3 losses): 2–4 bullet points.',
@@ -174,7 +237,12 @@ async function runForensicsAnalysis(db, reportMetrics = {}, weekStart) {
     return null;
   }
 
-  const prompt = _buildPrompt({ summary, clusters: clusterWarnings }, reportMetrics);
+  // Pass current effective thresholds so Claude knows the baseline
+  const effectiveThresholds = thresholdManager.initialized
+    ? thresholdManager.getCurrentEffective()
+    : null;
+
+  const prompt = _buildPrompt({ summary, clusters: clusterWarnings }, reportMetrics, effectiveThresholds);
 
   // Lazy-load the SDK — server starts fine even without the package installed
   let Anthropic;
@@ -189,28 +257,83 @@ async function runForensicsAnalysis(db, reportMetrics = {}, weekStart) {
     const client = new Anthropic.default({ apiKey });
     console.log(`[forensics-analyst] Calling Claude (${MODEL}) for weekly forensics analysis…`);
 
+    // First turn: ask Claude to analyze and call the tool
     const msg = await client.messages.create({
       model:      MODEL,
       max_tokens: MAX_TOKENS,
-      system:     'You are a precise quantitative trading analyst. Return concise, numbered, specific recommendations based only on the data provided. No preamble.',
+      system:     'You are a precise quantitative trading analyst. Use the apply_adjustments tool to record your threshold changes, then write a concise analysis. Base decisions only on the data provided.',
+      tools:      [ADJUST_TOOL],
       messages:   [{ role: 'user', content: prompt }],
     });
 
-    const text = msg.content?.find(b => b.type === 'text')?.text ?? '';
-    if (!text) {
-      console.error('[forensics-analyst] Empty response from Claude');
-      return null;
+    // Extract tool use block and apply changes
+    const toolBlock = msg.content?.find(b => b.type === 'tool_use' && b.name === 'apply_adjustments');
+    const appliedChanges = [];
+
+    if (toolBlock?.input && thresholdManager.initialized) {
+      const inp = toolBlock.input;
+
+      // Apply live threshold changes
+      for (const change of inp.live_threshold_changes ?? []) {
+        const key    = `LIVE_THRESHOLD:${change.strategy}`;
+        const result = thresholdManager.applyChange(key, change.new_value, change.rationale, ws);
+        appliedChanges.push({ key, ...change, result });
+        console.log(`[forensics-analyst] ${key}: ${result.ok ? (result.id ? `changed → ${change.new_value}${result.clamped ? ` (clamped from ${change.new_value} to ${result.effective})` : ''}` : result.reason) : `REJECTED — ${result.reason}`}`);
+      }
+
+      // Apply STRONG_A change
+      if (inp.strong_a_change) {
+        const result = thresholdManager.applyChange('STRONG_A', inp.strong_a_change.new_value, inp.strong_a_change.rationale, ws);
+        appliedChanges.push({ key: 'STRONG_A', ...inp.strong_a_change, result });
+        console.log(`[forensics-analyst] STRONG_A: ${result.ok ? (result.id ? `changed → ${inp.strong_a_change.new_value}` : result.reason) : `REJECTED — ${result.reason}`}`);
+      }
+
+      // Apply session blocks
+      for (const block of inp.session_blocks ?? []) {
+        const key    = `SESSION_BLOCK:${block.strategy}:${block.session}`;
+        const result = thresholdManager.applyChange(key, block.action, block.rationale, ws);
+        appliedChanges.push({ key, ...block, result });
+        console.log(`[forensics-analyst] ${key}: ${result.ok ? (result.id ? block.action : result.reason) : `REJECTED — ${result.reason}`}`);
+      }
+    } else if (toolBlock && !thresholdManager.initialized) {
+      console.warn('[forensics-analyst] ThresholdManager not initialized — changes logged but not applied');
+    }
+
+    // Second turn: get the plain-English analysis text
+    const assistantTurn = { role: 'assistant', content: msg.content };
+    const toolResult    = toolBlock
+      ? { type: 'tool_result', tool_use_id: toolBlock.id, content: 'Changes applied successfully.' }
+      : null;
+
+    let analysisText = '';
+    if (toolResult) {
+      const followUp = await client.messages.create({
+        model:      MODEL,
+        max_tokens: MAX_TOKENS,
+        system:     'You are a precise quantitative trading analyst.',
+        tools:      [ADJUST_TOOL],
+        messages:   [
+          { role: 'user',      content: prompt },
+          assistantTurn,
+          { role: 'user',      content: [toolResult] },
+        ],
+      });
+      analysisText = followUp.content?.find(b => b.type === 'text')?.text ?? '';
+    } else {
+      // Claude didn't call the tool — grab any text it produced
+      analysisText = msg.content?.find(b => b.type === 'text')?.text ?? '';
     }
 
     const result = {
-      adjustments:   text,
-      model:         MODEL,
-      week_start:    ws,
-      input_tokens:  msg.usage?.input_tokens  ?? null,
-      output_tokens: msg.usage?.output_tokens ?? null,
-      generated_at:  new Date().toISOString(),
+      adjustments:      analysisText,
+      applied_changes:  appliedChanges,
+      model:            MODEL,
+      week_start:       ws,
+      input_tokens:     msg.usage?.input_tokens  ?? null,
+      output_tokens:    msg.usage?.output_tokens ?? null,
+      generated_at:     new Date().toISOString(),
       strategies_analyzed: ALL_STRATEGIES.filter(s => (summary[s] ?? []).length > 0),
-      cluster_count: clusterWarnings.length,
+      cluster_count:    clusterWarnings.length,
     };
 
     db.prepare(`
@@ -222,7 +345,7 @@ async function runForensicsAnalysis(db, reportMetrics = {}, weekStart) {
     `).run(cacheKey, JSON.stringify(result));
 
     console.log(
-      `[forensics-analyst] Analysis done — ${result.input_tokens ?? '?'} in / ${result.output_tokens ?? '?'} out tokens`
+      `[forensics-analyst] Analysis done — ${result.input_tokens ?? '?'} in / ${result.output_tokens ?? '?'} out tokens, ${appliedChanges.filter(c => c.result?.id).length} threshold(s) changed`
     );
     return result;
   } catch (err) {

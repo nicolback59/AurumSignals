@@ -443,6 +443,8 @@ db.exec(`
   );
 `);
 
+thresholdManager.init(db);
+
 const insertSignal = db.prepare(`
   INSERT INTO signals
     (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
@@ -767,6 +769,7 @@ app.get('/api/learning', (req, res) => {
 // ── LOSS FORENSICS ────────────────────────────────────────────────────────────────────────
 const { getForensicsSummary, detectClusters: _detectClusters } = require('./signals/loss-forensics');
 const { loadForensicsAnalysis, runForensicsAnalysis: _runForensicsAnalysis } = require('./agents/forensics-analyst');
+const thresholdManager = require('./agents/threshold-manager');
 
 // Per-strategy forensics breakdown — top failure modes, avg MFE/MAE, quant stats
 app.get('/api/forensics/summary', (req, res) => {
@@ -839,6 +842,33 @@ app.post('/api/forensics/ai-analysis/run', async (req, res) => {
     _runForensicsAnalysis(db, {}, null)
       .then(r => r && console.log(`[server] Manual AI forensics done (${r.output_tokens} tokens)`))
       .catch(e => console.error('[server] Manual AI forensics error:', e.message));
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── AI THRESHOLD MANAGEMENT ───────────────────────────────────────────────────────────────
+
+// Current effective thresholds (live values used by scanner right now)
+app.get('/api/thresholds/current', (req, res) => {
+  try {
+    res.json(thresholdManager.getCurrentEffective());
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Full change log (audit trail of all AI-applied adjustments)
+app.get('/api/thresholds/changelog', (req, res) => {
+  try {
+    const limit = Math.min(Number(req.query.limit) || 50, 200);
+    res.json({ rows: thresholdManager.getChangeLog(limit) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Roll back a specific threshold change by ID
+app.post('/api/thresholds/rollback/:id', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'invalid id' });
+    const ok = thresholdManager.rollback(id);
+    res.json({ ok, message: ok ? `Row ${id} rolled back` : `Row ${id} not found or already rolled back` });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

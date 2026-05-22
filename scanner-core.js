@@ -57,6 +57,7 @@ const {
   listReports, getReportScheduleStatus,
 } = require('./performance-reporter');
 const { runForensicsAnalysis } = require('./agents/forensics-analyst');
+const thresholdManager         = require('./agents/threshold-manager');
 const { runBacktest, runBacktest5m, runSwingBacktest1h, calcEnhancedMetrics } = require('./backtest-engine');
 const {
   getParams, saveBacktestRun, saveBacktestDetails,
@@ -119,7 +120,8 @@ class Scanner extends EventEmitter {
   constructor(db, config = {}) {
     super();
     this.db = db;
-    signalDedup.init(db);  // load persisted ideas + prep SQLite statements
+    signalDedup.init(db);        // load persisted ideas + prep SQLite statements
+    thresholdManager.init(db);   // create ai_thresholds table, warm cache
 
     this.cfg = {
       symbol:          config.symbol          || process.env.SCANNER_SYMBOL       || 'NQ=F',
@@ -167,6 +169,8 @@ class Scanner extends EventEmitter {
     // Idempotency: tracks outcome notifications already sent this process lifetime
     // Key: `${signalId}_${eventType}` — prevents duplicate win/loss/expired pushes
     this._notifiedOutcomes  = new Set();
+    // Key: `${signalId}_TRADE_ENTRY` — prevents duplicate entry pushes
+    this._notifiedEntries   = new Set();
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -244,7 +248,7 @@ class Scanner extends EventEmitter {
         SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
                s.trade_style, s.strategy_name, s.session, s.setup,
                s.win_prob_tp1, s.quant_score, s.quant_grade, s.confidence,
-               s.htf_bias, s.raw_payload,
+               s.htf_bias, s.raw_payload, s.live_gated,
                json_extract(s.raw_payload, '$.context.prediction.win_rate_pct') AS predicted_wr_pct
         FROM   signals s
         LEFT JOIN outcomes o ON o.signal_id = s.id
@@ -260,7 +264,7 @@ class Scanner extends EventEmitter {
         SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
                s.trade_style, s.strategy_name, s.session, s.setup,
                s.win_prob_tp1, s.quant_score, s.quant_grade, s.confidence,
-               s.htf_bias, s.raw_payload
+               s.htf_bias, s.raw_payload, s.live_gated
         FROM   signals s
         LEFT JOIN outcomes o ON o.signal_id = s.id
         WHERE  o.id IS NULL
@@ -285,7 +289,7 @@ class Scanner extends EventEmitter {
       getAllActiveSignals: db.prepare(`
         SELECT s.id, s.direction, s.entry, s.sl, s.tp1, s.received_at, s.instrument,
                s.trade_style, s.strategy_name, s.session, s.setup,
-               s.win_prob_tp1
+               s.win_prob_tp1, s.live_gated
         FROM   signals s
         LEFT JOIN outcomes o ON o.signal_id = s.id
         WHERE  o.id IS NULL
@@ -662,10 +666,20 @@ class Scanner extends EventEmitter {
       this._log('NOTIFICATION_SEND_FAILED reason=NTFY_TOPIC_not_set', 'signal');
       return;
     }
+    // Idempotency: never send the same entry twice (e.g. if _storeSignal is re-entered)
+    const entryKey = payload.id != null ? `${payload.id}_TRADE_ENTRY` : null;
+    if (entryKey) {
+      if (this._notifiedEntries.has(entryKey)) {
+        this._log(`ENTRY_NOTIFICATION_SKIPPED_DUPLICATE id=${payload.id}`, 'signal');
+        return;
+      }
+      this._notifiedEntries.add(entryKey);
+    }
     const body    = buildNtfyBody(payload);
     const headers = buildNtfyHeaders(payload, { ntfyToken: this.cfg.ntfyToken });
     const url     = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
     this._lastNtfyAttemptAt = Date.now();
+    this._log(`ENTRY_NOTIFICATION_SENT id=${payload.id ?? '?'} instr=${payload.instrument ?? ''} dir=${payload.direction ?? ''}`, 'signal');
     this._log(`NOTIFICATION_EVENT_CREATED event=TRADE_ENTRY instr=${payload.instrument ?? ''} dir=${payload.direction ?? ''}`, 'signal');
     this._log(`NOTIFICATION_SEND_START → ${url}`, 'signal');
     fetch(url, { method: 'POST', headers, body })
@@ -1046,7 +1060,9 @@ class Scanner extends EventEmitter {
 
       this._log(`AUTO-RESOLVE #${sig.id} ${instrument}: ${sig.direction} → ${resolution.toState}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}${mfePts != null ? ` MFE=${mfePts} MAE=${maePts}` : ''}`, 'signal');
       this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
-      if (result !== 'EXPIRED') this._sendNtfyOutcome(sig, result, pnlPts, resolution.exitPrice, exitBar?.timestamp);
+      // Only send outcome notifications for live signals (live_gated=0/null).
+      // Research-only signals never sent entry alerts, so outcomes would be confusing noise.
+      if (result !== 'EXPIRED' && !sig.live_gated) this._sendNtfyOutcome(sig, result, pnlPts, resolution.exitPrice, exitBar?.timestamp);
 
       // Loss forensics — classify and write for all non-WIN outcomes
       if (result === 'LOSS' || result === 'EXPIRED' || result === 'BE') {
@@ -1128,7 +1144,7 @@ class Scanner extends EventEmitter {
         if (result === 'WIN' || result === 'LOSS') signalDedup.releaseBySignal(sig);
         this._log(`RETRO-FIX #${sig.id} ${instrument}: EXPIRED → ${result}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
         this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
-        this._sendNtfyOutcome(sig, result, pnlPts, resolution.exitPrice, bar.timestamp);
+        if (!sig.live_gated) this._sendNtfyOutcome(sig, result, pnlPts, resolution.exitPrice, bar.timestamp);
         resolvedCount++;
         break;
       }
@@ -1291,7 +1307,7 @@ class Scanner extends EventEmitter {
             WHERE signal_id = ?
           `).run(holdMin, sig.quant_score ?? null, sig.quant_grade ?? null, sig.id);
         } catch { /* never crash */ }
-        this._sendNtfyExpired(sig, reason);
+        if (!sig.live_gated) this._sendNtfyExpired(sig, reason);
         // Loss forensics for sweep-expired signals (no bars available — limited context)
         try {
           const holdMs  = now.getTime() - new Date(sig.received_at).getTime();
