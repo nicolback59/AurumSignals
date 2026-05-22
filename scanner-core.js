@@ -82,6 +82,7 @@ const {
   getOpeningCandleReport, getEtDateKey,
 } = require('./opening-candle');
 const { computeQuantScore } = require('./strategies/quant-scorer');
+const gatekeeper = require('./agents/signal-gatekeeper');
 const {
   writeLossForensic, computeMfeMae, detectClusters, formatClusterLog,
 } = require('./signals/loss-forensics');
@@ -938,9 +939,15 @@ class Scanner extends EventEmitter {
       }
     } catch { /* never crash signal storage */ }
 
+    // Persist agent scores for audit trail (async — never blocks signal storage)
+    if (signal._agentScores) {
+      setImmediate(() => gatekeeper.persistAgentScores(this.db, id, signal._agentScores));
+    }
+
     const stratLabel = signal.strategy_name ?? signal.setup ?? 'unknown';
+    const gateStr    = signal._gateVerdict ? ` gate=${signal._gateVerdict}(${signal._gateScore})` : '';
     const logMsg = `✅ SIGNAL #${id} | ${signal.instrument} ${signal.direction} ${signal.grade} | ` +
-      `${stratLabel} | confidence=${signal.confidence ?? signal.score}/100 | entry=${signal.entry} | rr=${signal.rr}`;
+      `${stratLabel} | confidence=${signal.confidence ?? signal.score}/100 | entry=${signal.entry} | rr=${signal.rr}${gateStr}`;
     this._log(logMsg, 'signal');
 
     // Rebuild with id for emit + ntfy
@@ -1705,34 +1712,53 @@ class Scanner extends EventEmitter {
         }
       }
 
-      // ── Quant scorer — 8-dimension quality gate ───────────────────────────────
+      // ── Quant scorer — 8-dimension score (kept for DB storage + grading) ─────
+      const quantCtx = {
+        regime:    currentRegime ?? 'NORMAL',
+        volRegime: sig.indicators?.volRegime ?? 'NORMAL',
+        atrRatio:  sig.indicators?.atr ? (sig.indicators.atr / (sig.indicators?.atrMin ?? sig.indicators.atr)) : 1,
+        sess:      { quality: sig.indicators?.sessionQuality ?? 0.7, name: sig.session ?? '' },
+        htfBiases: [
+          { bias: sig.indicators?.htfBias  ?? 0, present: true },
+          { bias: sig.indicators?.htf2Bias ?? 0, present: sig.indicators?.htf2Bias  != null },
+          { bias: sig.indicators?.htf1hBias ?? 0, present: sig.indicators?.htf1hBias != null },
+        ],
+        bars5m,
+        rsi: sig.indicators?.rsi ?? null,
+        hist: null, histPrev: null,
+      };
       try {
-        const quantCtx = {
-          regime: currentRegime ?? 'unknown',
-          volRegime: sig.indicators?.volRegime ?? 'NORMAL',
-          atrRatio: sig.indicators?.atr ? (sig.indicators.atr / (sig.indicators?.atrMin ?? sig.indicators.atr)) : 1,
-          sess: { quality: sig.indicators?.sessionQuality ?? 0.7, name: sig.session ?? '' },
-          htfBiases: [
-            { bias: sig.indicators?.htfBias ?? 0, present: true },
-            { bias: sig.indicators?.htf2Bias ?? 0, present: sig.indicators?.htf2Bias != null },
-            { bias: sig.indicators?.htf1hBias ?? 0, present: sig.indicators?.htf1hBias != null },
-          ],
-          bars5m,
-          rsi: sig.indicators?.rsi ?? null,
-          hist: null,
-          histPrev: null,
-        };
-        const quantResult = computeQuantScore(sig, quantCtx);
-        sig.quant_score = quantResult.total;
-        sig.quant_grade = quantResult.grade;
+        const quantResult  = computeQuantScore(sig, quantCtx);
+        sig.quant_score    = quantResult.total;
+        sig.quant_grade    = quantResult.grade;
         sig.quant_subscores = quantResult.subscores;
-
-        // B-tier and IGNORE quant grades → force research-only (live gated)
-        if (!quantResult.isLive && !rank.liveGated) {
-          rank.liveGated = true;
-          this._log(`SIGNAL_QUANT_GATED strat=${sig.strategy_name} quantGrade=${quantResult.grade} quantScore=${quantResult.total} (below strong-A threshold — research only)`, 'signal');
-        }
       } catch { /* never crash */ }
+
+      // ── Multi-agent gatekeeper — replaces ad-hoc quant isLive check ──────────
+      if (!rank.liveGated) {
+        try {
+          const scanCtx = {
+            ...quantCtx,
+            atr:   sig.indicators?.atr,
+            close: sig.indicators?.close,
+            vwap:  sig.indicators?.vwap,
+          };
+          const gate = gatekeeper.evaluate(sig, scanCtx, this.db);
+          sig._gateVerdict  = gate.verdict;
+          sig._gateScore    = gate.score;
+          sig._gateLog      = gate.gateLog;
+          sig._agentScores  = gate.agentScores;
+
+          if (gate.liveGated) {
+            rank.liveGated = true;
+            this._log(
+              `SIGNAL_GATED verdict=${gate.verdict} strat=${sig.strategy_name} gateScore=${gate.score}` +
+              (gate.failedGates.length ? ` failed=[${gate.failedGates.join(',')}]` : ''),
+              'signal'
+            );
+          }
+        } catch { /* never crash */ }
+      }
 
       sig.tier              = rank.tier;
       sig.adjusted_confidence = rank.adjustedConfidence;
