@@ -167,11 +167,14 @@ class Scanner extends EventEmitter {
     this._lastNtfySuccessAt = 0;   // epoch ms of last ntfy HTTP 2xx response
     this._lastNtfyStatus    = null; // last HTTP status code from ntfy
     this._lastNtfyError     = null; // last ntfy error message
-    // Idempotency: tracks outcome notifications already sent this process lifetime
-    // Key: `${signalId}_${eventType}` — prevents duplicate win/loss/expired pushes
+    // Idempotency: in-memory fast-path cache of (signalId, eventType) pairs already notified.
+    // Populated from notification_log DB on startup so state survives process restarts.
+    // Key format: `${signalId}_${eventType}`
     this._notifiedOutcomes  = new Set();
-    // Key: `${signalId}_TRADE_ENTRY` — prevents duplicate entry pushes
-    this._notifiedEntries   = new Set();
+    this._notifiedEntries   = new Set(); // alias view — same Set, TRADE_ENTRY events
+
+    // Prevents concurrent scan() calls from racing (BarWatcher + setInterval can both fire)
+    this._scanInProgress    = false;
 
     // Cache last known good bars so a transient fetch error doesn't kill the scan
     this._lastGoodBars = {
@@ -207,6 +210,13 @@ class Scanner extends EventEmitter {
         UNIQUE(signal_id, tp_level)
       );
       CREATE INDEX IF NOT EXISTS idx_tp_hits_signal ON tp_hits(signal_id);
+
+      CREATE TABLE IF NOT EXISTS notification_log (
+        signal_id  INTEGER NOT NULL,
+        event_type TEXT    NOT NULL,
+        sent_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+        PRIMARY KEY (signal_id, event_type)
+      );
     `);
 
     this._prepareStatements();
@@ -372,7 +382,54 @@ class Scanner extends EventEmitter {
         WHERE symbol = ? AND interval = ?
         ORDER BY timestamp ASC
       `),
+
+      insertNotificationLog: db.prepare(`
+        INSERT OR IGNORE INTO notification_log (signal_id, event_type)
+        VALUES (?, ?)
+      `),
+
+      loadNotificationLog: db.prepare(`
+        SELECT signal_id, event_type FROM notification_log
+      `),
     };
+  }
+
+  // ── Notification idempotency ──────────────────────────────────────────────────
+
+  // Load all previously-sent notification keys from DB into the in-memory Sets.
+  // Called once at start() so the Set survives PM2 restarts.
+  _loadNotificationState() {
+    try {
+      const rows = this._stmts.loadNotificationLog.all();
+      for (const { signal_id, event_type } of rows) {
+        const key = `${signal_id}_${event_type}`;
+        this._notifiedOutcomes.add(key);
+        if (event_type === 'TRADE_ENTRY') this._notifiedEntries.add(key);
+      }
+      this._log(`NOTIFICATION_STATE_LOADED count=${rows.length}`, 'signal');
+    } catch (err) {
+      this._err('[notification] failed to load notification state from DB', err);
+    }
+  }
+
+  // Atomically marks (signalId, eventType) as notified in both DB and in-memory Set.
+  // Returns true if this is the FIRST time (should send), false if already notified (skip).
+  // The DB PRIMARY KEY (signal_id, event_type) guarantees single-write even under concurrency.
+  _tryMarkNotified(signalId, eventType) {
+    const key = `${signalId}_${eventType}`;
+    if (this._notifiedOutcomes.has(key)) return false;
+    try {
+      const info = this._stmts.insertNotificationLog.run(signalId, eventType);
+      if (info.changes === 0) {
+        // Already existed in DB — sync in-memory cache and skip
+        this._notifiedOutcomes.add(key);
+        if (eventType === 'TRADE_ENTRY') this._notifiedEntries.add(key);
+        return false;
+      }
+    } catch { /* on DB error, allow send (fail open) */ }
+    this._notifiedOutcomes.add(key);
+    if (eventType === 'TRADE_ENTRY') this._notifiedEntries.add(key);
+    return true;
   }
 
   // ── Logging ─────────────────────────────────────────────────────────────────
@@ -667,14 +724,12 @@ class Scanner extends EventEmitter {
       this._log('NOTIFICATION_SEND_FAILED reason=NTFY_TOPIC_not_set', 'signal');
       return;
     }
-    // Idempotency: never send the same entry twice (e.g. if _storeSignal is re-entered)
-    const entryKey = payload.id != null ? `${payload.id}_TRADE_ENTRY` : null;
-    if (entryKey) {
-      if (this._notifiedEntries.has(entryKey)) {
+    // Idempotency: DB-backed — survives PM2 restarts, impossible to double-send
+    if (payload.id != null) {
+      if (!this._tryMarkNotified(payload.id, 'TRADE_ENTRY')) {
         this._log(`ENTRY_NOTIFICATION_SKIPPED_DUPLICATE id=${payload.id}`, 'signal');
         return;
       }
-      this._notifiedEntries.add(entryKey);
     }
     const body    = buildNtfyBody(payload);
     const headers = buildNtfyHeaders(payload, { ntfyToken: this.cfg.ntfyToken });
@@ -712,12 +767,10 @@ class Scanner extends EventEmitter {
                     : result === 'LOSS' ? 'TRADE_LOSS'
                     : 'TRADE_BREAKEVEN';
 
-    const idempKey = `${sig.id}_${eventType}`;
-    if (this._notifiedOutcomes.has(idempKey)) {
+    if (!this._tryMarkNotified(sig.id, eventType)) {
       this._log(`NOTIFICATION_SKIPPED reason=already_sent event=${eventType} id=${sig.id}`, 'signal');
       return;
     }
-    this._notifiedOutcomes.add(idempKey);
 
     this._log(`NOTIFICATION_EVENT_CREATED event=${eventType} id=${sig.id} instr=${sig.instrument} result=${result}`, 'signal');
 
@@ -746,12 +799,10 @@ class Scanner extends EventEmitter {
                     : expReason === 'EXPIRED_WEEKEND_CLOSE' ? 'TRADE_EXPIRED_WEEKEND_CLOSE'
                     : 'TRADE_EXPIRED_MAX_HOLD';
 
-    const idempKey = `${sig.id}_${eventType}`;
-    if (this._notifiedOutcomes.has(idempKey)) {
+    if (!this._tryMarkNotified(sig.id, eventType)) {
       this._log(`NOTIFICATION_SKIPPED reason=already_sent event=${eventType} id=${sig.id}`, 'signal');
       return;
     }
-    this._notifiedOutcomes.add(idempKey);
 
     this._log(`NOTIFICATION_EVENT_CREATED event=${eventType} id=${sig.id} instr=${sig.instrument} reason=${expReason}`, 'signal');
 
@@ -776,6 +827,12 @@ class Scanner extends EventEmitter {
 
   _sendNtfyTpHit(sig, tpLevel, exitPrice, pnlPts) {
     if (!this.cfg.ntfyTopic) return;
+    // Idempotency: TP hits had NO guard before — this is the critical fix
+    const tpEventType = `TP${tpLevel}_HIT`;
+    if (!this._tryMarkNotified(sig.id, tpEventType)) {
+      this._log(`NOTIFICATION_SKIPPED reason=already_sent event=${tpEventType} id=${sig.id}`, 'signal');
+      return;
+    }
     const STRAT_LABELS = {
       MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing',
       MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday',
@@ -1857,6 +1914,22 @@ class Scanner extends EventEmitter {
   // ── Main scan cycle ───────────────────────────────────────────────────────────
 
   async scan() {
+    // Prevent concurrent execution: BarWatcher and setInterval can both fire simultaneously.
+    // Without this guard, two concurrent scans can race on _autoResolveOutcomes and
+    // _trackHigherTPs, producing duplicate outcome/TP notifications even within a process.
+    if (this._scanInProgress) {
+      this._log('SCAN_SKIPPED reason=scan_in_progress', 'signal');
+      return;
+    }
+    this._scanInProgress = true;
+    try {
+      return await this._scanBody();
+    } finally {
+      this._scanInProgress = false;
+    }
+  }
+
+  async _scanBody() {
     this._scanCount++;
 
     const marketIsOpen = this._isMarketOpen();
@@ -3370,6 +3443,10 @@ class Scanner extends EventEmitter {
     // Restore last-known bars from DB so the scanner has data immediately on restart.
     // Prevents Yahoo Finance rate-limiting from blocking signal evaluation after a crash.
     this._restoreBarCache();
+
+    // Repopulate in-memory notification Sets from DB so duplicate-send protection
+    // survives PM2 restarts — without this, every restart would re-send all notifications.
+    this._loadNotificationState();
 
     // ── Feed + event-driven watcher ─────────────────────────────────────────────
     // Start the feed adapter (Tradovate WS or Yahoo poll).
