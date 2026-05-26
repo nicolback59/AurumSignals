@@ -17,33 +17,17 @@
  */
 
 const { workerData, parentPort } = require('worker_threads');
-const { runBacktest, runBacktest5m, runSwingBacktest1h, calcEnhancedMetrics } = require('../backtest-engine');
+const { runBacktest, runBacktest5m } = require('../backtest-engine');
 
-const { mode, bars, params, opts, swing1hBars, swingSlippage } = workerData;
+const { mode, bars, params, opts } = workerData;
 
 try {
   let result;
-
   if (mode === 'backtest5m' || mode === 'research5m') {
     result = runBacktest5m(bars, params, opts);
   } else {
-    // default: 'backtest' or 'research'
     result = runBacktest(bars, params, opts);
   }
-
-  // Supplement with swing 1h backtest if bars provided (MNQ only, full backtest mode)
-  if (mode === 'backtest' && swing1hBars && swing1hBars.length >= 60) {
-    try {
-      const swingResult = runSwingBacktest1h(swing1hBars, { slippage: swingSlippage });
-      if (swingResult.signalLog.length > 0) {
-        const merged = [...(result.signalLog ?? []), ...swingResult.signalLog];
-        result.signalLog = merged;
-        result.trades    = merged.map(r => r.outcome);
-        result.metrics   = calcEnhancedMetrics(merged);
-      }
-    } catch { /* swing errors are non-fatal */ }
-  }
-
   parentPort.postMessage({ success: true, result });
 } catch (err) {
   parentPort.postMessage({ success: false, error: err.message ?? String(err) });

@@ -463,6 +463,35 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_scores_signal ON agent_scores(signal_id);
 `);
 
+// ── Worker infrastructure tables ─────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS worker_health (
+    worker_name    TEXT    PRIMARY KEY,
+    status         TEXT    NOT NULL DEFAULT 'STARTING',
+    last_heartbeat TEXT    NOT NULL DEFAULT (datetime('now')),
+    last_cycle_at  TEXT,
+    cycle_count    INTEGER NOT NULL DEFAULT 0,
+    error_count    INTEGER NOT NULL DEFAULT 0,
+    last_error     TEXT,
+    metadata       TEXT
+  );
+
+  CREATE TABLE IF NOT EXISTS sse_queue (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    event_type  TEXT    NOT NULL,
+    data        TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    expires_at  TEXT    NOT NULL DEFAULT (datetime('now', '+15 seconds'))
+  );
+  CREATE INDEX IF NOT EXISTS idx_sse_queue_expires ON sse_queue(expires_at);
+
+  CREATE TABLE IF NOT EXISTS bar_cache (
+    instrument  TEXT    PRIMARY KEY,
+    bars_5m     TEXT,
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+  );
+`);
+
 thresholdManager.init(db);
 
 const insertSignal = db.prepare(`
@@ -619,42 +648,85 @@ app.get('/api/signals/open', (req, res) => {
 });
 
 app.get('/api/status', (req, res) => {
-  const scanner = global._scanner;
   const { classifyNow } = require('./clock/market-clock');
+  const isWorkerMode = process.env.SCANNER_MODE === 'worker';
 
-  let marketMode = 'UNKNOWN';
-  let marketOpen = false;
+  // ── Scanner state: read from worker_health when running as separate process
+  let scannerState = {};
+  if (isWorkerMode) {
+    try {
+      const row = db.prepare(
+        "SELECT status, last_heartbeat, metadata FROM worker_health WHERE worker_name = 'scanner-worker'"
+      ).get();
+      if (row) {
+        const meta = row.metadata ? JSON.parse(row.metadata) : {};
+        const ageMs = Date.now() - new Date(row.last_heartbeat).getTime();
+        scannerState = { ...meta, workerStatus: row.status, heartbeatAgeMs: ageMs };
+      }
+    } catch (_) { /* never crash */ }
+  } else {
+    const sc = global._scanner;
+    if (sc) {
+      scannerState = {
+        running:           !!sc._running,
+        feedConnected:     sc._feed?.isConnected() ?? false,
+        feedType:          sc.feedType ?? 'unknown',
+        dataStatus:        sc._lastDataStatus ?? 'INIT',
+        scanCount:         sc._scanCount ?? 0,
+        consecutiveErrors: sc._consecutiveErrors ?? 0,
+        lastFetchAt:       sc._lastFetchAt ?? null,
+        lastNtfyAttemptAt: sc._lastNtfyAttemptAt ?? null,
+        lastNtfySuccessAt: sc._lastNtfySuccessAt ?? null,
+        lastNtfyStatus:    sc._lastNtfyStatus ?? null,
+        lastNtfyError:     sc._lastNtfyError  ?? null,
+        lastBarTimestamp:  sc._lastGoodBars?.mnq5m?.slice(-1)[0]?.timestamp ?? null,
+      };
+    }
+  }
+
+  // ── Market classification ────────────────────────────────────────────────
+  let marketMode = 'UNKNOWN'; let marketOpen = false;
   try {
-    const { session, meta, isBlackout } = classifyNow();
+    const { meta, isBlackout } = classifyNow();
     marketOpen = !isBlackout && meta?.minTier !== 'IGNORE';
     if (isBlackout) {
       const pt = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
       const dow = pt.getDay(); const hm = pt.getHours() * 60 + pt.getMinutes();
       marketMode = (dow === 5 && hm >= 780) || dow === 6 || (dow === 0 && hm < 840) ? 'WEEKEND_CLOSE' : 'MAINTENANCE';
-    } else if (meta?.minTier === 'IGNORE') {
-      marketMode = 'OVERNIGHT';
-    } else if (marketOpen) {
-      marketMode = 'LIVE';
-    } else {
-      marketMode = 'RESEARCH';
-    }
-  } catch (_err) { /* never crash status */ }
+    } else if (meta?.minTier === 'IGNORE') { marketMode = 'OVERNIGHT';
+    } else if (marketOpen)                  { marketMode = 'LIVE';
+    } else                                  { marketMode = 'RESEARCH'; }
+  } catch (_) { /* never crash */ }
 
-  // Data freshness from scanner bar cache
+  // ── Data freshness ───────────────────────────────────────────────────────
   let lastDataTimestamp = null; let dataAgeMinutes = null;
   try {
-    const bars = scanner?._lastGoodBars?.mnq5m ?? [];
-    if (bars.length) {
-      lastDataTimestamp = bars[bars.length - 1]?.timestamp ?? null;
-      dataAgeMinutes = lastDataTimestamp
-        ? Math.round((Date.now() - new Date(lastDataTimestamp).getTime()) / 60000)
-        : null;
+    const ts = scannerState.lastBarTimestamp;
+    if (ts) {
+      lastDataTimestamp = ts;
+      dataAgeMinutes = Math.round((Date.now() - new Date(ts).getTime()) / 60000);
     }
-  } catch (_err) { /* ignore */ }
+  } catch (_) { /* ignore */ }
+
+  // ── Worker health summary (all workers) ─────────────────────────────────
+  let workers = {};
+  try {
+    db.prepare('SELECT worker_name, status, last_heartbeat FROM worker_health').all()
+      .forEach(r => {
+        workers[r.worker_name] = {
+          status:       r.status,
+          ageMs:        Date.now() - new Date(r.last_heartbeat).getTime(),
+          lastBeat:     r.last_heartbeat,
+        };
+      });
+  } catch (_) { /* ignore */ }
 
   res.json({
-    scannerRunning:    !!(scanner?._running),
-    reconciliationRunning: true,
+    scannerRunning:       isWorkerMode
+      ? (scannerState.workerStatus === 'RUNNING' && scannerState.heartbeatAgeMs < 120000)
+      : !!(global._scanner?._running),
+    reconciliationRunning: !!(workers['reconcile-worker']),
+    scannerMode:           isWorkerMode ? 'worker' : 'inline',
     marketMode,
     marketOpen,
     strategies: {
@@ -662,33 +734,29 @@ app.get('/api/status', (req, res) => {
       researchOnly: [],
       disabled:     [],
     },
-    feedType:          scanner?.feedType      ?? 'unknown',
-    feedConnected:     scanner?._feed?.isConnected() ?? false,
-    dataStatus:        scanner?._lastDataStatus ?? 'INIT',
+    feedType:          scannerState.feedType      ?? 'unknown',
+    feedConnected:     scannerState.feedConnected ?? false,
+    dataStatus:        scannerState.dataStatus    ?? 'INIT',
     lastDataTimestamp,
     dataAgeMinutes,
-    lastFetchAt:       scanner?._lastFetchAt ? new Date(scanner._lastFetchAt).toISOString() : null,
-    scanCount:         scanner?._scanCount ?? 0,
-    consecutiveErrors: scanner?._consecutiveErrors ?? 0,
+    lastFetchAt:       scannerState.lastFetchAt
+      ? new Date(scannerState.lastFetchAt).toISOString() : null,
+    scanCount:         scannerState.scanCount         ?? 0,
+    consecutiveErrors: scannerState.consecutiveErrors ?? 0,
+    workers,
     notification: {
-      configured:     !!process.env.NTFY_TOPIC,
-      provider:       'ntfy',
-      topicMasked:    process.env.NTFY_TOPIC
-        ? (process.env.NTFY_TOPIC.slice(0, 3) + '***')
-        : null,
-      tokenSet:       !!process.env.NTFY_TOKEN,
-      lastAttemptAt:  scanner?._lastNtfyAttemptAt
-        ? new Date(scanner._lastNtfyAttemptAt).toISOString() : null,
-      lastSuccessAt:  scanner?._lastNtfySuccessAt
-        ? new Date(scanner._lastNtfySuccessAt).toISOString() : null,
-      lastStatus:     scanner?._lastNtfyStatus ?? null,
-      lastError:      scanner?._lastNtfyError  ?? null,
+      configured:   !!process.env.NTFY_TOPIC,
+      provider:     'ntfy',
+      topicMasked:  process.env.NTFY_TOPIC ? (process.env.NTFY_TOPIC.slice(0, 3) + '***') : null,
+      tokenSet:     !!process.env.NTFY_TOKEN,
+      lastAttemptAt: scannerState.lastNtfyAttemptAt
+        ? new Date(scannerState.lastNtfyAttemptAt).toISOString() : null,
+      lastSuccessAt: scannerState.lastNtfySuccessAt
+        ? new Date(scannerState.lastNtfySuccessAt).toISOString() : null,
+      lastStatus:   scannerState.lastNtfyStatus ?? null,
+      lastError:    scannerState.lastNtfyError  ?? null,
     },
-    tradovateConfigured: !!(
-      process.env.TRADOVATE_USERNAME &&
-      process.env.TRADOVATE_CID &&
-      process.env.TRADOVATE_SECRET
-    ),
+    tradovateConfigured: !!(process.env.TRADOVATE_USERNAME && process.env.TRADOVATE_CID && process.env.TRADOVATE_SECRET),
     env:    process.env.TRADOVATE_ENV || 'live',
     uptime: Math.floor(process.uptime()),
     ntfyConfigured: !!process.env.NTFY_TOPIC,
@@ -1110,22 +1178,22 @@ app.get('/api/market/prices', (req, res) => {
 app.get('/api/market/candles/:instrument', (req, res) => {
   const inst  = (req.params.instrument ?? '').toUpperCase();
   const limit = Math.min(Number(req.query.limit) || 60, 200);
-  const scanner = global._scanner;
   let bars = [];
-  if (scanner?._lastGoodBars) {
-    if (inst === 'MNQ') bars = scanner._lastGoodBars.mnq5m ?? [];
-    else if (inst === 'MGC') bars = scanner._lastGoodBars.mgc5m ?? [];
+  if (process.env.SCANNER_MODE === 'worker') {
+    // Worker mode: read from bar_cache table (written by scanner-worker each scan cycle)
+    try {
+      const row = db.prepare('SELECT bars_5m FROM bar_cache WHERE instrument = ?').get(inst);
+      if (row?.bars_5m) bars = JSON.parse(row.bars_5m);
+    } catch (_) { /* return empty */ }
+  } else {
+    // Inline mode: read from in-process scanner cache
+    const sc = global._scanner;
+    if (sc?._lastGoodBars) {
+      if (inst === 'MNQ') bars = sc._lastGoodBars.mnq5m ?? [];
+      else if (inst === 'MGC') bars = sc._lastGoodBars.mgc5m ?? [];
+    }
   }
-  // Return last `limit` bars with OHLCV fields only
-  const out = bars.slice(-limit).map(b => ({
-    t: b.timestamp,
-    o: b.open,
-    h: b.high,
-    l: b.low,
-    c: b.close,
-    v: b.volume ?? 0,
-  }));
-  res.json(out);
+  res.json(bars.slice(-limit).map(b => ({ t: b.timestamp, o: b.open, h: b.high, l: b.low, c: b.close, v: b.volume ?? 0 })));
 });
 
 // ── BACKTEST DATA MINER ────────────────────────────────────────────────────────
@@ -2407,30 +2475,80 @@ app.get('/setup',           (req, res) => res.sendFile(path.join(__dirname, 'set
 app.get('/forgot-password', (req, res) => res.sendFile(path.join(__dirname, 'forgot-password.html')));
 app.get('/reset-password',  (req, res) => res.sendFile(path.join(__dirname, 'reset-password.html')));
 
-// ── START SERVER + SCANNER ────────────────────────────────────────────────────────────────
+// ── START SERVER ─────────────────────────────────────────────────────────────
 app.listen(PORT, '0.0.0.0', () => {
   console.log(`Aurum Signals → http://localhost:${PORT}`);
-  console.log(`SQLite            →  ${DB_PATH}`);
+  console.log(`SQLite         → ${DB_PATH}`);
+  console.log(`Scanner mode   → ${process.env.SCANNER_MODE === 'worker' ? 'WORKER (separate process)' : 'INLINE'}`);
 
-  // Start scanner in-process so the scanner is ALWAYS running when the server is running.
-  // This eliminates the separate worker service and the "scanner not responding" issue.
-  const scanner = new Scanner(db);
-  global._scanner = scanner;  // expose to /api/status
+  // Write api-server's own heartbeat — visible in /api/status workers field
+  const _apiHeartbeat = () => {
+    try {
+      db.prepare(`
+        INSERT INTO worker_health (worker_name, status, last_heartbeat, metadata)
+        VALUES ('api-server', 'RUNNING', datetime('now'), ?)
+        ON CONFLICT(worker_name) DO UPDATE SET
+          status         = 'RUNNING',
+          last_heartbeat = datetime('now'),
+          metadata       = excluded.metadata,
+          cycle_count    = COALESCE(cycle_count, 0) + 1
+      `).run(JSON.stringify({ pid: process.pid, port: PORT, uptime: Math.floor(process.uptime()) }));
+    } catch (_) { /* never crash */ }
+  };
+  _apiHeartbeat();
+  setInterval(_apiHeartbeat, 30000); // refresh every 30s
 
-  scanner.on('signal',    data => _broadcastSSE('signal',    data));
-  scanner.on('scan',      data => _broadcastSSE('scan',      data));
-  scanner.on('heartbeat', data => _broadcastSSE('heartbeat', data));
-  scanner.on('backtest',  data => _broadcastSSE('backtest',  data));
-  scanner.on('outcome',   data => _broadcastSSE('outcome',   data));
-  scanner.on('error',     data => _broadcastSSE('scannerError', data));
+  if (process.env.SCANNER_MODE === 'worker') {
+    // ── WORKER MODE: scanner runs as a separate PM2 process ──────────────────
+    // SSE events arrive via sse_queue table — poll every 1 second.
+    // Bar data comes from bar_cache table.
+    // Scanner state is read from worker_health table.
+    let _lastSseId = 0;
+    try {
+      const row = db.prepare('SELECT MAX(id) AS maxId FROM sse_queue').get();
+      _lastSseId = row?.maxId ?? 0;
+    } catch (_) { /* start from 0 */ }
 
-  scanner.start();
+    setInterval(() => {
+      if (!_sseClients.size) return;
+      try {
+        const events = db.prepare(
+          'SELECT id, event_type, data FROM sse_queue WHERE id > ? ORDER BY id ASC LIMIT 50'
+        ).all(_lastSseId);
+        for (const ev of events) {
+          try {
+            _broadcastSSE(ev.event_type, JSON.parse(ev.data));
+          } catch (_) { /* malformed data — skip */ }
+          _lastSseId = ev.id;
+        }
+        // Purge expired events (keep table lean)
+        db.prepare("DELETE FROM sse_queue WHERE expires_at < datetime('now')").run();
+      } catch (_) { /* never crash the server */ }
+    }, 1000);
 
-  // Graceful shutdown — flush DB and stop scanner
+    console.log('[api-server] SSE queue polling started — waiting for scanner-worker events');
+
+  } else {
+    // ── INLINE MODE: scanner runs inside this process (default / legacy) ─────
+    const scanner = new Scanner(db);
+    global._scanner = scanner;
+
+    scanner.on('signal',    data => _broadcastSSE('signal',    data));
+    scanner.on('scan',      data => _broadcastSSE('scan',      data));
+    scanner.on('heartbeat', data => _broadcastSSE('heartbeat', data));
+    scanner.on('backtest',  data => _broadcastSSE('backtest',  data));
+    scanner.on('outcome',   data => _broadcastSSE('outcome',   data));
+    scanner.on('error',     data => _broadcastSSE('scannerError', data));
+
+    scanner.start();
+    console.log('[api-server] Scanner started inline');
+  }
+
+  // Graceful shutdown
   for (const sig of ['SIGTERM', 'SIGINT']) {
     process.once(sig, () => {
       console.log(`[${new Date().toISOString()}] Shutting down gracefully…`);
-      scanner.stop();
+      if (global._scanner) { try { global._scanner.stop(); } catch (_) {} }
       process.exit(0);
     });
   }
