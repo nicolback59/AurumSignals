@@ -404,7 +404,7 @@ function generateMidWeekReport(db) {
   const LIVE_STRATEGIES = ['MGC_SCALP', 'MNQ_INTRADAY'];
   const forensicsSummary = {};
   const clusterWarnings  = [];
-  for (const strat of ['MGC_SCALP', 'MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY']) {
+  for (const strat of ['MGC_SCALP', 'MNQ_INTRADAY', 'MGC_INTRADAY']) {
     forensicsSummary[strat] = getForensicsSummary(db, strat, 14);
     const cluster = detectClusters(db, strat, 10);
     if (cluster) clusterWarnings.push(cluster);

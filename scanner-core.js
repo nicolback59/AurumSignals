@@ -1909,7 +1909,7 @@ class Scanner extends EventEmitter {
         'Tags':     'chart_with_upwards_trend',
       };
       if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
-      const body = `📈 Market reopening — scanner active\nSession: ${sess}\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY`;
+      const body = `📈 Market reopening — scanner active\nSession: ${sess}\nStrategies: MNQ_INTRADAY, MGC_SCALP, MGC_INTRADAY`;
       const ntfyUrl = `${cfg.ntfyUrl}/${cfg.ntfyTopic}`;
       this._log(`📈 Market resuming — sending ntfy → ${ntfyUrl} (session=${sess})`, 'signal');
       fetch(ntfyUrl, { method: 'POST', headers, body })
@@ -2499,23 +2499,13 @@ class Scanner extends EventEmitter {
         // Per-strategy trade count report — identifies strategies silently skipped in backtests
         const freshness = getStrategyFreshness(this.db, instrument, 5);
         const ALL_STRATS = instrument === 'MNQ'
-          ? ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT']
+          ? ['MNQ_INTRADAY']
           : ['MGC_SCALP', 'MGC_INTRADAY'];
         const freshnessReport = ALL_STRATS.map(s => {
           const f = freshness[s];
           return f ? `${s}=${f.tradeCount}` : `${s}=0(stale)`;
         }).join(' | ');
         this._log(`📊 BT COVERAGE [${instrument}]: ${freshnessReport}`);
-
-        // Warn if swing specifically has no signals — it depends on 60-day 1h bar cache
-        if (instrument === 'MNQ') {
-          const swingFresh = freshness['MNQ_SWING'];
-          if (!swingFresh || swingFresh.tradeCount === 0) {
-            const h1Len = this._lastGoodBars.mnq1h?.length ?? 0;
-            this._log(`⚠️  MNQ_SWING: 0 backtest trades in last 5 runs. 1h cache size=${h1Len} bars. ` +
-              `Swing requires ≥60 1h bars for dedicated backtest (>3 daily bars for daily bias).`);
-          }
-        }
       } catch (e) {
         this._log(`LEARN ERR: ${e.message}`);
       }
@@ -3141,7 +3131,7 @@ class Scanner extends EventEmitter {
   // ── Weekly learning summary generation ───────────────────────────────────────
   // Runs automatically every Friday at 5:30 PM ET (after the week's last session).
   // Also runs on Saturday/Sunday mornings as a catch-up in case Friday evening was missed.
-  // Generates per-strategy summaries for MGC_SCALP, MGC_INTRADAY, MNQ_INTRADAY, MNQ_SWING, MNQ_50PT.
+  // Generates per-strategy summaries for MGC_SCALP, MGC_INTRADAY, MNQ_INTRADAY.
 
   _maybeGenerateWeeklySummary() {
     try {
@@ -3179,8 +3169,6 @@ class Scanner extends EventEmitter {
         { key: 'MGC_SCALP',    label: 'MGC Scalp',    instrument: 'MGC' },
         { key: 'MGC_INTRADAY', label: 'MGC Intraday',  instrument: 'MGC' },
         { key: 'MNQ_INTRADAY', label: 'MNQ Intraday',  instrument: 'MNQ' },
-        { key: 'MNQ_SWING',    label: 'MNQ Swing',     instrument: 'MNQ' },
-        { key: 'MNQ_50PT',     label: 'MNQ 50-Point',  instrument: 'MNQ' },
       ];
 
       const weekEnd = new Date(weekStart + 'T00:00:00Z');
@@ -3421,12 +3409,12 @@ class Scanner extends EventEmitter {
     const cfg = this.cfg;
 
     this._log(`SCANNER_BOOT_START platform=${process.env.NODE_ENV ?? 'dev'} feed=${this.feedType} logLevel=${cfg.logLevel} scanInterval=${cfg.scanInterval / 1000}s`, 'signal');
-    this._log('REGISTERED_STRATEGIES LIVE: MGC_SCALP, MNQ_INTRADAY | RESEARCH_ONLY: MNQ_SWING, MNQ_50PT, MGC_INTRADAY', 'signal');
+    this._log('REGISTERED_STRATEGIES LIVE: MGC_SCALP, MNQ_INTRADAY | RESEARCH_ONLY: MGC_INTRADAY', 'signal');
 
     // Enforce correct strategy modes and log verified state
     try {
       // Lock research-only strategies
-      const RESEARCH_ONLY_STRATEGIES = ['MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
+      const RESEARCH_ONLY_STRATEGIES = ['MGC_INTRADAY'];
       for (const strat of RESEARCH_ONLY_STRATEGIES) {
         this.db.prepare(`
           INSERT INTO strategy_status (strategy_name, mode, notes, updated_at)
@@ -3572,7 +3560,7 @@ class Scanner extends EventEmitter {
       `Scanner started — feed=${this.feedType} symbol=${cfg.symbol} mgc=${cfg.symbolMgc} ` +
       `fallback=${Math.round(fallbackMs / 1000)}s dupGuard=${cfg.duplicateGuardMin}min ` +
       `cap=${cfg.dailySignalCap} minDaily=${cfg.dailyMinSignals} ` +
-      `strategies=MNQ_INTRADAY,MNQ_SWING,MNQ_50PT,MGC_SCALP,MGC_INTRADAY`
+      `strategies=MNQ_INTRADAY,MGC_SCALP,MGC_INTRADAY`
     );
     this._log(formatStartupConfig(cfg.duplicateGuardMin));
 
@@ -3596,7 +3584,7 @@ class Scanner extends EventEmitter {
             'Tags':     'white_check_mark',
           };
           if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
-          const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MNQ_SWING, MNQ_50PT, MGC_SCALP, MGC_INTRADAY\nDuplicate guard: ${cfg.duplicateGuardMin}min | Adaptive cooldown: ENABLED`;
+          const body = `✅ Scanner started\nMin daily signals: ${cfg.dailyMinSignals}/instrument\nStrategies: MNQ_INTRADAY, MGC_SCALP, MGC_INTRADAY\nDuplicate guard: ${cfg.duplicateGuardMin}min | Adaptive cooldown: ENABLED`;
           const ntfyUrl = `${cfg.ntfyUrl}/${cfg.ntfyTopic}`;
           this._log(`[ntfy] sending startup notification → ${ntfyUrl}`, 'signal');
           fetch(ntfyUrl, { method: 'POST', headers, body })
