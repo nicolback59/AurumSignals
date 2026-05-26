@@ -391,6 +391,12 @@ class Scanner extends EventEmitter {
       loadNotificationLog: db.prepare(`
         SELECT signal_id, event_type FROM notification_log
       `),
+
+      getLatestRegime: db.prepare(`
+        SELECT regime FROM regime_states
+        WHERE instrument = ? AND classified_at > datetime('now', '-20 minutes')
+        ORDER BY classified_at DESC LIMIT 1
+      `),
     };
   }
 
@@ -1579,6 +1585,13 @@ class Scanner extends EventEmitter {
     let currentRegime = 'unknown';
     try { currentRegime = getMarketRegime(this.db); } catch (err) { this._log(`get-market-regime error: ${err.message}`, 'signal'); }
 
+    // Fresh regime from regime-agent-worker (< 20 min old) takes priority for signal context
+    let dbRegime = null;
+    try {
+      const rgRow = this._stmts.getLatestRegime.get(instrument);
+      if (rgRow?.regime) dbRegime = rgRow.regime;
+    } catch (err) { this._log(`regime_states read error: ${err.message}`, 'signal'); }
+
     for (const sig of signals) {
       const stratKey = `${instrument}_${sig.strategy_name}`;
 
@@ -1759,7 +1772,7 @@ class Scanner extends EventEmitter {
       // version of getMarketRegime() which returns 'trending'/'choppy'/'mixed'/'unknown'.
       const REGIME_VOCAB_MAP = { trending: 'EXPANSION', mixed: 'NORMAL', choppy: 'SOFT_CHOP', unknown: 'NORMAL' };
       const quantCtx = {
-        regime:    sig.indicators?.regime ?? REGIME_VOCAB_MAP[currentRegime] ?? 'NORMAL',
+        regime:    sig.indicators?.regime ?? dbRegime ?? REGIME_VOCAB_MAP[currentRegime] ?? 'NORMAL',
         volRegime: sig.indicators?.volRegime ?? 'NORMAL',
         atrRatio:  sig.indicators?.atr ? (sig.indicators.atr / (sig.indicators?.atrMin ?? sig.indicators.atr)) : 1,
         sess:      { quality: sig.indicators?.sessionQuality ?? 0.7, name: sig.session ?? '' },

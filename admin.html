@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Aurum Signals — Admin</title>
+  <link rel="stylesheet" href="/design-system.css">
+  <style>
+    body { min-height: 100dvh; display: flex; flex-direction: column; }
+    .page-content { flex: 1; padding: 24px 20px; max-width: 1100px; margin: 0 auto; width: 100%; }
+
+    h2 { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--text-muted); margin: 32px 0 12px; }
+    h2:first-child { margin-top: 0; }
+
+    /* ── Worker health grid ─────────────────────────────────────────────── */
+    .worker-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+    .worker-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 14px 16px;
+      position: relative;
+    }
+    .worker-card.healthy  { border-color: rgba(52,211,153,.25); }
+    .worker-card.degraded { border-color: rgba(251,191,36,.3); }
+    .worker-card.dead     { border-color: rgba(239,68,68,.3); }
+
+    .worker-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+      flex-shrink: 0;
+    }
+    .worker-dot.healthy  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .worker-dot.degraded { background: var(--yellow); }
+    .worker-dot.dead     { background: var(--red); }
+
+    .worker-name { font-size: 13px; font-weight: 600; color: var(--text-primary); display: flex; align-items: center; }
+    .worker-status { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+    .worker-meta { margin-top: 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 4px 12px; }
+    .worker-meta-item { font-size: 11px; color: var(--text-muted); }
+    .worker-meta-item span { color: var(--text-secondary); }
+    .worker-error { font-size: 11px; color: var(--red); margin-top: 8px; word-break: break-all; }
+
+    /* ── Regime cards ───────────────────────────────────────────────────── */
+    .regime-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+    .regime-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .regime-instrument { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: 6px; }
+    .regime-label {
+      font-size: 22px; font-weight: 700; letter-spacing: -.02em;
+      padding: 2px 10px 3px;
+      border-radius: 6px;
+      display: inline-block;
+      margin-bottom: 10px;
+    }
+    .regime-TREND_BULL   { color: #34d399; background: rgba(52,211,153,.12); }
+    .regime-TREND_BEAR   { color: #f87171; background: rgba(248,113,113,.12); }
+    .regime-EXPANSION    { color: #fbbf24; background: rgba(251,191,36,.12); }
+    .regime-NORMAL       { color: var(--text-secondary); background: var(--bg-elevated); }
+    .regime-COMPRESSION  { color: #a78bfa; background: rgba(167,139,250,.1); }
+    .regime-SOFT_CHOP    { color: #fb923c; background: rgba(251,146,60,.1); }
+    .regime-RANGE_CHOP   { color: #f87171; background: rgba(239,68,68,.15); border: 1px solid rgba(239,68,68,.3); }
+    .regime-UNKNOWN      { color: var(--text-muted); background: var(--bg-elevated); }
+
+    .regime-stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 8px; }
+    .regime-stat { font-size: 11px; color: var(--text-muted); }
+    .regime-stat span { display: block; font-size: 14px; font-weight: 600; color: var(--text-secondary); }
+    .regime-age { font-size: 11px; color: var(--text-muted); margin-top: 8px; }
+    .regime-age.stale { color: var(--red); }
+
+    /* ── Strategy metrics ───────────────────────────────────────────────── */
+    .metrics-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+    .metric-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .metric-strat { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: 8px; }
+    .metric-wr { font-size: 32px; font-weight: 700; letter-spacing: -.02em; }
+    .metric-wr.good { color: var(--green); }
+    .metric-wr.warn { color: var(--yellow); }
+    .metric-wr.bad  { color: var(--red); }
+    .metric-wr.na   { color: var(--text-muted); font-size: 20px; }
+    .metric-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Clusters ───────────────────────────────────────────────────────── */
+    .cluster-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+    .cluster-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .cluster-strat { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: 8px; }
+    .cluster-item { font-size: 12px; color: var(--text-secondary); padding: 5px 0; border-bottom: 1px solid var(--border-subtle); }
+    .cluster-item:last-child { border-bottom: none; }
+    .cluster-item strong { color: var(--text-primary); }
+    .cluster-none { font-size: 12px; color: var(--text-muted); }
+
+    /* ── Summary bar ────────────────────────────────────────────────────── */
+    .summary-bar {
+      display: flex; gap: 24px; align-items: center; flex-wrap: wrap;
+      background: var(--bg-surface); border: 1px solid var(--border-subtle);
+      border-radius: 10px; padding: 14px 20px; margin-bottom: 24px;
+    }
+    .summary-item { font-size: 12px; color: var(--text-muted); }
+    .summary-item strong { color: var(--text-primary); font-size: 16px; display: block; }
+    .refresh-btn {
+      margin-left: auto; background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle); color: var(--text-secondary);
+      border-radius: 6px; padding: 6px 14px; font-size: 12px; cursor: pointer;
+    }
+    .refresh-btn:hover { border-color: var(--border-strong); color: var(--text-primary); }
+    .last-refresh { font-size: 11px; color: var(--text-muted); }
+
+    .loading { color: var(--text-muted); font-size: 13px; padding: 40px 0; text-align: center; }
+    .err-msg { color: var(--red); font-size: 13px; padding: 20px 0; }
+  </style>
+</head>
+<body>
+
+  <!-- ── Nav ───────────────────────────────────────────────────────────── -->
+  <header class="top-nav">
+    <a href="/" class="logo">Aurum<span class="logo-accent">Signals</span></a>
+    <nav class="nav-links">
+      <a href="/"         class="nav-link">Home</a>
+      <a href="/signals"  class="nav-link">Signals</a>
+      <a href="/trades"   class="nav-link">Trades</a>
+      <a href="/stats"    class="nav-link">Stats</a>
+      <a href="/calendar" class="nav-link">Calendar</a>
+      <a href="/backtest" class="nav-link">Backtest</a>
+      <a href="/journal"  class="nav-link">Journal</a>
+      <a href="/reports"  class="nav-link">Reports</a>
+      <a href="/news"     class="nav-link">News</a>
+      <a href="/setup"    class="nav-link">Setup</a>
+      <a href="/admin"    class="nav-link active">Admin</a>
+    </nav>
+  </header>
+
+  <div class="page-content">
+
+    <!-- Summary bar -->
+    <div class="summary-bar" id="summaryBar">
+      <div class="loading">Loading dashboard&hellip;</div>
+    </div>
+
+    <!-- Worker health -->
+    <h2>Worker Health</h2>
+    <div class="worker-grid" id="workerGrid">
+      <div class="loading">Loading&hellip;</div>
+    </div>
+
+    <!-- Market regime -->
+    <h2>Market Regime</h2>
+    <div class="regime-grid" id="regimeGrid">
+      <div class="loading">Loading&hellip;</div>
+    </div>
+
+    <!-- Strategy metrics -->
+    <h2>Strategy Metrics — Last 30 Days</h2>
+    <div class="metrics-grid" id="metricsGrid">
+      <div class="loading">Loading&hellip;</div>
+    </div>
+
+    <!-- Loss clusters -->
+    <h2>Loss Cluster Warnings</h2>
+    <div class="cluster-grid" id="clusterGrid">
+      <div class="loading">Loading&hellip;</div>
+    </div>
+
+  </div>
+
+  <script>
+  'use strict';
+
+  const REGIME_DESC = {
+    TREND_BULL:  'Strong uptrend — EMA aligned, HH structure',
+    TREND_BEAR:  'Strong downtrend — EMA aligned, LL structure',
+    EXPANSION:   'Volatility expansion — directional spike',
+    NORMAL:      'Baseline — no dominant condition',
+    COMPRESSION: 'ATR contracting — coiling before breakout',
+    SOFT_CHOP:   'Low efficiency — mild oscillation',
+    RANGE_CHOP:  'Tight range — both strategies hard-blocked',
+    UNKNOWN:     'Insufficient data (market likely closed)',
+  };
+
+  function fmtAge(ms) {
+    if (ms == null || isNaN(ms)) return '—';
+    const m = Math.round(ms / 60000);
+    if (m < 1) return 'just now';
+    if (m < 60) return `${m}m ago`;
+    return `${Math.round(m / 60)}h ago`;
+  }
+
+  function fmtCycles(n) { return n == null ? '—' : n.toLocaleString(); }
+
+  function workerHealthClass(w) {
+    if (w.status === 'STOPPED') return 'dead';
+    if (!w.healthy) return w.error_count > 0 ? 'dead' : 'degraded';
+    return 'healthy';
+  }
+
+  function renderWorkerGrid(workers) {
+    const el = document.getElementById('workerGrid');
+    if (!workers.length) { el.innerHTML = '<div class="loading">No workers registered yet.</div>'; return; }
+
+    el.innerHTML = workers.map(w => {
+      const cls = workerHealthClass(w);
+      const lastBeat = fmtAge(w.heartbeatAgeMs);
+      const errHtml = w.last_error
+        ? `<div class="worker-error">&#9888; ${escHtml(w.last_error.slice(0, 120))}</div>`
+        : '';
+      return `
+        <div class="worker-card ${cls}">
+          <div class="worker-name">
+            <span class="worker-dot ${cls}"></span>
+            ${escHtml(w.worker_name)}
+          </div>
+          <div class="worker-status">${escHtml(w.status)} &mdash; heartbeat ${lastBeat}</div>
+          <div class="worker-meta">
+            <div class="worker-meta-item">Cycles <span>${fmtCycles(w.cycle_count)}</span></div>
+            <div class="worker-meta-item">Errors <span style="color:${w.error_count > 0 ? 'var(--red)' : 'var(--text-secondary)'}">${w.error_count ?? 0}</span></div>
+          </div>
+          ${errHtml}
+        </div>`;
+    }).join('');
+  }
+
+  function renderRegimeGrid(regimes) {
+    const el = document.getElementById('regimeGrid');
+    const html = Object.entries(regimes).map(([inst, r]) => {
+      const ageMin = r.ageMs != null ? Math.round(r.ageMs / 60000) : null;
+      const ageClass = !r.fresh ? 'stale' : '';
+      const ageStr = ageMin != null ? `Classified ${ageMin}m ago${r.fresh ? '' : ' — stale'}` : 'No data yet';
+      const raw = r.raw_indicators ?? {};
+      return `
+        <div class="regime-card">
+          <div class="regime-instrument">${escHtml(inst)}</div>
+          <div class="regime-label regime-${r.regime ?? 'UNKNOWN'}">${escHtml(r.regime ?? 'UNKNOWN')}</div>
+          <div style="font-size:11px;color:var(--text-muted);margin-bottom:10px">${escHtml(REGIME_DESC[r.regime] ?? '')}</div>
+          <div class="regime-stats">
+            <div class="regime-stat">Strength<span>${r.strength != null ? (r.strength * 100).toFixed(0) + '%' : '—'}</span></div>
+            <div class="regime-stat">ATR Pct<span>${r.atr_percentile != null ? (r.atr_percentile * 100).toFixed(0) + '%' : '—'}</span></div>
+            <div class="regime-stat">EMA Slope<span>${r.ema_slope != null ? r.ema_slope.toFixed(3) : '—'}</span></div>
+            ${raw.atrRatio != null ? `<div class="regime-stat">ATR Ratio<span>${raw.atrRatio}</span></div>` : ''}
+            ${raw.dirEfficiency != null ? `<div class="regime-stat">Dir Eff<span>${(raw.dirEfficiency * 100).toFixed(0)}%</span></div>` : ''}
+            ${raw.atr != null ? `<div class="regime-stat">ATR<span>${raw.atr}</span></div>` : ''}
+          </div>
+          <div class="regime-age ${ageClass}">${escHtml(ageStr)}</div>
+        </div>`;
+    }).join('');
+    el.innerHTML = html || '<div class="loading">No regime data yet.</div>';
+  }
+
+  function renderMetrics(stratMetrics) {
+    const el = document.getElementById('metricsGrid');
+    el.innerHTML = Object.entries(stratMetrics).map(([strat, m]) => {
+      const wr = m.winRate30d;
+      let wrClass = 'na', wrText = 'N/A';
+      if (wr != null) {
+        wrText = wr.toFixed(1) + '%';
+        wrClass = wr >= 58 ? 'good' : wr >= 45 ? 'warn' : 'bad';
+      }
+      return `
+        <div class="metric-card">
+          <div class="metric-strat">${escHtml(strat.replace('_', ' '))}</div>
+          <div class="metric-wr ${wrClass}">${wrText}</div>
+          <div class="metric-sub">${m.wins30d ?? 0}W / ${(m.total30d ?? 0) - (m.wins30d ?? 0)}L — ${m.total30d ?? 0} total</div>
+        </div>`;
+    }).join('');
+  }
+
+  function renderClusters(clusters) {
+    const el = document.getElementById('clusterGrid');
+    const html = Object.entries(clusters).map(([strat, result]) => {
+      let bodyHtml;
+      if (!result || !result.clusters?.length) {
+        bodyHtml = '<div class="cluster-none">No active loss clusters detected.</div>';
+      } else {
+        bodyHtml = result.clusters.slice(0, 5).map(c => {
+          const pct = c.lossRate != null ? (c.lossRate * 100).toFixed(0) + '% loss rate' : '';
+          return `<div class="cluster-item"><strong>${escHtml(c.label ?? c.dimension ?? '?')}</strong> — ${escHtml(c.description ?? '')} ${pct ? `<span style="color:var(--red)">${pct}</span>` : ''}</div>`;
+        }).join('');
+      }
+      return `
+        <div class="cluster-card">
+          <div class="cluster-strat">${escHtml(strat.replace('_', ' '))}</div>
+          ${bodyHtml}
+        </div>`;
+    }).join('');
+    el.innerHTML = html;
+  }
+
+  function renderSummary(data) {
+    const healthy = (data.workers ?? []).filter(w => w.healthy).length;
+    const total   = (data.workers ?? []).length;
+    const ts = data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString() : '—';
+    document.getElementById('summaryBar').innerHTML = `
+      <div class="summary-item"><strong>${data.signalCount24h ?? 0}</strong> Signals 24h</div>
+      <div class="summary-item"><strong>${healthy}/${total}</strong> Workers Healthy</div>
+      <div class="last-refresh">Refreshed ${ts}</div>
+      <button class="refresh-btn" onclick="load()">&#8635; Refresh</button>`;
+  }
+
+  function escHtml(s) {
+    if (s == null) return '';
+    return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+  }
+
+  async function load() {
+    try {
+      const r = await fetch('/api/admin/dashboard');
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const data = await r.json();
+      renderSummary(data);
+      renderWorkerGrid(data.workers ?? []);
+      renderRegimeGrid(data.regimes ?? {});
+      renderMetrics(data.stratMetrics ?? {});
+      renderClusters(data.clusters ?? {});
+    } catch (err) {
+      document.getElementById('summaryBar').innerHTML =
+        `<div class="err-msg">Failed to load dashboard: ${escHtml(err.message)}</div>
+         <button class="refresh-btn" onclick="load()">&#8635; Retry</button>`;
+    }
+  }
+
+  load();
+  // Auto-refresh every 60s
+  setInterval(load, 60000);
+  </script>
+</body>
+</html>

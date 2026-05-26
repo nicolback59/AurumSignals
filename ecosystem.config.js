@@ -100,15 +100,25 @@ module.exports = {
     // ── 4–9. INTELLIGENCE WORKERS (Phase 2–4) ────────────────────────────────
     // Uncomment each when the corresponding worker script is implemented.
 
-    // {
-    //   name:         'regime-agent',
-    //   script:       'workers/regime-agent-worker.js',
-    //   instances:    1,
-    //   watch:        false,
-    //   max_memory_restart: '150M',
-    //   restart_delay: 30000,
-    //   env_production: { NODE_ENV: 'production' },
-    // },
+    {
+      name:         'regime-agent',
+      script:       'workers/regime-agent-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      max_memory_restart: '150M',
+      restart_delay: 30000,
+      max_restarts:  10,
+      min_uptime:    '10s',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/regime-agent-error.log',
+      out_file:        '/root/AurumSignals/logs/regime-agent-out.log',
+      merge_logs:      true,
+    },
 
     // {
     //   name:         'learning-agent',
