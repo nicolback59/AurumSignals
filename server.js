@@ -18,6 +18,7 @@ const { getDNAInsights, getDNAGuidance, loadDNA } = require('./strategy-dna');
 const { getEvolutionHistory, getVariantPoolStatus } = require('./strategy-evolution');
 const { getOpeningCandleReport, getSessionOpenBias } = require('./opening-candle');
 const { classifyNow, isBlackout, msUntilOpen } = require('./clock/market-clock');
+const thresholdManager = require('./agents/threshold-manager');
 
 // ── Global crash guards ───────────────────────────────────────────────────────
 // Prevent unhandled promise rejections or thrown errors from killing the server.
@@ -805,7 +806,6 @@ app.get('/api/learning', (req, res) => {
 // ── LOSS FORENSICS ────────────────────────────────────────────────────────────────────────
 const { getForensicsSummary, detectClusters: _detectClusters } = require('./signals/loss-forensics');
 const { loadForensicsAnalysis, runForensicsAnalysis: _runForensicsAnalysis } = require('./agents/forensics-analyst');
-const thresholdManager = require('./agents/threshold-manager');
 const { mine: mineBacktestData } = require('./backtest-data-miner');
 
 // Per-strategy forensics breakdown — top failure modes, avg MFE/MAE, quant stats
