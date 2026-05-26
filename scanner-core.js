@@ -391,6 +391,12 @@ class Scanner extends EventEmitter {
       loadNotificationLog: db.prepare(`
         SELECT signal_id, event_type FROM notification_log
       `),
+
+      getLatestRegime: db.prepare(`
+        SELECT regime FROM regime_states
+        WHERE instrument = ? AND classified_at > datetime('now', '-20 minutes')
+        ORDER BY classified_at DESC LIMIT 1
+      `),
     };
   }
 
@@ -1579,6 +1585,13 @@ class Scanner extends EventEmitter {
     let currentRegime = 'unknown';
     try { currentRegime = getMarketRegime(this.db); } catch (err) { this._log(`get-market-regime error: ${err.message}`, 'signal'); }
 
+    // Fresh regime from regime-agent-worker (< 20 min old) takes priority for signal context
+    let dbRegime = null;
+    try {
+      const rgRow = this._stmts.getLatestRegime.get(instrument);
+      if (rgRow?.regime) dbRegime = rgRow.regime;
+    } catch (err) { this._log(`regime_states read error: ${err.message}`, 'signal'); }
+
     for (const sig of signals) {
       const stratKey = `${instrument}_${sig.strategy_name}`;
 
@@ -1592,11 +1605,13 @@ class Scanner extends EventEmitter {
       }
 
       // ── Adaptive cooldown — context-aware timing control ──────────────────
+      // Prefer dbRegime (precise new vocab from regime_states); fall back to
+      // currentRegime (old vocab from getMarketRegime) when agent hasn't run yet.
       const cooldownResult = checkAdaptiveCooldown({
         strategyName:   sig.strategy_name,
         instrument,
         session:        sig.session ?? 'unknown',
-        regime:         currentRegime,
+        regime:         dbRegime ?? currentRegime,
         confidence:     sig.confidence,
         lastSignalTime: this._lastSignalTimes[stratKey] ?? 0,
         db:             this.db,
@@ -1759,7 +1774,7 @@ class Scanner extends EventEmitter {
       // version of getMarketRegime() which returns 'trending'/'choppy'/'mixed'/'unknown'.
       const REGIME_VOCAB_MAP = { trending: 'EXPANSION', mixed: 'NORMAL', choppy: 'SOFT_CHOP', unknown: 'NORMAL' };
       const quantCtx = {
-        regime:    sig.indicators?.regime ?? REGIME_VOCAB_MAP[currentRegime] ?? 'NORMAL',
+        regime:    sig.indicators?.regime ?? dbRegime ?? REGIME_VOCAB_MAP[currentRegime] ?? 'NORMAL',
         volRegime: sig.indicators?.volRegime ?? 'NORMAL',
         atrRatio:  sig.indicators?.atr ? (sig.indicators.atr / (sig.indicators?.atrMin ?? sig.indicators.atr)) : 1,
         sess:      { quality: sig.indicators?.sessionQuality ?? 0.7, name: sig.session ?? '' },
@@ -1815,15 +1830,15 @@ class Scanner extends EventEmitter {
       anyFired = true;
     }
 
-    // Diagnostic snapshot
-    const regime  = getMarketRegime(this.db);
-    const lastBar = bars5m.length > 0 ? bars5m[bars5m.length - 1] : null;
-    const diagInfo = { close: lastBar?.close ?? null, atr: null, htfBias: null };
+    // Diagnostic snapshot — use already-fetched regime (no extra DB call)
+    const diagRegime = dbRegime ?? currentRegime;
+    const lastBar    = bars5m.length > 0 ? bars5m[bars5m.length - 1] : null;
+    const diagInfo   = { close: lastBar?.close ?? null, atr: null, htfBias: null };
 
     this._log(`STRATEGY_SCAN_COMPLETE instrument=${instrument} fired=${anyFired} candidates=${stratsFiredNames.length} scan=#${this._scanCount}`, 'signal');
     if (this.cfg.logLevel === 'full') {
       this._log(
-        `📊 ${instrument} | close=${diagInfo.close ?? '?'} | regime=${regime} | ` +
+        `📊 ${instrument} | close=${diagInfo.close ?? '?'} | regime=${diagRegime} | ` +
         `strats=${stratsFiredNames.join(',') || 'none'} | fired=${anyFired ? 'YES' : 'no'}`
       );
     }
@@ -1832,7 +1847,7 @@ class Scanner extends EventEmitter {
       anyFired ? null : 'confidence threshold not met');
 
     this.emit('scan', {
-      instrument, regime, fired: anyFired,
+      instrument, regime: diagRegime, fired: anyFired,
       strategies: stratsFiredNames,
       close: diagInfo.close,
       scanCount: this._scanCount,

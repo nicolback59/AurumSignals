@@ -463,6 +463,22 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_agent_scores_signal ON agent_scores(signal_id);
 `);
 
+// ── Regime state history ─────────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS regime_states (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    instrument     TEXT    NOT NULL,
+    regime         TEXT    NOT NULL,
+    strength       REAL,
+    atr_percentile REAL,
+    ema_slope      REAL,
+    classified_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    raw_indicators TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_regime_inst_time
+    ON regime_states(instrument, classified_at DESC);
+`);
+
 // ── Worker infrastructure tables ─────────────────────────────────────────────
 db.exec(`
   CREATE TABLE IF NOT EXISTS worker_health (
@@ -929,6 +945,85 @@ app.get('/api/forensics/recent', (req, res) => {
     ).all(...(strategy ? [strategy, limit] : [limit]));
     res.json({ rows, count: rows.length });
   } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// ── ADMIN DASHBOARD API ───────────────────────────────────────────────────────
+// Single endpoint returns everything the admin dashboard needs in one call.
+app.get('/api/admin/dashboard', (req, res) => {
+  try {
+    // Worker health — all workers with freshness
+    const workers = db.prepare(`
+      SELECT worker_name, status, last_heartbeat, last_cycle_at, cycle_count, error_count, last_error, metadata
+      FROM   worker_health
+      ORDER  BY worker_name
+    `).all().map(w => ({
+      ...w,
+      metadata:    w.metadata ? JSON.parse(w.metadata) : {},
+      heartbeatAgeMs: Date.now() - new Date(w.last_heartbeat).getTime(),
+      healthy:     (Date.now() - new Date(w.last_heartbeat).getTime()) < 120000,
+    }));
+
+    // Current regime per instrument (latest row each)
+    const regimes = {};
+    for (const inst of ['MNQ', 'MGC']) {
+      const row = db.prepare(`
+        SELECT regime, strength, atr_percentile, ema_slope, classified_at, raw_indicators
+        FROM   regime_states
+        WHERE  instrument = ?
+        ORDER  BY classified_at DESC
+        LIMIT  1
+      `).get(inst);
+      if (row) {
+        regimes[inst] = {
+          ...row,
+          raw_indicators: row.raw_indicators ? JSON.parse(row.raw_indicators) : {},
+          ageMs: Date.now() - new Date(row.classified_at).getTime(),
+          fresh: (Date.now() - new Date(row.classified_at).getTime()) < 25 * 60 * 1000,
+        };
+      } else {
+        regimes[inst] = { regime: 'UNKNOWN', fresh: false };
+      }
+    }
+
+    // Active loss clusters (last 10 losses per strategy)
+    const clusters = {};
+    for (const strat of ['MNQ_INTRADAY', 'MGC_SCALP']) {
+      try {
+        const { detectClusters } = require('./signals/loss-forensics');
+        clusters[strat] = detectClusters(db, strat, 10) ?? null;
+      } catch (_) { clusters[strat] = null; }
+    }
+
+    // Live strategy metrics (last 30 days)
+    const stratMetrics = {};
+    for (const strat of ['MNQ_INTRADAY', 'MGC_SCALP']) {
+      const rows = db.prepare(`
+        SELECT o.result
+        FROM   outcomes o
+        JOIN   signals  s ON s.id = o.signal_id
+        WHERE  s.strategy_name = ?
+          AND  s.received_at  >= datetime('now', '-30 days')
+          AND  o.result IN ('WIN','LOSS','BE','EXPIRED')
+      `).all(strat);
+      const total = rows.length;
+      const wins  = rows.filter(r => r.result === 'WIN').length;
+      stratMetrics[strat] = {
+        total30d:  total,
+        wins30d:   wins,
+        winRate30d: total >= 5 ? +(wins / total * 100).toFixed(1) : null,
+      };
+    }
+
+    // System summary
+    const signalCount24h = db.prepare(
+      `SELECT COUNT(*) n FROM signals WHERE received_at >= datetime('now','-1 day') AND strategy_name IN ('MNQ_INTRADAY','MGC_SCALP')`
+    ).get().n;
+
+    res.json({ workers, regimes, clusters, stratMetrics, signalCount24h, generatedAt: new Date().toISOString() });
+  } catch (err) {
+    console.error('[api/admin/dashboard]', err.message);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Latest AI forensics analysis — returns Claude's strategy adjustments
@@ -2471,6 +2566,7 @@ app.get('/backtest', (req, res) => res.sendFile(path.join(__dirname, 'backtest-d
 app.get('/journal',  (req, res) => res.sendFile(path.join(__dirname, 'journal.html')));
 app.get('/reports',  (req, res) => res.sendFile(path.join(__dirname, 'reports.html')));
 app.get('/news',     (req, res) => res.sendFile(path.join(__dirname, 'news.html')));
+app.get('/admin',           (req, res) => res.sendFile(path.join(__dirname, 'admin.html')));
 app.get('/setup',           (req, res) => res.sendFile(path.join(__dirname, 'setup.html')));
 app.get('/forgot-password', (req, res) => res.sendFile(path.join(__dirname, 'forgot-password.html')));
 app.get('/reset-password',  (req, res) => res.sendFile(path.join(__dirname, 'reset-password.html')));

@@ -64,11 +64,23 @@ function _isLiquidSession(session) {
 }
 
 // ── Market regime multipliers ─────────────────────────────────────────────────
+// Accepts both old vocabulary (trending/mixed/choppy/unknown) from getMarketRegime()
+// and new vocabulary (TREND_BULL/TREND_BEAR/etc) from regime-agent-worker via regime_states.
 const REGIME_MULTIPLIERS = {
+  // Old vocabulary (learning.js getMarketRegime)
   trending: 0.80,  // clean trend → allow re-entry sooner
   mixed:    1.00,
   choppy:   1.80,  // chop → enforce extended pause
   unknown:  1.10,
+  // New vocabulary (regime-agent-worker → regime_states table)
+  TREND_BULL:  0.75,  // strong uptrend — allow re-entry quickly
+  TREND_BEAR:  0.75,  // strong downtrend — allow re-entry quickly
+  EXPANSION:   0.90,  // volatile spike — slight reduction (high momentum)
+  NORMAL:      1.00,
+  COMPRESSION: 1.20,  // coiling — slightly cautious, breakout direction unknown
+  SOFT_CHOP:   1.70,  // low efficiency — enforce pause
+  RANGE_CHOP:  2.20,  // tight range + no direction — hardest stop
+  UNKNOWN:     1.10,
 };
 
 // ── Consecutive loss streak escalation ───────────────────────────────────────
