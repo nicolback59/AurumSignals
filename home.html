@@ -802,7 +802,7 @@ function renderHero(sig) {
 
   // Header badges
   const stratLabel = sig.strategy_name
-    ? { MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing', MNQ_50PT: 'MNQ 50-Point', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday' }[sig.strategy_name] ?? sig.strategy_name
+    ? { MNQ_INTRADAY: 'MNQ Intraday', MGC_SCALP: 'MGC Scalp' }[sig.strategy_name] ?? sig.strategy_name
     : (sig.setup ?? '');
   document.getElementById('heroMeta').innerHTML =
     directionBadge(sig.direction) +
@@ -1105,7 +1105,7 @@ function renderRecentTrades(journalSigs) {
     return `<div class="recent-trade-row">
       <span class="rt-time">${hhmm(s.received_at)}</span>
       <span class="rt-dir ${s.direction === 'LONG' ? 'long' : 'short'}">${s.direction === 'LONG' ? '▲' : '▼'}</span>
-      <span class="rt-setup">${escH(s.strategy_name ? ({ MNQ_INTRADAY: 'MNQ Intraday', MNQ_SWING: 'MNQ Swing', MNQ_50PT: 'MNQ 50-Pt', MGC_SCALP: 'MGC Scalp', MGC_INTRADAY: 'MGC Intraday' }[s.strategy_name] ?? s.strategy_name) : (s.setup || '—'))}</span>
+      <span class="rt-setup">${escH(s.strategy_name ? ({ MNQ_INTRADAY: 'MNQ Intraday', MGC_SCALP: 'MGC Scalp' }[s.strategy_name] ?? s.strategy_name) : (s.setup || '—'))}</span>
       <span class="rt-style">${escH(s.trade_style || '')}</span>
       ${outcomeBadge(s.result)}
       <span class="rt-pts ${ptsCls}">${ptsText}</span>

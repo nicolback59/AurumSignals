@@ -32,13 +32,6 @@ const STRATEGY_CONFIGS = {
     chopMin:      15,  // was 20 — VWAP/liquidity confirmation still required
     maxMin:       25,  // was 30
   },
-  MGC_INTRADAY: {
-    baseMin:      10,
-    afterWinMin:   5,
-    afterLossMin: 15,
-    chopMin:      25,
-    maxMin:       40,
-  },
 };
 
 // ── Session quality multipliers ───────────────────────────────────────────────
@@ -274,11 +267,11 @@ function checkAdaptiveCooldown({ strategyName, instrument, session, regime, conf
     antiStarvation = true;
   }
 
-  // ── Premium mode quality gate (MNQ_50PT etc.) ─────────────────────────────
-  // After a loss on a premium strategy, require stronger confirmation before
-  // allowing re-entry even when the cooldown has elapsed.
+  // ── Premium mode quality gate ─────────────────────────────────────────────
+  // After a loss on a premium-mode strategy, require stronger confirmation
+  // before allowing re-entry even when the cooldown has elapsed.
   if (cfg.premiumMode && lastResult === 'LOSS' && elapsedMin >= computedMin) {
-    const premiumConfMin = 78; // MNQ_50PT base confidence min is 80, accept 78 after structure reclaim
+    const premiumConfMin = 78;
     if (confidence < premiumConfMin) {
       return {
         allowed: false, remainingMin: 0,

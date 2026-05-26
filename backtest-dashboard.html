@@ -450,11 +450,8 @@ function renderRunsTable() {
 
 // ── Strategy metadata (versions, thresholds, descriptions) ───────────────────
 const STRAT_META = {
-  MNQ_INTRADAY: { label: 'MNQ Intraday',  ver: 'v2.1', threshold: 65, inst: 'MNQ' },
-  MNQ_SWING:    { label: 'MNQ Swing',     ver: 'v2.1', threshold: 60, inst: 'MNQ' },
-  MNQ_50PT:     { label: 'MNQ 50-Point',  ver: 'v2.1', threshold: 58, inst: 'MNQ' },
-  MGC_SCALP:    { label: 'MGC Scalp',     ver: 'v4.2', threshold: 55, inst: 'MGC' },
-  MGC_INTRADAY: { label: 'MGC Intraday',  ver: 'v1.0', threshold: 60, inst: 'MGC' },
+  MNQ_INTRADAY: { label: 'MNQ Intraday', ver: 'v2.1', threshold: 65, inst: 'MNQ' },
+  MGC_SCALP:    { label: 'MGC Scalp',    ver: 'v4.2', threshold: 55, inst: 'MGC' },
 };
 
 // ── Strategy performance table (main column — always visible) ─────────────────
@@ -464,7 +461,7 @@ function renderStratPerfTable(details) {
   const ts = document.getElementById('stratPerfTimestamp');
 
   const byStrat = details?.by_strategy ?? {};
-  const ORDERED = ['MNQ_INTRADAY','MNQ_SWING','MNQ_50PT','MGC_SCALP','MGC_INTRADAY'];
+  const ORDERED = ['MNQ_INTRADAY', 'MGC_SCALP'];
 
   if (!Object.keys(byStrat).length) {
     el.innerHTML = '<div style="font-size:11px;color:var(--text-muted)">No per-strategy data yet — scanner runs backtest on startup.</div>';

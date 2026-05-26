@@ -26,10 +26,7 @@
 // One alert per family per trade idea per suppression window.
 const FAMILY = {
   MNQ_INTRADAY: 'MNQ_MOMENTUM',
-  MNQ_50PT:     'MNQ_MOMENTUM',
-  MNQ_SWING:    'MNQ_SWING',
   MGC_SCALP:    'MGC',
-  MGC_INTRADAY: 'MGC',
 };
 
 // Entry zone bucket sizes.  Half-bucket = the effective ±tolerance per side.
@@ -46,15 +43,11 @@ const SL_BUCKET = { MNQ: 30, MGC: 8 }; // retained for reference
 // fingerprint within this window is silently suppressed.
 const TTL_MS = {
   MNQ_INTRADAY: 30 * 60_000,     // 30 min
-  MNQ_50PT:     40 * 60_000,     // 40 min
-  MNQ_SWING:     4 * 3_600_000,  // 4 hours
   MGC_SCALP:    15 * 60_000,     // 15 min
-  MGC_INTRADAY: 25 * 60_000,     // 25 min
 };
 const TTL_DEFAULT = 30 * 60_000;
 
-// Swing spans multiple sessions — don't include session in its fingerprint.
-const SESSION_AGNOSTIC = new Set(['MNQ_SWING']);
+const SESSION_AGNOSTIC = new Set();
 
 // ── In-memory registry ────────────────────────────────────────────────────────
 // Map<key, { expiryMs, entry, sl, strategy, session, family, instrument, direction }>

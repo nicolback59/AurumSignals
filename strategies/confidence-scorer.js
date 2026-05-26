@@ -9,10 +9,7 @@ const {
 // These stay lenient so the system keeps training on signal quality.
 const RESEARCH_THRESHOLDS = {
   MNQ_INTRADAY: 65,
-  MNQ_SWING:    65,
-  MNQ_50PT:     65,
   MGC_SCALP:    55,
-  MGC_INTRADAY: 60,
 };
 
 // LIVE_THRESHOLDS — minimum raw confidence to fire a live ntfy alert.
@@ -21,10 +18,7 @@ const RESEARCH_THRESHOLDS = {
 // second gate (STRONG_A_THRESHOLD) is the real quality filter for live alerts.
 const LIVE_THRESHOLDS = {
   MNQ_INTRADAY: 67,  // 2 pts above research min (65) — quant scorer handles quality
-  MNQ_SWING:    85,  // requires A+/S-tier conviction (4H bias + 1H alignment confirmed)
-  MNQ_50PT:     86,  // requires clean displacement + open space + HTF support
   MGC_SCALP:    60,  // 5 pts above research min (55) — quant scorer handles quality
-  MGC_INTRADAY: 60,
 };
 
 // Back-compat alias used by strategies as their internal filter gate

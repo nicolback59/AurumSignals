@@ -15,7 +15,6 @@
 
 const mnqIntraday = require('./strategies/mnq-intraday');
 const mgcScalp    = require('./strategies/mgc-scalp');
-const mgcIntraday = require('./strategies/mgc-intraday');
 
 const {
   aggregate1mTo5m,
@@ -72,15 +71,6 @@ function evaluateAll(barSets, cfg = {}) {
     }
   }
 
-  // ── MGC INTRADAY ──────────────────────────────────────────────────────────────
-  // Broader gold intraday trend-following (wider sessions, more signals than MGC_SCALP).
-  if (instrument === 'MGC' || instrument == null) {
-    if (bars5mMgc.length >= 50 && bars1hMgc.length >= 20) {
-      const sig = mgcIntraday.evaluate(bars5mMgc, bars1hMgc, bars30mMgc, bars45mMgc, cfg, barIdx);
-      if (sig) signals.push(sig);
-    }
-  }
-
   return signals;
 }
 
@@ -112,7 +102,6 @@ function buildBarSetsFrom15m(bars15m) {
 function resetAllStrategies() {
   mnqIntraday.reset();
   mgcScalp.reset();
-  mgcIntraday.reset();
 }
 
 const STRATEGY_META = {
@@ -131,14 +120,6 @@ const STRATEGY_META = {
     trade_style: 'scalp',
     threshold:   THRESHOLDS.MGC_SCALP,
     description: '5m VWAP/EMA scalp with 15m/30m/45m/1h multi-timeframe confluence',
-  },
-  MGC_INTRADAY: {
-    name:        'MGC Intraday',
-    instrument:  'MGC',
-    timeframe:   '5m',
-    trade_style: 'intraday',
-    threshold:   THRESHOLDS.MGC_INTRADAY,
-    description: '5m EMA trend-following intraday with 30m/45m/1h HTF confirmation',
   },
 };
 
