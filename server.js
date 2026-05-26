@@ -6,7 +6,7 @@ const Database = require('better-sqlite3');
 const crypto   = require('crypto');
 const path     = require('path');
 const fs       = require('fs');
-const { getLearningStats, detectEdgeDegradation } = require('./learning');
+const { getLearningStats, detectEdgeDegradation, loadAdaptiveOverrides, saveAdaptiveOverrides } = require('./learning');
 const { getParams }        = require('./strategy-params');
 const { Scanner }          = require('./scanner-core');
 const {
@@ -753,6 +753,25 @@ app.post('/api/strategy-status/:name', (req, res) => {
       WHERE strategy_name = ?
     `).run(mode, notes ?? null, newLocked, liveSince ?? null, name);
     res.json({ ok: true, strategy_name: name, mode, locked: newLocked });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+// Clear adaptive-learning pause for a strategy without changing its live/research mode
+app.post('/api/strategy-status/:name/unpause', (req, res) => {
+  const { name } = req.params;
+  try {
+    const existing = db.prepare('SELECT strategy_name FROM strategy_status WHERE strategy_name = ?').get(name);
+    if (!existing) return res.status(404).json({ error: `Unknown strategy: ${name}` });
+    const overrides = loadAdaptiveOverrides(db);
+    if (overrides[name]) {
+      overrides[name].paused      = false;
+      overrides[name].manualPause = false;
+      overrides[name].reasons     = (overrides[name].reasons ?? []).filter(r => r.includes('auto-paused') === false);
+      overrides[name].reasons.push(`manually-unpaused at ${new Date().toISOString()}`);
+    }
+    saveAdaptiveOverrides(db, overrides);
+    console.log(`[strategy] ${name} adaptive pause cleared via API`);
+    res.json({ ok: true, strategy_name: name, paused: false });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

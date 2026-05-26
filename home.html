@@ -1252,17 +1252,13 @@ async function load() {
       learningRes ? learningRes.json() : Promise.resolve({}),
     ]);
 
-    // Only show the most recent signal if the trade ended less than 30 minutes ago.
-    // If the signal has no outcome yet (still active) it always shows.
-    // If it has an outcome, hide it once 30 minutes have passed since exit_at.
-    const SIGNAL_SHOW_WINDOW_MS = 30 * 60 * 1000;
-    const latestSig = sigs.find(s => {
-      if (!s.result) return true; // still active
-      const exitMs = s.exit_at
-        ? new Date(s.exit_at + (s.exit_at.includes('T') ? '' : ' UTC')).getTime()
-        : new Date(s.received_at + (s.received_at.includes('T') ? '' : ' UTC')).getTime();
-      return (Date.now() - exitMs) < SIGNAL_SHOW_WINDOW_MS;
-    }) || null;
+    // Latest signal: most recent from live strategies (MGC_SCALP or MNQ_INTRADAY),
+    // ordered by received_at DESC from the API. Never filter by outcome status —
+    // the old logic skipped resolved signals and fell through to stale OPEN trades.
+    const LIVE_STRATS = new Set(['MGC_SCALP', 'MNQ_INTRADAY']);
+    const latestSig = Array.isArray(sigs)
+      ? (sigs.find(s => LIVE_STRATS.has(s.strategy_name)) || sigs[0] || null)
+      : null;
     renderHero(latestSig);
     renderRecordBar(stats, journal);
     renderStats(stats, sigs, journal);

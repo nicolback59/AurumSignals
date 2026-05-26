@@ -885,8 +885,8 @@ function saveAdaptiveOverrides(db, overrides) {
  * Compute adaptive overrides from live signal + backtest outcome data.
  *
  * Rules (per strategy, last 30 days live signals):
- *   Auto-pause:     overall WR < 38% with ≥ 8 trades
- *   Auto-unpause:   overall WR ≥ 48% with ≥ 5 trades (cancels auto-pause)
+ *   Auto-pause:     overall WR < 35% with ≥ 10 trades
+ *   Auto-unpause:   overall WR ≥ 42% with ≥ 5 trades (cancels auto-pause)
  *   Block LONG:     LONG WR < 35% with ≥ 8 trades
  *   Block SHORT:    SHORT WR < 35% with ≥ 8 trades
  *   Unblock dir:    directional WR ≥ 45% with ≥ 5 trades
@@ -948,11 +948,11 @@ function computeAdaptiveOverrides(db) {
     if (ov.manualPause) continue; // respect manual overrides
     const wr = r.total > 0 ? r.wins / r.total : 0;
 
-    if (r.total >= 8 && wr < 0.38) {
+    if (r.total >= 10 && wr < 0.35) {
       ov.paused = true;
-      const msg = `auto-paused: WR=${(wr * 100).toFixed(1)}% (${r.total} trades) < 38%`;
+      const msg = `auto-paused: WR=${(wr * 100).toFixed(1)}% (${r.total} trades) < 35%`;
       if (!ov.reasons.some(x => x.startsWith('auto-paused'))) ov.reasons.push(msg);
-    } else if (r.total >= 5 && wr >= 0.48 && ov.paused && !ov.manualPause) {
+    } else if (r.total >= 5 && wr >= 0.42 && ov.paused && !ov.manualPause) {
       ov.paused = false;
       ov.reasons = ov.reasons.filter(x => !x.startsWith('auto-paused'));
       ov.reasons.push(`auto-unpaused: WR recovered to ${(wr * 100).toFixed(1)}% (${r.total} trades)`);
