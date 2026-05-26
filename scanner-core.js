@@ -1578,15 +1578,7 @@ class Scanner extends EventEmitter {
     let currentRegime = 'unknown';
     try { currentRegime = getMarketRegime(this.db); } catch (err) { this._log(`get-market-regime error: ${err.message}`, 'signal'); }
 
-    const AUTHORIZED_STRATEGIES = new Set(['MNQ_INTRADAY', 'MGC_SCALP']);
-
     for (const sig of signals) {
-      // ── Hard authorization gate — blocks any non-whitelisted strategy ────────
-      if (!AUTHORIZED_STRATEGIES.has(sig.strategy_name)) {
-        this._log(`UNAUTHORIZED_STRATEGY_BLOCKED strat=${sig.strategy_name} — only MNQ_INTRADAY and MGC_SCALP are authorized`, 'signal');
-        continue;
-      }
-
       const stratKey = `${instrument}_${sig.strategy_name}`;
 
       // ── Duplicate guard — spam/same-bar prevention only (SCANNER_DUPLICATE_GUARD_MIN) ──
@@ -1731,9 +1723,6 @@ class Scanner extends EventEmitter {
       }
 
       // ── Trade-idea deduplication (fuzzy, family-aware, persistent) ─────────────
-      // Blocks same-family setups at the same price zone within the suppression
-      // window, regardless of which specific strategy fired first.
-      // e.g. MGC_SCALP + MGC_INTRADAY at the same entry = one alert, not two.
       const { isDuplicate, suppressLog } = signalDedup.checkAndRegister(sig);
       if (isDuplicate) {
         this._log(`SIGNAL_FILTERED_OUT reason=fuzzy_dedup strat=${sig.strategy_name} ${suppressLog}`, 'signal');
