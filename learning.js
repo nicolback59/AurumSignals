@@ -29,7 +29,7 @@ function getLearnedThresholds(db) {
       for (const [k, b] of Object.entries(THRESHOLD_BOUNDS)) defaults[k] = b.default;
       return { ...defaults, ...stored };
     }
-  } catch {}
+  } catch (err) { console.error('[learning] getLearnedThresholds:', err.message); }
   const defaults = {};
   for (const [k, b] of Object.entries(THRESHOLD_BOUNDS)) defaults[k] = b.default;
   return defaults;
@@ -157,7 +157,7 @@ function getBacktestWinRates(db, instrument, lastNRuns = 3) {
       };
     }
     return result;
-  } catch {
+  } catch (_err) {
     return {};
   }
 }
@@ -207,7 +207,7 @@ function computeAdaptiveDeltasByStyle(db) {
       ORDER  BY s.received_at DESC
       LIMIT  ?
     `).all(WINDOW);
-  } catch {
+  } catch (_err) {
     return {};
   }
 
@@ -286,7 +286,7 @@ function getInstrumentProfile(db, instrument) {
       byHtfBias:   groupWR('htf_bias'),
       byStyle:     groupWR('trade_style'),
     };
-  } catch {
+  } catch (_err) {
     return null;
   }
 }
@@ -346,7 +346,7 @@ function detectEdgeDegradation(db, instrument) {
         ? `${instrument} edge improving — +${(delta*100).toFixed(1)}% vs prior period.`
         : `${instrument} edge stable — win rate variance within normal bounds.`,
     };
-  } catch {
+  } catch (_err) {
     return { instrument, status: 'error' };
   }
 }
@@ -386,7 +386,7 @@ function isThresholdChangeSafe(db, instrument, strategyName, proposedThreshold) 
     if (degradation.alert && delta < 0) return false;
 
     return true;
-  } catch {
+  } catch (_err) {
     return true; // never crash — allow on error
   }
 }
@@ -425,7 +425,7 @@ function getAdaptiveMinScore(db, setup, style, baseMin = 16) {
       return Math.max(50, Math.min(85, Math.round(baseMin + scaledDelta)));
     }
     return Math.max(12, Math.min(28, baseMin + combinedDelta + regimeDelta));
-  } catch {
+  } catch (_err) {
     return baseMin;
   }
 }
@@ -445,7 +445,7 @@ function getStylePerformance(db) {
       GROUP  BY s.trade_style
       ORDER  BY win_pct DESC
     `).all();
-  } catch {
+  } catch (_err) {
     return [];
   }
 }
@@ -508,7 +508,7 @@ function getLearningStats(db) {
         win_pct: r.total > 0 ? +(r.wins / r.total * 100).toFixed(1) : 0,
       };
     }
-  } catch {}
+  } catch (_err) {}
 
   return {
     bySetup,
@@ -558,7 +558,7 @@ function getPredictedWinRate(db, signal) {
         AND  t.run_id IN (SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5)
     `).get(stratName);
     if (r && r.total >= 5) { btWR = r.wins / r.total; btCount = r.total; }
-  } catch {}
+  } catch (_err) {}
 
   // Direction-filtered backtest WR
   let btDirWR = null;
@@ -571,7 +571,7 @@ function getPredictedWinRate(db, signal) {
         AND  t.run_id IN (SELECT id FROM backtest_runs ORDER BY run_at DESC LIMIT 5)
     `).get(stratName, direction);
     if (r && r.total >= 5) btDirWR = r.wins / r.total;
-  } catch {}
+  } catch (_err) {}
 
   // ── Live signal win rate (last 30 days) ───────────────────────────────────
   let liveWR = null, liveCount = 0;
@@ -584,7 +584,7 @@ function getPredictedWinRate(db, signal) {
         AND  s.received_at >= datetime('now', '-30 days')
     `).get(stratName);
     if (r && r.total >= 3) { liveWR = r.wins / r.total; liveCount = r.total; }
-  } catch {}
+  } catch (_err) {}
 
   let liveDirWR = null;
   try {
@@ -596,7 +596,7 @@ function getPredictedWinRate(db, signal) {
         AND  s.received_at >= datetime('now', '-30 days')
     `).get(stratName, direction);
     if (r && r.total >= 3) liveDirWR = r.wins / r.total;
-  } catch {}
+  } catch (_err) {}
 
   // ── Blend ─────────────────────────────────────────────────────────────────
   const effectiveBT   = btDirWR   ?? btWR;
@@ -654,7 +654,7 @@ function getPredictedWinRate(db, signal) {
         }
       }
     }
-  } catch { /* never crash */ }
+  } catch (_err) { /* never crash */ }
 
   // ── Real-time ATR-based volatility spike detection ────────────────────────
   // If current ATR is significantly above recent average → news/event spike
@@ -680,7 +680,7 @@ function getPredictedWinRate(db, signal) {
         volatilityNote = `ATR spike (${currentAtr.toFixed(1)} vs avg ${avgAtr.toFixed(1)}) — news/event possible`;
       }
     }
-  } catch { /* never crash */ }
+  } catch (_err) { /* never crash */ }
 
   // ── Recent news activity check ────────────────────────────────────────────
   let newsNote = '';
@@ -696,7 +696,7 @@ function getPredictedWinRate(db, signal) {
       newsNote = `${newsRow.cnt} news items in last 1h — elevated event risk`;
       if (!atrSpike) predictedWR = Math.max(0.22, predictedWR * 0.93);
     }
-  } catch { /* optional */ }
+  } catch (_err) { /* optional */ }
 
   // ── Confidence band ───────────────────────────────────────────────────────
   // Band widens with: low sample count, ATR spike, high news activity
@@ -767,7 +767,8 @@ function updateLearningFromLiveSignals(db, instrument) {
     }
 
     return updateLearnedThresholds(db, metricsMap);
-  } catch {
+  } catch (err) {
+    console.error('[learning] updateLearningFromLiveSignals:', err.message);
     return { thresholds: getLearnedThresholds(db), changes: {} };
   }
 }
@@ -798,7 +799,7 @@ function _loadStratParams(db, key) {
       `SELECT params_json FROM strategy_params WHERE instrument = ?`
     ).get(key);
     if (row) return JSON.parse(row.params_json);
-  } catch {}
+  } catch (err) { console.error('[learning] _loadStratParams:', err.message); }
   return null;
 }
 
@@ -906,7 +907,7 @@ function computeAdaptiveOverrides(db) {
       WHERE  s.received_at >= datetime('now', '-30 days')
       GROUP  BY s.strategy_name
     `).all();
-  } catch {}
+  } catch (err) { console.error('[learning] computeAdaptiveOverrides stratRows:', err.message); }
 
   try {
     dirRows = db.prepare(`
@@ -916,7 +917,7 @@ function computeAdaptiveOverrides(db) {
       WHERE  s.received_at >= datetime('now', '-30 days')
       GROUP  BY s.strategy_name, s.direction
     `).all();
-  } catch {}
+  } catch (err) { console.error('[learning] computeAdaptiveOverrides dirRows:', err.message); }
 
   try {
     sessRows = db.prepare(`
@@ -926,7 +927,7 @@ function computeAdaptiveOverrides(db) {
       WHERE  s.received_at >= datetime('now', '-30 days')
       GROUP  BY s.strategy_name, s.session
     `).all();
-  } catch {}
+  } catch (err) { console.error('[learning] computeAdaptiveOverrides sessRows:', err.message); }
 
   // Start from existing overrides (preserve manual overrides)
   const result = {};
@@ -1030,7 +1031,7 @@ function getStrategyFreshness(db, instrument, lastNRuns = 5) {
       result[r.strategy_name] = { tradeCount: r.tradeCount, lastRunAt: r.lastRunAt };
     }
     return result;
-  } catch {
+  } catch (_err) {
     return {};
   }
 }

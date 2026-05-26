@@ -426,7 +426,7 @@ class Scanner extends EventEmitter {
         if (eventType === 'TRADE_ENTRY') this._notifiedEntries.add(key);
         return false;
       }
-    } catch { /* on DB error, allow send (fail open) */ }
+    } catch (err) { this._log(`notification-log DB error (fail open): ${err.message}`, 'signal'); }
     this._notifiedOutcomes.add(key);
     if (eventType === 'TRADE_ENTRY') this._notifiedEntries.add(key);
     return true;
@@ -935,7 +935,7 @@ class Scanner extends EventEmitter {
         `TP3=${tpv.tp3Viable ? tpv.tp3AdjProb + '%✓' : tpv.tp3AdjProb + '%✗'} ` +
         `[${tpv.factors}]`
       );
-    } catch { /* never crash signal storage */ }
+    } catch (err) { this._log(`tp-viability error: ${err.message}`, 'signal'); }
 
     // Attach predicted win rate before storage — this is the pre-completion success estimate
     try {
@@ -949,7 +949,7 @@ class Scanner extends EventEmitter {
       signal.predicted_wr_atr_spike  = pred.atr_spike;
       signal.predicted_wr_high_news  = pred.high_news;
       signal.predicted_wr_dynamic_note = pred.dynamic_note;
-    } catch { /* never crash signal storage */ }
+    } catch (err) { this._log(`predicted-wr error: ${err.message}`, 'signal'); }
 
     const received_at = new Date().toISOString();
     const rank        = signal._rank ?? null;
@@ -994,7 +994,7 @@ class Scanner extends EventEmitter {
       if (rank?.liveGated) {
         this.db.prepare('UPDATE signals SET live_gated = 1 WHERE id = ?').run(id);
       }
-    } catch { /* never crash signal storage */ }
+    } catch (err) { this._log(`expires-at/live-gated update error: ${err.message}`, 'signal'); }
 
     // Persist agent scores for audit trail (async — never blocks signal storage)
     if (signal._agentScores) {
@@ -1033,7 +1033,7 @@ class Scanner extends EventEmitter {
         instrument, direction ?? null, setup ?? null, strategy ?? null,
         score ?? null, minScore ?? null, reason, null
       );
-    } catch { /* never crash scanner */ }
+    } catch (err) { this._log(`store-rejection error: ${err.message}`, 'signal'); }
   }
 
   // ── Scan diagnostic storage (throttled — 1/30 min per instrument) ────────────
@@ -1055,7 +1055,7 @@ class Scanner extends EventEmitter {
         rejectReason ?? null,
         diag ? JSON.stringify(diag) : null
       );
-    } catch { /* never crash scanner */ }
+    } catch (err) { this._log(`store-scan-diag error: ${err.message}`, 'signal'); }
   }
 
   // ── Auto-resolve pending outcomes ─────────────────────────────────────────────
@@ -1114,7 +1114,7 @@ class Scanner extends EventEmitter {
             quant_score = ?, quant_grade = ?
           WHERE signal_id = ?
         `).run(mfePts, maePts, holdTimeMin, sig.quant_score ?? null, sig.quant_grade ?? null, sig.id);
-      } catch { /* never crash */ }
+      } catch (err) { this._log(`outcome-enrich error: ${err.message}`, 'signal'); }
 
       // Release the dedup slot so a genuinely new setup at the same zone can
       // alert immediately rather than waiting for the suppression window.
@@ -1139,7 +1139,7 @@ class Scanner extends EventEmitter {
             const cluster = detectClusters(this.db, sig.strategy_name, 10);
             if (cluster) this._log(formatClusterLog(cluster), 'signal');
           }
-        } catch { /* never crash on forensics */ }
+        } catch (err) { this._log(`loss-forensics error: ${err.message}`, 'signal'); }
       }
 
       resolvedCount++;
@@ -1202,9 +1202,9 @@ class Scanner extends EventEmitter {
                 const cluster = detectClusters(this.db, sig.strategy_name, 10);
                 if (cluster) this._log(formatClusterLog(cluster), 'signal');
               }
-            } catch { /* never crash */ }
+            } catch (err) { this._log(`retro-forensics error: ${err.message}`, 'signal'); }
           }
-        } catch { /* never crash on backfill */ }
+        } catch (err) { this._log(`retro-backfill error: ${err.message}`, 'signal'); }
         if (result === 'WIN' || result === 'LOSS') signalDedup.releaseBySignal(sig);
         this._log(`RETRO-FIX #${sig.id} ${instrument}: EXPIRED → ${result}${pnlPts !== 0 ? ` (${pnlPts > 0 ? '+' : ''}${pnlPts} pts)` : ''}`, 'signal');
         this.emit('outcome', { signalId: sig.id, instrument, result, pnlPts });
@@ -1222,7 +1222,7 @@ class Scanner extends EventEmitter {
           const dir = delta > 0 ? '↑' : '↓';
           this._log(`📚 LIVE LEARN [${strat}]: threshold ${from} ${dir} ${to} (WR=${wr}%, ${trades} live trades)`);
         }
-      } catch { /* never crash on learning */ }
+      } catch (err) { this._log(`live-learn update error: ${err.message}`, 'signal'); }
 
       // Update pattern memory with newly resolved live trades
       try {
@@ -1234,7 +1234,7 @@ class Scanner extends EventEmitter {
             AND  o.exit_at >= datetime('now', '-1 hour')
         `).all(instrument);
         if (recentLiveTrades.length > 0) updatePatternMemory(this.db, recentLiveTrades);
-      } catch { /* never crash on pattern memory */ }
+      } catch (err) { this._log(`pattern-memory update error: ${err.message}`, 'signal'); }
 
       // Update opening candle bias accuracy from newly resolved outcomes
       try {
@@ -1252,15 +1252,15 @@ class Scanner extends EventEmitter {
             const meta = JSON.parse(t.notes);
             sessionKey = meta._ocSessionKey ?? null;
             bias       = meta._ocBias ?? null;
-          } catch {}
+          } catch (err) { this._log(`parse-oc-meta error: ${err.message}`, 'signal'); }
           if (sessionKey && bias) {
             updateSessionBiasAccuracy(this.db, instrument, sessionKey, bias, t.direction, t.outcome);
           }
         }
-      } catch { /* never crash */ }
+      } catch (err) { this._log(`session-bias-accuracy error: ${err.message}`, 'signal'); }
 
       // Recompute adaptive overrides after new outcomes arrive
-      try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
+      try { computeAdaptiveOverrides(this.db); } catch (err) { this._log(`adaptive-overrides error: ${err.message}`, 'signal'); }
     }
   }
 
@@ -1307,7 +1307,7 @@ class Scanner extends EventEmitter {
         try {
           updateLearningFromLiveSignals(this.db, result.signalLog ?? []);
           updateSessionBiasFromBacktest(this.db, instrument, result.signalLog ?? []);
-        } catch { /* never crash */ }
+        } catch (err) { this._log(`research-learn error: ${err.message}`, 'signal'); }
       }
 
       if (summary.length > 0) {
@@ -1361,7 +1361,7 @@ class Scanner extends EventEmitter {
         try {
           this._stmts.updateSigExpReason.run(reason, sig.id);
           this._stmts.updateOutExpReason.run(reason, sig.id);
-        } catch { /* ignore */ }
+        } catch (err) { this._log(`sweep-exp-reason error: ${err.message}`, 'signal'); }
         // Backfill enrichment columns into the outcome row
         try {
           const holdMs  = now.getTime() - new Date(sig.received_at).getTime();
@@ -1370,7 +1370,7 @@ class Scanner extends EventEmitter {
             UPDATE outcomes SET hold_time_min = ?, quant_score = ?, quant_grade = ?
             WHERE signal_id = ?
           `).run(holdMin, sig.quant_score ?? null, sig.quant_grade ?? null, sig.id);
-        } catch { /* never crash */ }
+        } catch (err) { this._log(`sweep-outcome-enrich error: ${err.message}`, 'signal'); }
         if (!sig.live_gated) this._sendNtfyExpired(sig, reason);
         // Loss forensics for sweep-expired signals (no bars available — limited context)
         try {
@@ -1387,7 +1387,7 @@ class Scanner extends EventEmitter {
             const cluster = detectClusters(this.db, sig.strategy_name, 10);
             if (cluster) this._log(formatClusterLog(cluster), 'signal');
           }
-        } catch { /* never crash on forensics */ }
+        } catch (err) { this._log(`sweep-forensics error: ${err.message}`, 'signal'); }
         console.log(`[sweep] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason} age=${Math.round((now - new Date(sig.received_at)) / 60000)}m`);
       };
 
@@ -1426,7 +1426,7 @@ class Scanner extends EventEmitter {
 
       if (swept > 0) {
         console.log(`[sweep] closed ${swept} signal(s)`);
-        try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
+        try { computeAdaptiveOverrides(this.db); } catch (err) { this._log(`sweep-adaptive-overrides error: ${err.message}`, 'signal'); }
       }
     } catch (err) {
       this._err('_sweepExpiredSignals error', err);
@@ -1497,14 +1497,14 @@ class Scanner extends EventEmitter {
           try {
             this._stmts.updateSigExpReason.run(reason, sig.id);
             this._stmts.updateOutExpReason.run(reason, sig.id);
-          } catch { /* ignore */ }
+          } catch (err) { this._log(`fix-stuck-exp-reason error: ${err.message}`, 'signal'); }
           console.log(`[fixStuck] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason} age=${Math.round(ageMs/3600000)}h`);
           fixed++;
-        } catch { /* never crash per-signal */ }
+        } catch (err) { this._log(`fix-stuck per-signal error: ${err.message}`, 'signal'); }
       }
       if (fixed > 0) {
         console.log(`[fixStuck] expired ${fixed} stuck trade(s)`);
-        try { computeAdaptiveOverrides(this.db); } catch { /* never crash */ }
+        try { computeAdaptiveOverrides(this.db); } catch (err) { this._log(`fix-stuck adaptive-overrides error: ${err.message}`, 'signal'); }
       }
     } catch (err) {
       this._err('_fixStuckTrades error', err);
@@ -1541,7 +1541,7 @@ class Scanner extends EventEmitter {
       }
       const latestBar = bars5m[bars5m.length - 1];
       currentSessionBias = getSessionOpenBias(this.db, instrument, latestBar?.timestamp ?? new Date().toISOString());
-    } catch { /* never crash */ }
+    } catch (err) { this._log(`opening-candle scan error: ${err.message}`, 'signal'); }
 
     const barSets = instrument === 'MGC'
       ? { bars3mMgc: bars3m, bars5mMgc: bars5m, bars15mMgc: bars15m, bars30mMgc: bars30m, bars45mMgc: bars45m, bars1hMgc: bars1h }
@@ -1589,11 +1589,11 @@ class Scanner extends EventEmitter {
 
     // Load adaptive overrides once per scan (auto-computed from live WR data)
     let adaptiveOverrides = {};
-    try { adaptiveOverrides = loadAdaptiveOverrides(this.db); } catch { /* never crash */ }
+    try { adaptiveOverrides = loadAdaptiveOverrides(this.db); } catch (err) { this._log(`load-adaptive-overrides error: ${err.message}`, 'signal'); }
 
     // Regime is needed by the adaptive cooldown engine — fetch once per scan cycle
     let currentRegime = 'unknown';
-    try { currentRegime = getMarketRegime(this.db); } catch { /* never crash */ }
+    try { currentRegime = getMarketRegime(this.db); } catch (err) { this._log(`get-market-regime error: ${err.message}`, 'signal'); }
 
     for (const sig of signals) {
       const stratKey = `${instrument}_${sig.strategy_name}`;
@@ -1674,7 +1674,7 @@ class Scanner extends EventEmitter {
             `WR=${(patResult.patternWR * 100).toFixed(0)}% (${patResult.patternTrades} trades) → gate adj ${patternAdj > 0 ? '+' : ''}${patternAdj}`
           );
         }
-      } catch { /* never crash */ }
+      } catch (err) { this._log(`pattern-adjustment error: ${err.message}`, 'signal'); }
 
       // ── Strategy DNA score + gate adjustment ─────────────────────────────────
       // DNA fingerprints winning trade conditions (combo × timing × quality).
@@ -1699,7 +1699,7 @@ class Scanner extends EventEmitter {
             );
           }
         }
-      } catch { /* never crash */ }
+      } catch (err) { this._log(`dna-gate error: ${err.message}`, 'signal'); }
 
       // ── Opening candle / power-hour bias adjustment ────────────────────────────
       // Boosts or penalises confidence when the session open candle gives a
@@ -1719,7 +1719,7 @@ class Scanner extends EventEmitter {
           sig._ocSessionKey = currentSessionBias.sessionKey;
           sig._ocBias       = currentSessionBias.bias;
         }
-      } catch { /* never crash */ }
+      } catch (err) { this._log(`opening-candle-adj error: ${err.message}`, 'signal'); }
 
       // Learned confidence gate — threshold evolves based on backtest win rates.
       // Pattern memory, DNA gate, and opening candle bias all tune the effective gate.
@@ -1796,7 +1796,7 @@ class Scanner extends EventEmitter {
         sig.quant_score    = quantResult.total;
         sig.quant_grade    = quantResult.grade;
         sig.quant_subscores = quantResult.subscores;
-      } catch { /* never crash */ }
+      } catch (err) { this._log(`quant-score error: ${err.message}`, 'signal'); }
 
       // ── Multi-agent gatekeeper — replaces ad-hoc quant isLive check ──────────
       if (!rank.liveGated) {
@@ -1821,7 +1821,7 @@ class Scanner extends EventEmitter {
               'signal'
             );
           }
-        } catch { /* never crash */ }
+        } catch (err) { this._log(`gatekeeper error: ${err.message}`, 'signal'); }
       }
 
       sig.tier              = rank.tier;
@@ -1974,7 +1974,7 @@ class Scanner extends EventEmitter {
       if (this._scanCount % 10 === 0) {
         this._log('⏸️  Market closed — scanner paused until next session opens');
       }
-      try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash */ }
+      try { this._stmts.upsertHeartbeat.run(); } catch (err) { this._log(`heartbeat-db error: ${err.message}`, 'signal'); }
       // Determine market mode for closed-market heartbeat
       let marketMode = 'RESEARCH';
       try {
@@ -1987,7 +1987,7 @@ class Scanner extends EventEmitter {
         } else if (meta && meta.minTier === 'IGNORE') {
           marketMode = 'OVERNIGHT';
         }
-      } catch { /* never crash */ }
+      } catch (err) { this._log(`market-mode classify error: ${err.message}`, 'signal'); }
       this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketClosed: true, marketMode, feedType: this.feedType, feedConnected: this._feed.isConnected() });
 
       // Research mode: run a background analysis cycle using historical bars.
@@ -2069,7 +2069,7 @@ class Scanner extends EventEmitter {
               fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
                 method: 'POST', headers,
                 body: `${this._consecutiveErrors} consecutive 429s — check Yahoo Finance access`,
-              }).catch(() => {});
+              }).catch(err => this._log(`SYSTEM_ALERT_SEND_FAILED: ${err.message}`, 'signal'));
             }
           }
 
@@ -2091,6 +2091,16 @@ class Scanner extends EventEmitter {
           this._log(`⏸️  Rate-limit backoff — ${remaining} min remaining — signal eval on cached bars`, 'signal');
         }
         if (!this._lastGoodBars.mnq5m.length) return;
+        // Block evaluation when cached bars are stale — prevents signals on old prices
+        const _cachedLast = this._lastGoodBars.mnq5m[this._lastGoodBars.mnq5m.length - 1];
+        if (_cachedLast) {
+          const _cacheAgeMs = Date.now() - new Date(_cachedLast.timestamp).getTime();
+          if (_cacheAgeMs > 15 * 60_000) {
+            const _ageMin = Math.round(_cacheAgeMs / 60_000);
+            this._log(`DATA_BACKOFF_STALE: cached bars are ${_ageMin}min old — skipping signal evaluation`, 'signal');
+            return;
+          }
+        }
         mnq5mRaw = this._lastGoodBars.mnq5m;
         mnq1hRaw = this._lastGoodBars.mnq1h;
         mgc5mRaw = this._lastGoodBars.mgc5m;
@@ -2148,7 +2158,7 @@ class Scanner extends EventEmitter {
             }
           }
         }
-      } catch { /* never crash scan on opening candle error */ }
+      } catch (err) { this._log(`opening-candle error: ${err.message}`, 'signal'); }
 
       if (!mnqReady && !mgcReady) {
         this._log(`⏳ Insufficient bars: MNQ 5m=${mnq5mConf.length}/15m=${mnq15m.length}/1h=${mnq1hConf.length} MGC 5m=${mgc5mConf.length}`);
@@ -2194,7 +2204,7 @@ class Scanner extends EventEmitter {
           if (mnq1m.length) this._resolution1m.mnq = mnq1m.slice(-120); // last 2 hours
           if (mgc1m.length) this._resolution1m.mgc = mgc1m.slice(-120);
           this._resolution1mFetchedAt = nowMs;
-        } catch { /* non-critical — fall back to 5m bars */ }
+        } catch (err) { this._log(`1m-resolution-fetch error (falling back to 5m): ${err.message}`, 'signal'); }
       }
 
       // Merge 1m and 5m bars for resolution: 1m bars are more granular (detect intrabar
@@ -2210,7 +2220,7 @@ class Scanner extends EventEmitter {
     } catch (err) {
       this._err('Scan cycle error', err);
     } finally {
-      try { this._stmts.upsertHeartbeat.run(); } catch { /* never crash on heartbeat */ }
+      try { this._stmts.upsertHeartbeat.run(); } catch (_err) { /* heartbeat DB failure — non-critical */ }
       this.emit('heartbeat', { scanCount: this._scanCount, at: ts(), marketMode: 'LIVE', feedType: this.feedType, feedConnected: this._feed.isConnected() });
     }
   }
@@ -2382,7 +2392,7 @@ class Scanner extends EventEmitter {
       ).get(instrument);
       if (_lastRunRow) {
         let _lastKey = '';
-        try { _lastKey = JSON.parse(_lastRunRow.params_json ?? '{}')._dataWindowKey ?? ''; } catch {}
+        try { _lastKey = JSON.parse(_lastRunRow.params_json ?? '{}')._dataWindowKey ?? ''; } catch (_err) {}
         if (_lastKey && _lastKey === _dataWindowKey) {
           this._log(`BACKTEST SKIP SAVE (${instrument}): same data window as last run — skipped`);
           return;
@@ -2439,7 +2449,7 @@ class Scanner extends EventEmitter {
             try {
               const note = this._autoNote(t);
               if (note) updNote.run(note, info.lastInsertRowid);
-            } catch { /* never crash backtest storage */ }
+            } catch (err) { this._log(`auto-note error: ${err.message}`, 'signal'); }
           }
         })();
       }
@@ -2568,7 +2578,7 @@ class Scanner extends EventEmitter {
       this.emit('backtest', { instrument, runId, metrics });
 
       // Check edge degradation after every backtest cycle
-      try { this._checkEdgeDegradation(); } catch { /* never crash */ }
+      try { this._checkEdgeDegradation(); } catch (err) { this._log(`edge-degradation check error: ${err.message}`, 'signal'); }
 
       const best = proposeRevision(this.db, instrument, bars1m, runId,
         { cooldown: result.cooldownUsed, slippage: this.cfg.btSlippage });
@@ -2587,7 +2597,7 @@ class Scanner extends EventEmitter {
       const rssMB  = Math.round(process.memoryUsage().rss       / 1_048_576);
       this._log(`BACKTEST END: ${instrument} heap=${heapMB}MB rss=${rssMB}MB`);
       // Nudge GC if available (node --expose-gc) to free backtest arrays immediately
-      if (typeof global.gc === 'function') { try { global.gc(); } catch {} }
+      if (typeof global.gc === 'function') { try { global.gc(); } catch (_err) {} }
     }
   }
 
@@ -2980,7 +2990,7 @@ class Scanner extends EventEmitter {
             this._log(`📊 MID-WEEK LEARN [${strat}/${instrument}]: threshold ${ch.from} → ${ch.to} (WR=${ch.wr}%)`);
           }
           if (result.explanation) this._log(`📊 Mid-week learning: ${result.explanation}`);
-        } catch {}
+        } catch (err) { this._log(`mid-week-learn error: ${err.message}`, 'signal'); }
       }
     }
 
@@ -3292,8 +3302,9 @@ class Scanner extends EventEmitter {
           `${r.strategy_key}: ${r.wins}W/${r.losses}L WR=${r.win_rate != null ? r.win_rate + '%' : 'n/a'}`
         ).join(' | ');
         this._log(`📋 Weekly learning generated for ${weekStart} — ${summary || 'no resolved trades'}`);
-      } catch {
-        this._log(`📋 Weekly summary generated for week of ${weekStart}`);
+      } catch (err) {
+        this._log(`📋 Weekly summary generated for week of ${weekStart} (detail query failed: ${err.message})`);
+
       }
     } catch (err) {
       this._err(`Weekly summary generation FAILED for week of ${weekStart ?? 'unknown'}: ${err.message}`, err);
