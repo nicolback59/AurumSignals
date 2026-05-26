@@ -21,7 +21,7 @@ const MODEL       = process.env.FORENSICS_MODEL || 'claude-sonnet-4-6';
 const MAX_TOKENS  = 2048;
 const CACHE_TTL_MS = 6 * 60 * 60 * 1000; // re-run at most every 6 h
 
-const ALL_STRATEGIES  = ['MGC_SCALP', 'MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
+const ALL_STRATEGIES  = ['MGC_SCALP', 'MNQ_INTRADAY'];
 const LIVE_STRATEGIES = new Set(['MGC_SCALP', 'MNQ_INTRADAY']);
 
 // ── Tool definition for threshold adjustments ────────────────────────────────
@@ -105,8 +105,7 @@ function _buildPrompt(forensicsData, metrics, effectiveThresholds) {
     `- Max loss streak : ${m.max_loss_streak ?? 'N/A'}`,
     '',
     '## Strategy Status',
-    '- LIVE  (real money): MGC_SCALP, MNQ_INTRADAY',
-    '- RESEARCH (paper)  : MNQ_SWING, MNQ_50PT, MGC_INTRADAY',
+    '- LIVE (real money): MGC_SCALP, MNQ_INTRADAY',
     '',
     '## Current Effective Thresholds',
     `- MNQ_INTRADAY live confidence min : ${lt.MNQ_INTRADAY ?? 67}`,

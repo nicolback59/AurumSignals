@@ -32,10 +32,7 @@ const STRIP_KEYS = new Set([
 
 const STRAT_LABELS = {
   MGC_SCALP:    'MGC Scalp',
-  MGC_INTRADAY: 'MGC Intraday',
   MNQ_INTRADAY: 'MNQ Intraday',
-  MNQ_SWING:    'MNQ Swing',
-  MNQ_50PT:     'MNQ 50-Point',
 };
 
 /**

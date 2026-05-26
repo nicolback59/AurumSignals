@@ -24,7 +24,6 @@
 const DEFAULT_LIVE = {
   MNQ_INTRADAY: 67,
   MGC_SCALP:    57,
-  MGC_INTRADAY: 60,
 };
 const DEFAULT_STRONG_A = 71;
 

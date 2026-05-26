@@ -32,13 +32,6 @@ const DEFAULT_PARAMS_BY_STYLE = {
     slPts: 28, minScore: 8, stdvLen: 20, std2: 2.0,
     tradeStyleMode: 'intraday',
   },
-  MNQ_SWING: {
-    ...DEFAULT_PARAMS.MNQ,
-    slPts: 25, minScore: 10, oteHigh: 0.80, oteLow: 0.65,
-    stdvLen: 25, std2: 1.8, swingLook: 25, swingL: 9,
-    swingTp1: 50, swingTp2: 100, swingTp3: 150,
-    tradeStyleMode: 'swing',
-  },
   MGC_SCALP: {
     ...DEFAULT_PARAMS.MGC,
     slPts: 10, minScore: 7, stdvLen: 12, std2: 2.2, swingLook: 12,

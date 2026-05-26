@@ -52,11 +52,8 @@ const TRANSITIONS = {
 
 // Per-strategy max hold (when strategy_name is available)
 const MAX_HOLD_MS_BY_STRATEGY = {
-  MGC_SCALP:    60  * 60 * 1000,       //  1 hour
-  MGC_INTRADAY: 4   * 60 * 60 * 1000,  //  4 hours
-  MNQ_INTRADAY: 4   * 60 * 60 * 1000,  //  4 hours
-  MNQ_50PT:     6   * 60 * 60 * 1000,  //  6 hours
-  MNQ_SWING:    72  * 60 * 60 * 1000,  // 72 hours
+  MGC_SCALP:    60 * 60 * 1000,  //  1 hour
+  MNQ_INTRADAY:  4 * 60 * 60 * 1000,  //  4 hours
 };
 
 // Per-style fallback (when no strategy_name)
@@ -70,10 +67,7 @@ const DEFAULT_HOLD_MS = MAX_HOLD_MS.intraday;
 // Strategy-specific hold-overnight/weekend flags
 const STRATEGY_CONFIG = {
   MGC_SCALP:    { allowHoldOvernight: false, allowHoldWeekend: false },
-  MGC_INTRADAY: { allowHoldOvernight: false, allowHoldWeekend: false },
   MNQ_INTRADAY: { allowHoldOvernight: false, allowHoldWeekend: false },
-  MNQ_50PT:     { allowHoldOvernight: false, allowHoldWeekend: false },
-  MNQ_SWING:    { allowHoldOvernight: true,  allowHoldWeekend: true  },
 };
 
 /**

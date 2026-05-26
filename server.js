@@ -136,12 +136,6 @@ function applyMigrations() {
       console.log('[migration] Added locked column to strategy_status');
     }
   }
-  // Seed defaults — use INSERT OR IGNORE for research-only (preserve manual overrides)
-  for (const [name, mode] of Object.entries({
-    MGC_INTRADAY: 'RESEARCH_ONLY',
-  })) {
-    db.prepare('INSERT OR IGNORE INTO strategy_status (strategy_name, mode) VALUES (?, ?)').run(name, mode);
-  }
   // Live strategies: auto-restore to LIVE_ENABLED on startup UNLESS locked=1 (intentionally disabled).
   // Set locked=1 via the /api/strategies endpoint or direct DB update to prevent auto-restore.
   for (const name of ['MGC_SCALP', 'MNQ_INTRADAY']) {
@@ -338,13 +332,10 @@ setTimeout(_deferredBtDedup, 5000);
 (function cleanupStaleOpenTrades() {
   try {
     const MAX_HOLD = {
-      MGC_SCALP:    1  * 3600000,
-      MGC_INTRADAY: 4  * 3600000,
-      MNQ_INTRADAY: 4  * 3600000,
-      MNQ_50PT:     6  * 3600000,
-      MNQ_SWING:    72 * 3600000,
+      MGC_SCALP:    1 * 3600000,
+      MNQ_INTRADAY: 4 * 3600000,
     };
-    const NO_WEEKEND   = new Set(['MGC_SCALP','MGC_INTRADAY','MNQ_INTRADAY','MNQ_50PT']);
+    const NO_WEEKEND   = new Set(['MGC_SCALP', 'MNQ_INTRADAY']);
     const NO_OVERNIGHT = NO_WEEKEND;
 
     const nowMs  = Date.now();
@@ -666,8 +657,8 @@ app.get('/api/status', (req, res) => {
     marketOpen,
     strategies: {
       live:         ['MNQ_INTRADAY', 'MGC_SCALP'],
-      researchOnly: ['MGC_INTRADAY'],
-      disabled:     ['MNQ_SWING', 'MNQ_50PT'],
+      researchOnly: [],
+      disabled:     [],
     },
     feedType:          scanner?.feedType      ?? 'unknown',
     feedConnected:     scanner?._feed?.isConnected() ?? false,
@@ -832,7 +823,7 @@ app.get('/api/forensics/summary', (req, res) => {
     const days     = Math.min(Number(req.query.days) || 14, 90);
     const strategies = strategy
       ? [strategy]
-      : ['MGC_SCALP', 'MNQ_INTRADAY', 'MGC_INTRADAY'];
+      : ['MGC_SCALP', 'MNQ_INTRADAY'];
     const result = {};
     for (const s of strategies) {
       result[s] = getForensicsSummary(db, s, days);
@@ -844,7 +835,7 @@ app.get('/api/forensics/summary', (req, res) => {
 // Active cluster warnings across all live strategies
 app.get('/api/forensics/clusters', (req, res) => {
   try {
-    const strategies = ['MGC_SCALP', 'MNQ_INTRADAY', 'MGC_INTRADAY'];
+    const strategies = ['MGC_SCALP', 'MNQ_INTRADAY'];
     const clusters = [];
     for (const s of strategies) {
       const c = _detectClusters(db, s, 10);
@@ -1384,11 +1375,8 @@ function fmtWeekLabel(weekStart) {
 }
 
 const STRATEGY_CONFIGS = [
-  { key: 'MGC_SCALP',    label: 'MGC Scalp',         instrument: 'MGC' },
-  { key: 'MGC_INTRADAY', label: 'MGC Intraday',       instrument: 'MGC' },
-  { key: 'MNQ_INTRADAY', label: 'MNQ Intraday',       instrument: 'MNQ' },
-  { key: 'MNQ_SWING',    label: 'MNQ Swing',          instrument: 'MNQ' },
-  { key: 'MNQ_50PT',     label: 'MNQ 50-Point',       instrument: 'MNQ' },
+  { key: 'MGC_SCALP',    label: 'MGC Scalp',   instrument: 'MGC' },
+  { key: 'MNQ_INTRADAY', label: 'MNQ Intraday', instrument: 'MNQ' },
 ];
 
 function generateWeeklySummaryData(db, weekStart) {

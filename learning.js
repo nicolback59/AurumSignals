@@ -9,10 +9,7 @@ const MIN_SAMPLE = 3;    // minimum trades before adjusting
 
 const THRESHOLD_BOUNDS = {
   MNQ_INTRADAY: { min: 52, max: 76, default: 60 },
-  MNQ_SWING:    { min: 55, max: 78, default: 63 },
-  MNQ_50PT:     { min: 58, max: 80, default: 68 },
   MGC_SCALP:    { min: 50, max: 74, default: 62 },
-  MGC_INTRADAY: { min: 50, max: 72, default: 60 },
 };
 
 // ── Learned threshold persistence ─────────────────────────────────────────────

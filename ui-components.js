@@ -121,8 +121,8 @@ function fmtExpiryReason(reason) {
 }
 
 // ── Hard expiry rule (mirrors trades.html getTradeExpiry) ─────────────────
-const _NO_OVERNIGHT_UI = new Set(['MGC_SCALP', 'MGC_INTRADAY', 'MNQ_INTRADAY', 'MNQ_50PT']);
-const _MAX_HOLD_MIN_UI = { MGC_SCALP: 60, MGC_INTRADAY: 240, MNQ_INTRADAY: 240, MNQ_50PT: 360, MNQ_SWING: 72 * 60 };
+const _NO_OVERNIGHT_UI = new Set(['MGC_SCALP', 'MNQ_INTRADAY']);
+const _MAX_HOLD_MIN_UI = { MGC_SCALP: 60, MNQ_INTRADAY: 240 };
 
 function _toPtUI(d) {
   return new Date((d instanceof Date ? d : new Date(
@@ -237,10 +237,7 @@ function outcomeSection(sig) {
 function strategyLabel(sig) {
   const map = {
     MNQ_INTRADAY: 'MNQ Intraday',
-    MNQ_SWING:    'MNQ Swing',
-    MNQ_50PT:     'MNQ 50-Point',
     MGC_SCALP:    'MGC Scalp',
-    MGC_INTRADAY: 'MGC Intraday',
   };
   return map[sig.strategy_name] || sig.setup || sig.strategy_name || '—';
 }
