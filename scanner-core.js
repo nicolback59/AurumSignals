@@ -1605,11 +1605,13 @@ class Scanner extends EventEmitter {
       }
 
       // ── Adaptive cooldown — context-aware timing control ──────────────────
+      // Prefer dbRegime (precise new vocab from regime_states); fall back to
+      // currentRegime (old vocab from getMarketRegime) when agent hasn't run yet.
       const cooldownResult = checkAdaptiveCooldown({
         strategyName:   sig.strategy_name,
         instrument,
         session:        sig.session ?? 'unknown',
-        regime:         currentRegime,
+        regime:         dbRegime ?? currentRegime,
         confidence:     sig.confidence,
         lastSignalTime: this._lastSignalTimes[stratKey] ?? 0,
         db:             this.db,
@@ -1828,15 +1830,15 @@ class Scanner extends EventEmitter {
       anyFired = true;
     }
 
-    // Diagnostic snapshot
-    const regime  = getMarketRegime(this.db);
-    const lastBar = bars5m.length > 0 ? bars5m[bars5m.length - 1] : null;
-    const diagInfo = { close: lastBar?.close ?? null, atr: null, htfBias: null };
+    // Diagnostic snapshot — use already-fetched regime (no extra DB call)
+    const diagRegime = dbRegime ?? currentRegime;
+    const lastBar    = bars5m.length > 0 ? bars5m[bars5m.length - 1] : null;
+    const diagInfo   = { close: lastBar?.close ?? null, atr: null, htfBias: null };
 
     this._log(`STRATEGY_SCAN_COMPLETE instrument=${instrument} fired=${anyFired} candidates=${stratsFiredNames.length} scan=#${this._scanCount}`, 'signal');
     if (this.cfg.logLevel === 'full') {
       this._log(
-        `📊 ${instrument} | close=${diagInfo.close ?? '?'} | regime=${regime} | ` +
+        `📊 ${instrument} | close=${diagInfo.close ?? '?'} | regime=${diagRegime} | ` +
         `strats=${stratsFiredNames.join(',') || 'none'} | fired=${anyFired ? 'YES' : 'no'}`
       );
     }
@@ -1845,7 +1847,7 @@ class Scanner extends EventEmitter {
       anyFired ? null : 'confidence threshold not met');
 
     this.emit('scan', {
-      instrument, regime, fired: anyFired,
+      instrument, regime: diagRegime, fired: anyFired,
       strategies: stratsFiredNames,
       close: diagInfo.close,
       scanCount: this._scanCount,
