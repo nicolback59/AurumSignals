@@ -212,7 +212,10 @@
     </div>
 
     <!-- Learning insights -->
-    <h2>Learning Insights</h2>
+    <h2 style="display:flex;align-items:center;gap:12px;">
+      Learning Insights
+      <button class="refresh-btn" id="runLearningBtn" onclick="runLearning()" style="margin-left:0;font-size:11px;padding:4px 10px;">Run Now</button>
+    </h2>
     <div id="learningGrid">
       <div class="loading">Loading&hellip;</div>
     </div>
@@ -431,8 +434,27 @@
     }
   }
 
+  async function runLearning() {
+    const btn = document.getElementById('runLearningBtn');
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    try {
+      const r = await fetch('/api/admin/run-learning', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        btn.textContent = 'Started — refreshing in 35s';
+        setTimeout(() => { load(); btn.disabled = false; btn.textContent = 'Run Now'; }, 35000);
+      } else {
+        btn.textContent = 'Error';
+        setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; }, 3000);
+      }
+    } catch (_) {
+      btn.textContent = 'Error';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; }, 3000);
+    }
+  }
+
   load();
-  // Auto-refresh every 60s
   setInterval(load, 60000);
   </script>
 </body>

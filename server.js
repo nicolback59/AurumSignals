@@ -6,6 +6,7 @@ const Database = require('better-sqlite3');
 const crypto   = require('crypto');
 const path     = require('path');
 const fs       = require('fs');
+const { spawn } = require('child_process');
 const { getLearningStats, detectEdgeDegradation, loadAdaptiveOverrides, saveAdaptiveOverrides } = require('./learning');
 const { getParams }        = require('./strategy-params');
 const { Scanner }          = require('./scanner-core');
@@ -1072,6 +1073,22 @@ app.get('/api/admin/dashboard', (req, res) => {
     console.error('[api/admin/dashboard]', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Manually trigger the learning agent (runs as a child process, returns immediately)
+app.post('/api/admin/run-learning', (req, res) => {
+  const scriptPath = path.join(__dirname, 'workers', 'learning-agent.js');
+  if (!fs.existsSync(scriptPath)) {
+    return res.status(404).json({ error: 'learning-agent.js not found' });
+  }
+  const child = spawn(process.execPath, [scriptPath], {
+    detached: true,
+    stdio:    'ignore',
+    env:      { ...process.env },
+  });
+  child.unref();
+  console.log(`[api/admin/run-learning] spawned learning-agent pid=${child.pid}`);
+  res.json({ ok: true, pid: child.pid, message: 'Learning agent started — results available in ~30s' });
 });
 
 // Latest AI forensics analysis — returns Claude's strategy adjustments
