@@ -1770,15 +1770,25 @@ class Scanner extends EventEmitter {
       }
 
       // ── Quant scorer — 8-dimension score (kept for DB storage + grading) ─────
+      // getMarketRegime() returns 'trending'/'choppy'/'mixed'/'unknown' but RegimeAgent
+      // expects the structured vocabulary below — map before passing to the gatekeeper.
+      const REGIME_VOCAB_MAP = { trending: 'EXPANSION', mixed: 'NORMAL', choppy: 'SOFT_CHOP', unknown: 'NORMAL' };
+      // signal-engine emits htfBias as strings ('BULL ▲', 'BEAR ▼', 'WEAK BULL', etc.)
+      // HtfBiasAgent compares numerically (1 / -1 / 0) — convert at the boundary.
+      const htfBiasToNum = b => {
+        if (typeof b === 'number') return b > 0 ? 1 : b < 0 ? -1 : 0;
+        if (typeof b === 'string') { const u = b.toUpperCase(); return u.includes('BULL') ? 1 : u.includes('BEAR') ? -1 : 0; }
+        return 0;
+      };
       const quantCtx = {
-        regime:    currentRegime ?? 'NORMAL',
+        regime:    REGIME_VOCAB_MAP[currentRegime] ?? 'NORMAL',
         volRegime: sig.indicators?.volRegime ?? 'NORMAL',
         atrRatio:  sig.indicators?.atr ? (sig.indicators.atr / (sig.indicators?.atrMin ?? sig.indicators.atr)) : 1,
         sess:      { quality: sig.indicators?.sessionQuality ?? 0.7, name: sig.session ?? '' },
         htfBiases: [
-          { bias: sig.indicators?.htfBias  ?? 0, present: true },
-          { bias: sig.indicators?.htf2Bias ?? 0, present: sig.indicators?.htf2Bias  != null },
-          { bias: sig.indicators?.htf1hBias ?? 0, present: sig.indicators?.htf1hBias != null },
+          { bias: htfBiasToNum(sig.indicators?.htfBias),   present: sig.indicators?.htfBias  != null },
+          { bias: htfBiasToNum(sig.indicators?.htf2Bias),  present: sig.indicators?.htf2Bias  != null },
+          { bias: htfBiasToNum(sig.indicators?.htf1hBias), present: sig.indicators?.htf1hBias != null },
         ],
         bars5m,
         rsi: sig.indicators?.rsi ?? null,
