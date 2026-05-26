@@ -731,23 +731,27 @@ app.get('/api/strategy-status', (req, res) => {
 
 app.post('/api/strategy-status/:name', (req, res) => {
   const { name } = req.params;
-  const { mode, notes } = req.body || {};
+  const { mode, notes, locked } = req.body || {};
   if (!['RESEARCH_ONLY', 'LIVE_ENABLED'].includes(mode)) {
     return res.status(400).json({ error: 'mode must be RESEARCH_ONLY or LIVE_ENABLED' });
   }
+  if (locked !== undefined && locked !== 0 && locked !== 1) {
+    return res.status(400).json({ error: 'locked must be 0 or 1' });
+  }
   try {
-    const existing = db.prepare('SELECT mode FROM strategy_status WHERE strategy_name = ?').get(name);
+    const existing = db.prepare('SELECT mode, locked FROM strategy_status WHERE strategy_name = ?').get(name);
     if (!existing) return res.status(404).json({ error: `Unknown strategy: ${name}` });
     const liveSince = mode === 'LIVE_ENABLED' && existing.mode !== 'LIVE_ENABLED'
       ? new Date().toISOString() : undefined;
+    const newLocked = locked !== undefined ? locked : existing.locked ?? 0;
     db.prepare(`
       UPDATE strategy_status
-      SET mode = ?, notes = ?,
+      SET mode = ?, notes = ?, locked = ?,
           live_since = COALESCE(?, live_since),
           updated_at = datetime('now')
       WHERE strategy_name = ?
-    `).run(mode, notes ?? null, liveSince ?? null, name);
-    res.json({ ok: true, strategy_name: name, mode });
+    `).run(mode, notes ?? null, newLocked, liveSince ?? null, name);
+    res.json({ ok: true, strategy_name: name, mode, locked: newLocked });
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 

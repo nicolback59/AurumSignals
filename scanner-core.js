@@ -2091,14 +2091,18 @@ class Scanner extends EventEmitter {
           this._log(`⏸️  Rate-limit backoff — ${remaining} min remaining — signal eval on cached bars`, 'signal');
         }
         if (!this._lastGoodBars.mnq5m.length) return;
-        // Block evaluation when cached bars are stale — prevents signals on old prices
-        const _cachedLast = this._lastGoodBars.mnq5m[this._lastGoodBars.mnq5m.length - 1];
-        if (_cachedLast) {
-          const _cacheAgeMs = Date.now() - new Date(_cachedLast.timestamp).getTime();
-          if (_cacheAgeMs > 15 * 60_000) {
-            const _ageMin = Math.round(_cacheAgeMs / 60_000);
-            this._log(`DATA_BACKOFF_STALE: cached bars are ${_ageMin}min old — skipping signal evaluation`, 'signal');
-            return;
+        // Block evaluation when cached bars are stale — check both MNQ and MGC
+        for (const [key, label] of [['mnq5m', 'MNQ'], ['mgc5m', 'MGC']]) {
+          const bars = this._lastGoodBars[key];
+          if (!bars.length) continue;
+          const _cachedLast = bars[bars.length - 1];
+          if (_cachedLast) {
+            const _cacheAgeMs = Date.now() - new Date(_cachedLast.timestamp).getTime();
+            if (_cacheAgeMs > 15 * 60_000) {
+              const _ageMin = Math.round(_cacheAgeMs / 60_000);
+              this._log(`DATA_BACKOFF_STALE: ${label} cached bars are ${_ageMin}min old — skipping signal evaluation`, 'signal');
+              return;
+            }
           }
         }
         mnq5mRaw = this._lastGoodBars.mnq5m;
@@ -3430,9 +3434,13 @@ class Scanner extends EventEmitter {
           ON CONFLICT(strategy_name) DO UPDATE SET mode = 'RESEARCH_ONLY', updated_at = datetime('now')
         `).run(strat);
       }
-      // Enforce live strategies — auto-recover if accidentally disabled
+      // Enforce live strategies — auto-recover if accidentally disabled (skip if locked)
       for (const strat of ['MGC_SCALP', 'MNQ_INTRADAY']) {
-        const before = this.db.prepare('SELECT mode FROM strategy_status WHERE strategy_name = ?').get(strat);
+        const before = this.db.prepare('SELECT mode, locked FROM strategy_status WHERE strategy_name = ?').get(strat);
+        if (before?.locked) {
+          this._log(`STRATEGY_LOCKED strategy=${strat} mode=${before.mode} — preserving (set locked=0 to re-enable auto-restore)`, 'signal');
+          continue;
+        }
         if (before?.mode === 'RESEARCH_ONLY') {
           this._log(`CRITICAL_STRATEGY_DISABLED_DETECTED strategy=${strat} was RESEARCH_ONLY — auto-restoring LIVE_ENABLED`, 'signal');
         }
