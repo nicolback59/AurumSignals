@@ -26,12 +26,12 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '2.6';
+const STRATEGY_VERSION = '3.0';
 
 // Minimum ATR in MNQ points for intraday to be worth trading
-const ATR_MIN_PTS = 8;  // restored from 5 — low-ATR sessions have weak follow-through
+const ATR_MIN_PTS = 10;  // raised from 8 — sub-10pt ATR sessions lack follow-through
 // Cooldown: minimum bars between signals on this strategy
-const MIN_BAR_GAP = 2;  // 2 × 5m = 10 min spam guard — adaptive-cooldown.js handles strategy timing
+const MIN_BAR_GAP = 4;  // 4 × 5m = 20 min spam guard — prevents cluster entries
 
 let lastSignalBar = -999;
 
@@ -89,8 +89,8 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
   if (isChoppingAroundVwap(bars, vwapArr, 8, 4)) return null;  // restored — relaxed filter allowed too many chop signals
 
   const sess = getSessionInfo(last.timestamp);
-  // Skip low-quality sessions (pre-market, overnight, thin midday)
-  if (sess.quality < 0.45) return null;
+  // Only trade high-quality sessions (London + NY Open). Pre-market and midday excluded.
+  if (sess.quality < 0.65) return null;
 
   // ── HTF bias ──────────────────────────────────────────────────────────────────
   const htfBias   = calcHtfBias(htfBars, 9, 21);
@@ -109,41 +109,42 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
     const isBull = dir === 'LONG';
 
     // ── EMA stack score ─────────────────────────────────────────────────────
-    // Allow partial stack (1) — full stack (2) gives higher confidence score.
+    // Require full stack: EMA9 > EMA21 > EMA50 for LONG (vice versa for SHORT).
+    // Partial stack (1) was allowing too many weak-trend entries.
     const esScore = emaStackScore(closes, 9, 21, 50, dir);
-    if (esScore < 1) continue;
+    if (esScore < 2) continue;
 
     // ── Pullback detection ──────────────────────────────────────────────────
-    // Price must have recently touched the VWAP, EMA9, or EMA21 zone.
-    // Forensic finding: 15-bar / 0.65×ATR lookback was too lenient — a pullback
-    // touch 75 minutes ago (15 bars × 5m) is no longer a valid entry trigger.
-    // Tightened to 8 bars (40 min) with 0.52×ATR tolerance for fresher setups.
-    // The v2.1 tightening was over-reverted; this restores selectivity without
-    // going back to the original strict 0.55 (which missed valid extended touches).
-    const tolerance = 0.52 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 6);
-    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 6);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 6);
-    if (!pulledToVwap && !pulledTo9 && !pulledTo21) continue;
+    // Must have touched EMA21 specifically within 6 bars (true mean-reversion entry).
+    // VWAP/EMA9 OR conditions were too loose — many low-quality touches passed.
+    // Tighter 0.40×ATR tolerance requires a genuine tag of the mean.
+    const tolerance  = 0.40 * atr;
+    const pulledTo21 = hadPullbackToLevel(bars, ema21, tolerance, dir, 6);
+    if (!pulledTo21) continue;
 
-    // ── Pullback held (EMA support not broken) ──────────────────────────────
+    // ── Pullback held (EMA21 support not broken) ──────────────────────────────
     const recentSlice = bars.slice(-4, -1);
     if (isBull) {
-      if (recentSlice.some(b => b.close < ema21 - 0.35 * atr)) continue;
+      if (recentSlice.some(b => b.close < ema21 - 0.25 * atr)) continue;
     } else {
-      if (recentSlice.some(b => b.close > ema21 + 0.35 * atr)) continue;
+      if (recentSlice.some(b => b.close > ema21 + 0.25 * atr)) continue;
     }
 
     // ── Confirmation candle ─────────────────────────────────────────────────
-    const confirmed = isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35);
+    // Raised body ratio from 0.35 → 0.48 — require decisive momentum candle,
+    // not a doji or near-doji that passes a weak body check.
+    const confirmed = isBull ? isBullishCandle(last, 0.48) : isBearishCandle(last, 0.48);
     if (!confirmed) continue;
 
-    // ── RSI filter ──────────────────────────────────────────────────────────
+    // ── RSI zone filter ─────────────────────────────────────────────────────
+    // Require RSI in fresh-momentum zone, not just avoiding extremes.
+    // LONG: RSI too weak (<38) = no momentum; too high (≥68) = overbought chase.
+    // SHORT: RSI too strong (>62) = no momentum; too low (≤32) = oversold chase.
     const rsiArr = calcRsi(closes, 14);
     const rsi    = rsiArr[n];
     if (rsi != null) {
-      if (isBull  && rsi >= 75) continue; // overbought — avoid chasing (restored from 70)
-      if (!isBull && rsi <= 25) continue; // oversold — avoid chasing (restored from 30)
+      if (isBull  && (rsi < 38 || rsi >= 68)) continue;
+      if (!isBull && (rsi > 62 || rsi <= 32)) continue;
     }
 
     // ── MACD momentum alignment (soft filter) ───────────────────────────────
@@ -191,10 +192,12 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
       }
     }
 
-    // ── Price proximity check — entry must not be too extended from EMA21 ───────
-    // Avoids chasing entries that are already far off the mean
+    // ── Price proximity check — entry must be close to EMA21 ───────────────────
+    // Tightened from 1.5x to 1.0x ATR: entry within 1 ATR of the mean.
+    // Combined with the EMA21 pullback requirement above, this ensures entries
+    // are genuine mean-reversion trades, not extended chases.
     const ema21Dist = Math.abs(last.close - ema21);
-    if (ema21Dist > 1.5 * atr) continue;
+    if (ema21Dist > 1.0 * atr) continue;
 
     // ── Stop-loss ────────────────────────────────────────────────────────────
     const swLow  = recentSwingLow(bars, 10);
