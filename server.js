@@ -8,7 +8,7 @@ const path     = require('path');
 const fs       = require('fs');
 const { spawn } = require('child_process');
 const { getLearningStats, detectEdgeDegradation, loadAdaptiveOverrides, saveAdaptiveOverrides } = require('./learning');
-const { getParams }        = require('./strategy-params');
+const { getParams, saveParams, getStyleParams } = require('./strategy-params');
 const { Scanner }          = require('./scanner-core');
 const {
   analyzeDivergence, generateMidWeekReport, generateWeeklyDeepReport,
@@ -527,6 +527,31 @@ db.exec(`
     flag_reason     TEXT
   );
   CREATE INDEX IF NOT EXISTS idx_learning_ran_at ON learning_runs(ran_at DESC);
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS optimizer_candidates (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+    strategy_name   TEXT NOT NULL,
+    instrument      TEXT NOT NULL,
+    params_json     TEXT NOT NULL,
+    baseline_params TEXT NOT NULL,
+    bt_wr_30d       REAL,
+    bt_wr_90d       REAL,
+    baseline_wr_30d REAL,
+    baseline_wr_90d REAL,
+    delta_wr_30d    REAL,
+    delta_wr_90d    REAL,
+    trade_count_30d INTEGER,
+    trade_count_90d INTEGER,
+    sharpe_30d      REAL,
+    sharpe_90d      REAL,
+    status          TEXT NOT NULL DEFAULT 'pending_review',
+    reviewed_at     TEXT,
+    review_note     TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_opt_status ON optimizer_candidates(status, created_at DESC);
 `);
 
 thresholdManager.init(db);
@@ -1068,7 +1093,12 @@ app.get('/api/admin/dashboard', (req, res) => {
       }
     } catch (_) { learningBaselines = {}; }
 
-    res.json({ workers, regimes, clusters, stratMetrics, signalCount24h, learningAlerts, learningBaselines, generatedAt: new Date().toISOString() });
+    let optimizerPending = 0;
+    try {
+      optimizerPending = db.prepare(`SELECT COUNT(*) n FROM optimizer_candidates WHERE status='pending_review'`).get()?.n ?? 0;
+    } catch (_) {}
+
+    res.json({ workers, regimes, clusters, stratMetrics, signalCount24h, learningAlerts, learningBaselines, optimizerPending, generatedAt: new Date().toISOString() });
   } catch (err) {
     console.error('[api/admin/dashboard]', err.message);
     res.status(500).json({ error: err.message });
@@ -1089,6 +1119,66 @@ app.post('/api/admin/run-learning', (req, res) => {
   child.unref();
   console.log(`[api/admin/run-learning] spawned learning-agent pid=${child.pid}`);
   res.json({ ok: true, pid: child.pid, message: 'Learning agent started — results available in ~30s' });
+});
+
+app.post('/api/admin/run-optimizer', (req, res) => {
+  const scriptPath = path.join(__dirname, 'workers', 'optimizer-worker.js');
+  if (!fs.existsSync(scriptPath)) {
+    return res.status(404).json({ error: 'optimizer-worker.js not found' });
+  }
+  const child = spawn(process.execPath, [scriptPath], {
+    detached: true,
+    stdio:    'ignore',
+    env:      { ...process.env },
+  });
+  child.unref();
+  console.log(`[api/admin/run-optimizer] spawned optimizer-worker pid=${child.pid}`);
+  res.json({ ok: true, pid: child.pid, message: 'Optimizer started — results available in ~2 min' });
+});
+
+app.get('/api/admin/optimizer', (req, res) => {
+  try {
+    const pending = db.prepare(
+      `SELECT * FROM optimizer_candidates WHERE status='pending_review' ORDER BY created_at DESC`
+    ).all();
+    const recent = db.prepare(
+      `SELECT * FROM optimizer_candidates WHERE status != 'pending_review' ORDER BY reviewed_at DESC LIMIT 10`
+    ).all();
+    const parse = rows => rows.map(r => ({
+      ...r,
+      params_json:     JSON.parse(r.params_json),
+      baseline_params: JSON.parse(r.baseline_params),
+    }));
+    res.json({ pending: parse(pending), recent: parse(recent) });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/optimizer/:id/approve', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'invalid id' });
+    const candidate = db.prepare(`SELECT * FROM optimizer_candidates WHERE id = ?`).get(id);
+    if (!candidate) return res.status(404).json({ error: 'candidate not found' });
+    if (candidate.status !== 'pending_review') return res.status(400).json({ error: 'candidate is not pending_review' });
+    const parsedParams = JSON.parse(candidate.params_json);
+    saveParams(db, candidate.instrument, parsedParams);
+    db.prepare(
+      `UPDATE optimizer_candidates SET status='approved', reviewed_at=datetime('now'), review_note=? WHERE id=?`
+    ).run(req.body?.note ?? null, id);
+    console.log(`[api/admin/optimizer] approved candidate id=${id} instrument=${candidate.instrument} strategy=${candidate.strategy_name}`);
+    res.json({ ok: true, instrument: candidate.instrument, strategy_name: candidate.strategy_name });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
+app.post('/api/admin/optimizer/:id/reject', (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!id) return res.status(400).json({ error: 'invalid id' });
+    db.prepare(
+      `UPDATE optimizer_candidates SET status='rejected', reviewed_at=datetime('now'), review_note=? WHERE id=?`
+    ).run(req.body?.note ?? null, id);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // Latest AI forensics analysis — returns Claude's strategy adjustments

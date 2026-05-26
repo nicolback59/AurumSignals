@@ -158,6 +158,46 @@
     .learning-alert-n     { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
     .learning-no-alerts { font-size: 13px; color: var(--green); padding: 16px 0; }
     .learning-no-data   { font-size: 13px; color: var(--text-muted); padding: 16px 0; }
+
+    /* ── Optimizer candidates ───────────────────────────────────────────── */
+    .optimizer-grid { display: flex; flex-direction: column; gap: 12px; }
+    .optimizer-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 16px;
+    }
+    .optimizer-card.pending  { border-color: rgba(251,191,36,.35); }
+    .optimizer-card.approved { border-color: rgba(52,211,153,.25); }
+    .optimizer-card.rejected { opacity: .55; }
+    .optimizer-card-header { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; flex-wrap: wrap; }
+    .optimizer-strategy { font-size: 13px; font-weight: 600; color: var(--text-primary); }
+    .optimizer-instrument { font-size: 11px; color: var(--text-muted); background: var(--bg-elevated); border-radius: 4px; padding: 2px 6px; }
+    .optimizer-created { font-size: 11px; color: var(--text-muted); margin-left: auto; }
+    .optimizer-status-badge { font-size: 10px; font-weight: 600; text-transform: uppercase; letter-spacing: .06em; padding: 2px 7px; border-radius: 4px; }
+    .optimizer-status-badge.pending  { background: rgba(251,191,36,.15); color: var(--yellow); }
+    .optimizer-status-badge.approved { background: rgba(52,211,153,.15); color: var(--green); }
+    .optimizer-status-badge.rejected { background: var(--bg-elevated); color: var(--text-muted); }
+    .optimizer-wr-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 12px; }
+    .optimizer-wr-block { background: var(--bg-elevated); border-radius: 6px; padding: 10px 12px; }
+    .optimizer-wr-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-bottom: 4px; }
+    .optimizer-wr-row { display: flex; align-items: baseline; gap: 6px; }
+    .optimizer-wr-val { font-size: 20px; font-weight: 700; color: var(--text-primary); }
+    .optimizer-wr-base { font-size: 12px; color: var(--text-muted); }
+    .optimizer-wr-delta { font-size: 13px; font-weight: 600; color: var(--green); }
+    .optimizer-wr-delta.neg { color: var(--red); }
+    .optimizer-param-diff { margin-bottom: 12px; }
+    .optimizer-param-diff-title { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--text-muted); margin-bottom: 6px; }
+    .optimizer-param-row { font-size: 12px; font-family: monospace; color: var(--text-secondary); padding: 2px 0; }
+    .optimizer-param-row .param-key { color: var(--text-muted); }
+    .optimizer-param-row .param-old { color: var(--red); text-decoration: line-through; }
+    .optimizer-param-row .param-new { color: var(--green); font-weight: 600; }
+    .optimizer-actions { display: flex; gap: 8px; }
+    .optimizer-approve-btn { background: rgba(52,211,153,.15); border: 1px solid rgba(52,211,153,.3); color: var(--green); border-radius: 6px; padding: 6px 16px; font-size: 12px; cursor: pointer; }
+    .optimizer-approve-btn:hover { background: rgba(52,211,153,.25); }
+    .optimizer-reject-btn  { background: var(--bg-elevated); border: 1px solid var(--border-subtle); color: var(--text-muted); border-radius: 6px; padding: 6px 16px; font-size: 12px; cursor: pointer; }
+    .optimizer-reject-btn:hover { border-color: var(--red); color: var(--red); }
+    .optimizer-none { font-size: 13px; color: var(--text-muted); padding: 16px 0; }
   </style>
 </head>
 <body>
@@ -217,6 +257,15 @@
       <button class="refresh-btn" id="runLearningBtn" onclick="runLearning()" style="margin-left:0;font-size:11px;padding:4px 10px;">Run Now</button>
     </h2>
     <div id="learningGrid">
+      <div class="loading">Loading&hellip;</div>
+    </div>
+
+    <!-- Optimizer candidates -->
+    <h2 style="display:flex;align-items:center;gap:12px;">
+      Optimizer Candidates
+      <button class="refresh-btn" id="runOptimizerBtn" onclick="runOptimizer()" style="margin-left:0;font-size:11px;padding:4px 10px;">Run Now</button>
+    </h2>
+    <div id="optimizerGrid">
       <div class="loading">Loading&hellip;</div>
     </div>
 
@@ -399,14 +448,19 @@
     const healthy      = (data.workers ?? []).filter(w => w.healthy).length;
     const total        = (data.workers ?? []).length;
     const alertCount   = (data.learningAlerts ?? []).length;
+    const pendingOpt   = (data.optimizerPending ?? 0);
     const ts = data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString() : '—';
     const alertHtml = alertCount > 0
       ? `<div class="summary-item"><strong style="color:var(--red)">${alertCount}</strong> Learning Warnings</div>`
+      : '';
+    const optHtml = pendingOpt > 0
+      ? `<div class="summary-item"><strong style="color:var(--yellow)">${pendingOpt}</strong> Optimizer Pending</div>`
       : '';
     document.getElementById('summaryBar').innerHTML = `
       <div class="summary-item"><strong>${data.signalCount24h ?? 0}</strong> Signals 24h</div>
       <div class="summary-item"><strong>${healthy}/${total}</strong> Workers Healthy</div>
       ${alertHtml}
+      ${optHtml}
       <div class="last-refresh">Refreshed ${ts}</div>
       <button class="refresh-btn" onclick="load()">&#8635; Refresh</button>`;
   }
@@ -454,8 +508,155 @@
     }
   }
 
+  function renderOptimizer(data) {
+    const el = document.getElementById('optimizerGrid');
+    const pending = data.pending ?? [];
+    const recent  = data.recent  ?? [];
+
+    if (!pending.length && !recent.length) {
+      el.innerHTML = '<div class="optimizer-none">No candidates yet — optimizer runs daily at 2 PM PT</div>';
+      return;
+    }
+
+    function paramDiffHtml(params, baseline) {
+      const changed = Object.keys(params).filter(k =>
+        baseline[k] !== undefined && params[k] !== baseline[k] &&
+        !['instrument','tradeStyleMode'].includes(k)
+      );
+      if (!changed.length) return '';
+      return `<div class="optimizer-param-diff">
+        <div class="optimizer-param-diff-title">Parameter changes</div>
+        ${changed.map(k => `
+          <div class="optimizer-param-row">
+            <span class="param-key">${escHtml(k)}: </span>
+            <span class="param-old">${escHtml(String(baseline[k]))}</span>
+            &nbsp;→&nbsp;
+            <span class="param-new">${escHtml(String(params[k]))}</span>
+          </div>`).join('')}
+      </div>`;
+    }
+
+    function candidateCard(c, showActions) {
+      const statusCls = c.status === 'pending_review' ? 'pending' : c.status === 'approved' ? 'approved' : 'rejected';
+      const statusLabel = c.status === 'pending_review' ? 'Pending' : c.status === 'approved' ? 'Approved' : 'Rejected';
+      const params   = typeof c.params_json   === 'string' ? JSON.parse(c.params_json)   : c.params_json;
+      const baseline = typeof c.baseline_params === 'string' ? JSON.parse(c.baseline_params) : c.baseline_params;
+      const d30 = c.delta_wr_30d != null ? (c.delta_wr_30d >= 0 ? '+' : '') + c.delta_wr_30d.toFixed(1) + 'pp' : '—';
+      const d90 = c.delta_wr_90d != null ? (c.delta_wr_90d >= 0 ? '+' : '') + c.delta_wr_90d.toFixed(1) + 'pp' : '—';
+      const d30cls = (c.delta_wr_30d ?? 0) < 0 ? 'neg' : '';
+      const d90cls = (c.delta_wr_90d ?? 0) < 0 ? 'neg' : '';
+      const ts = c.created_at ? new Date(c.created_at).toLocaleDateString() : '';
+      const actions = showActions ? `
+        <div class="optimizer-actions">
+          <button class="optimizer-approve-btn" onclick="approveCandidate(${c.id})">&#10003; Approve &amp; Apply</button>
+          <button class="optimizer-reject-btn"  onclick="rejectCandidate(${c.id})">Reject</button>
+        </div>` : `<div style="font-size:11px;color:var(--text-muted)">${c.review_note ? escHtml(c.review_note) : ''}</div>`;
+      return `
+        <div class="optimizer-card ${statusCls}">
+          <div class="optimizer-card-header">
+            <span class="optimizer-strategy">${escHtml(c.strategy_name)}</span>
+            <span class="optimizer-instrument">${escHtml(c.instrument)}</span>
+            <span class="optimizer-status-badge ${statusCls}">${statusLabel}</span>
+            <span class="optimizer-created">${escHtml(ts)}</span>
+          </div>
+          <div class="optimizer-wr-grid">
+            <div class="optimizer-wr-block">
+              <div class="optimizer-wr-label">30-Day Window</div>
+              <div class="optimizer-wr-row">
+                <span class="optimizer-wr-val">${c.bt_wr_30d != null ? c.bt_wr_30d.toFixed(1) + '%' : '—'}</span>
+                <span class="optimizer-wr-base">vs ${c.baseline_wr_30d != null ? c.baseline_wr_30d.toFixed(1) + '%' : '—'} baseline</span>
+                <span class="optimizer-wr-delta ${d30cls}">${d30}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${c.trade_count_30d ?? 0} trades &bull; Sharpe ${c.sharpe_30d != null ? c.sharpe_30d.toFixed(2) : '—'}</div>
+            </div>
+            <div class="optimizer-wr-block">
+              <div class="optimizer-wr-label">90-Day Window</div>
+              <div class="optimizer-wr-row">
+                <span class="optimizer-wr-val">${c.bt_wr_90d != null ? c.bt_wr_90d.toFixed(1) + '%' : '—'}</span>
+                <span class="optimizer-wr-base">vs ${c.baseline_wr_90d != null ? c.baseline_wr_90d.toFixed(1) + '%' : '—'} baseline</span>
+                <span class="optimizer-wr-delta ${d90cls}">${d90}</span>
+              </div>
+              <div style="font-size:11px;color:var(--text-muted);margin-top:4px">${c.trade_count_90d ?? 0} trades &bull; Sharpe ${c.sharpe_90d != null ? c.sharpe_90d.toFixed(2) : '—'}</div>
+            </div>
+          </div>
+          ${paramDiffHtml(params, baseline)}
+          ${actions}
+        </div>`;
+    }
+
+    let html = '<div class="optimizer-grid">';
+    if (pending.length) {
+      html += pending.map(c => candidateCard(c, true)).join('');
+    } else {
+      html += '<div class="optimizer-none">No pending candidates — optimizer runs daily at 2 PM PT</div>';
+    }
+    if (recent.length) {
+      html += `<div style="font-size:11px;color:var(--text-muted);margin-top:8px;text-transform:uppercase;letter-spacing:.08em">Recently reviewed</div>`;
+      html += recent.map(c => candidateCard(c, false)).join('');
+    }
+    html += '</div>';
+    el.innerHTML = html;
+  }
+
+  async function loadOptimizer() {
+    try {
+      const r = await fetch('/api/admin/optimizer');
+      if (!r.ok) return;
+      const data = await r.json();
+      renderOptimizer(data);
+      const pendingCount = (data.pending ?? []).length;
+      if (pendingCount > 0) {
+        const el = document.getElementById('summaryBar');
+        if (el && !el.innerHTML.includes('Optimizer Pending')) {
+          el.innerHTML = el.innerHTML.replace(
+            '<div class="last-refresh">',
+            `<div class="summary-item"><strong style="color:var(--yellow)">${pendingCount}</strong> Optimizer Pending</div><div class="last-refresh">`
+          );
+        }
+      }
+    } catch (_) {}
+  }
+
+  async function approveCandidate(id) {
+    if (!confirm('Apply these parameters to the live strategy? This cannot be undone automatically.')) return;
+    try {
+      const r = await fetch(`/api/admin/optimizer/${id}/approve`, { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) { loadOptimizer(); } else { alert('Approve failed: ' + (d.error ?? 'unknown error')); }
+    } catch (err) { alert('Approve failed: ' + err.message); }
+  }
+
+  async function rejectCandidate(id) {
+    try {
+      const r = await fetch(`/api/admin/optimizer/${id}/reject`, { method: 'POST' });
+      if ((await r.json()).ok) loadOptimizer();
+    } catch (_) {}
+  }
+
+  async function runOptimizer() {
+    const btn = document.getElementById('runOptimizerBtn');
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    try {
+      const r = await fetch('/api/admin/run-optimizer', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        btn.textContent = 'Started — refreshing in 35s';
+        setTimeout(() => { loadOptimizer(); btn.disabled = false; btn.textContent = 'Run Now'; }, 35000);
+      } else {
+        btn.textContent = 'Error';
+        setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; }, 3000);
+      }
+    } catch (_) {
+      btn.textContent = 'Error';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; }, 3000);
+    }
+  }
+
   load();
+  loadOptimizer();
   setInterval(load, 60000);
+  setInterval(loadOptimizer, 60000);
   </script>
 </body>
 </html>

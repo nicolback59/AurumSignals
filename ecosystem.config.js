@@ -148,14 +148,24 @@ module.exports = {
     //   env_production: { NODE_ENV: 'production' },
     // },
 
-    // {
-    //   name:         'optimizer',
-    //   script:       'workers/optimizer-worker.js',
-    //   cron_restart: '0 2 * * 2-5',   // Tue–Fri 2 AM only — never during market hours
-    //   autorestart:  false,
-    //   max_memory_restart: '300M',
-    //   env_production: { NODE_ENV: 'production' },
-    // },
+    {
+      name:         'optimizer',
+      script:       'workers/optimizer-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 14 * * 0-5',
+      autorestart:  false,
+      max_memory_restart: '300M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/optimizer-error.log',
+      out_file:        '/root/AurumSignals/logs/optimizer-out.log',
+      merge_logs:      true,
+    },
 
     // {
     //   name:         'report-worker',
