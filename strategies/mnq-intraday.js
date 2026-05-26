@@ -191,6 +191,11 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
       }
     }
 
+    // ── Price proximity check — entry must not be too extended from EMA21 ───────
+    // Avoids chasing entries that are already far off the mean
+    const ema21Dist = Math.abs(last.close - ema21);
+    if (ema21Dist > 1.5 * atr) continue;
+
     // ── Stop-loss ────────────────────────────────────────────────────────────
     const swLow  = recentSwingLow(bars, 10);
     const swHigh = recentSwingHigh(bars, 10);
@@ -205,8 +210,8 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
       rawRisk = sl - entry;
     }
 
-    // Risk must be at least half of ATR_MIN_PTS and not enormous
-    if (rawRisk < ATR_MIN_PTS * 0.5 || rawRisk > 5 * atr) continue;
+    // Risk must be at least half of ATR_MIN_PTS and not overwide (cap at 2x ATR to protect expectancy)
+    if (rawRisk < ATR_MIN_PTS * 0.5 || rawRisk > 2 * atr) continue;
 
     // ── Take-profit levels ───────────────────────────────────────────────────
     const tp1 = isBull ? entry + 1.5 * rawRisk : entry - 1.5 * rawRisk;

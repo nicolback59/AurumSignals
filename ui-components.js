@@ -122,7 +122,7 @@ function fmtExpiryReason(reason) {
 
 // ── Hard expiry rule (mirrors trades.html getTradeExpiry) ─────────────────
 const _NO_OVERNIGHT_UI = new Set(['MGC_SCALP', 'MNQ_INTRADAY']);
-const _MAX_HOLD_MIN_UI = { MGC_SCALP: 60, MNQ_INTRADAY: 240 };
+const _MAX_HOLD_MIN_UI = { MGC_SCALP: 23 * 60, MNQ_INTRADAY: 23 * 60 };
 
 function _toPtUI(d) {
   return new Date((d instanceof Date ? d : new Date(
