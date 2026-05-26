@@ -120,14 +120,24 @@ module.exports = {
       merge_logs:      true,
     },
 
-    // {
-    //   name:         'learning-agent',
-    //   script:       'workers/learning-agent.js',
-    //   cron_restart: '0 */6 * * *',
-    //   autorestart:  false,
-    //   max_memory_restart: '200M',
-    //   env_production: { NODE_ENV: 'production' },
-    // },
+    {
+      name:         'learning-agent',
+      script:       'workers/learning-agent.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */6 * * *',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/learning-agent-error.log',
+      out_file:        '/root/AurumSignals/logs/learning-agent-out.log',
+      merge_logs:      true,
+    },
 
     // {
     //   name:         'loss-forensics',

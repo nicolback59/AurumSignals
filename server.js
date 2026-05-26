@@ -6,6 +6,7 @@ const Database = require('better-sqlite3');
 const crypto   = require('crypto');
 const path     = require('path');
 const fs       = require('fs');
+const { spawn } = require('child_process');
 const { getLearningStats, detectEdgeDegradation, loadAdaptiveOverrides, saveAdaptiveOverrides } = require('./learning');
 const { getParams }        = require('./strategy-params');
 const { Scanner }          = require('./scanner-core');
@@ -506,6 +507,26 @@ db.exec(`
     bars_5m     TEXT,
     updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
   );
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS learning_runs (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    ran_at          TEXT NOT NULL DEFAULT (datetime('now')),
+    strategy_name   TEXT NOT NULL,
+    dimension       TEXT NOT NULL,
+    dimension_value TEXT NOT NULL,
+    sample_size     INTEGER NOT NULL DEFAULT 0,
+    win_count       INTEGER NOT NULL DEFAULT 0,
+    loss_count      INTEGER NOT NULL DEFAULT 0,
+    win_rate        REAL,
+    baseline_wr     REAL,
+    delta_pp        REAL,
+    flagged         INTEGER NOT NULL DEFAULT 0,
+    flag_severity   TEXT,
+    flag_reason     TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_learning_ran_at ON learning_runs(ran_at DESC);
 `);
 
 thresholdManager.init(db);
@@ -1019,11 +1040,55 @@ app.get('/api/admin/dashboard', (req, res) => {
       `SELECT COUNT(*) n FROM signals WHERE received_at >= datetime('now','-1 day') AND strategy_name IN ('MNQ_INTRADAY','MGC_SCALP')`
     ).get().n;
 
-    res.json({ workers, regimes, clusters, stratMetrics, signalCount24h, generatedAt: new Date().toISOString() });
+    let learningAlerts = [];
+    try {
+      const latestRun = db.prepare(`SELECT MAX(ran_at) AS ran_at FROM learning_runs`).get()?.ran_at;
+      if (latestRun) {
+        learningAlerts = db.prepare(`
+          SELECT strategy_name, dimension, dimension_value, sample_size, win_rate, baseline_wr, delta_pp, flag_severity, flag_reason, ran_at
+          FROM   learning_runs
+          WHERE  flagged = 1 AND ran_at = ?
+          ORDER  BY delta_pp ASC
+        `).all(latestRun);
+      }
+    } catch (_) { learningAlerts = []; }
+
+    let learningBaselines = {};
+    try {
+      const latestRun = db.prepare(`SELECT MAX(ran_at) AS ran_at FROM learning_runs`).get()?.ran_at;
+      if (latestRun) {
+        const rows = db.prepare(`
+          SELECT strategy_name, sample_size, win_rate, ran_at
+          FROM   learning_runs
+          WHERE  dimension = 'overall' AND ran_at = ?
+        `).all(latestRun);
+        for (const row of rows) {
+          learningBaselines[row.strategy_name] = row;
+        }
+      }
+    } catch (_) { learningBaselines = {}; }
+
+    res.json({ workers, regimes, clusters, stratMetrics, signalCount24h, learningAlerts, learningBaselines, generatedAt: new Date().toISOString() });
   } catch (err) {
     console.error('[api/admin/dashboard]', err.message);
     res.status(500).json({ error: err.message });
   }
+});
+
+// Manually trigger the learning agent (runs as a child process, returns immediately)
+app.post('/api/admin/run-learning', (req, res) => {
+  const scriptPath = path.join(__dirname, 'workers', 'learning-agent.js');
+  if (!fs.existsSync(scriptPath)) {
+    return res.status(404).json({ error: 'learning-agent.js not found' });
+  }
+  const child = spawn(process.execPath, [scriptPath], {
+    detached: true,
+    stdio:    'ignore',
+    env:      { ...process.env },
+  });
+  child.unref();
+  console.log(`[api/admin/run-learning] spawned learning-agent pid=${child.pid}`);
+  res.json({ ok: true, pid: child.pid, message: 'Learning agent started — results available in ~30s' });
 });
 
 // Latest AI forensics analysis — returns Claude's strategy adjustments

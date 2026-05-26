@@ -122,6 +122,42 @@
 
     .loading { color: var(--text-muted); font-size: 13px; padding: 40px 0; text-align: center; }
     .err-msg { color: var(--red); font-size: 13px; padding: 20px 0; }
+
+    /* ── Learning insights ──────────────────────────────────────────────── */
+    .learning-baselines { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; margin-bottom: 16px; }
+    .learning-baseline-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 14px 16px;
+    }
+    .learning-baseline-strat { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: 6px; }
+    .learning-baseline-wr { font-size: 28px; font-weight: 700; letter-spacing: -.02em; color: var(--yellow); }
+    .learning-baseline-sub { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    .learning-alerts { display: flex; flex-direction: column; gap: 8px; }
+    .learning-alert-card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 12px 16px;
+      display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
+    }
+    .learning-alert-card.critical { border-color: rgba(239,68,68,.35); }
+    .learning-alert-card.warning  { border-color: rgba(251,191,36,.35); }
+    .learning-severity-badge {
+      font-size: 10px; font-weight: 700; letter-spacing: .08em;
+      padding: 2px 8px; border-radius: 4px; white-space: nowrap;
+    }
+    .learning-severity-badge.CRITICAL { background: rgba(239,68,68,.18); color: var(--red); }
+    .learning-severity-badge.WARNING  { background: rgba(251,191,36,.15); color: var(--yellow); }
+    .learning-alert-strat { font-size: 12px; font-weight: 600; color: var(--text-primary); min-width: 110px; }
+    .learning-alert-dim   { font-size: 12px; color: var(--text-secondary); }
+    .learning-alert-wr    { font-size: 14px; font-weight: 700; color: var(--red); margin-left: auto; }
+    .learning-alert-delta { font-size: 11px; color: var(--text-muted); }
+    .learning-alert-n     { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+    .learning-no-alerts { font-size: 13px; color: var(--green); padding: 16px 0; }
+    .learning-no-data   { font-size: 13px; color: var(--text-muted); padding: 16px 0; }
   </style>
 </head>
 <body>
@@ -172,6 +208,15 @@
     <!-- Loss clusters -->
     <h2>Loss Cluster Warnings</h2>
     <div class="cluster-grid" id="clusterGrid">
+      <div class="loading">Loading&hellip;</div>
+    </div>
+
+    <!-- Learning insights -->
+    <h2 style="display:flex;align-items:center;gap:12px;">
+      Learning Insights
+      <button class="refresh-btn" id="runLearningBtn" onclick="runLearning()" style="margin-left:0;font-size:11px;padding:4px 10px;">Run Now</button>
+    </h2>
+    <div id="learningGrid">
       <div class="loading">Loading&hellip;</div>
     </div>
 
@@ -298,13 +343,70 @@
     el.innerHTML = html;
   }
 
+  function renderLearning(alerts, baselines) {
+    const el = document.getElementById('learningGrid');
+    const hasBaselines = baselines && Object.keys(baselines).length > 0;
+    const hasAlerts    = Array.isArray(alerts) && alerts.length > 0;
+
+    if (!hasBaselines && !hasAlerts) {
+      el.innerHTML = '<div class="learning-no-data">Learning agent hasn\'t run yet — will analyze after first 6h cycle</div>';
+      return;
+    }
+
+    let html = '';
+
+    if (hasBaselines) {
+      html += '<div class="learning-baselines">';
+      for (const [strat, row] of Object.entries(baselines)) {
+        const wr  = row.win_rate != null ? (row.win_rate).toFixed(1) + '%' : '—';
+        const ts  = row.ran_at   ? new Date(row.ran_at).toLocaleString() : '—';
+        html += `
+          <div class="learning-baseline-card">
+            <div class="learning-baseline-strat">${escHtml(strat.replace('_', ' '))}</div>
+            <div class="learning-baseline-wr">${escHtml(wr)}</div>
+            <div class="learning-baseline-sub">${escHtml(row.sample_size ?? 0)} trades &bull; ${escHtml(ts)}</div>
+          </div>`;
+      }
+      html += '</div>';
+    }
+
+    html += '<div class="learning-alerts">';
+    if (!hasAlerts) {
+      html += '<div class="learning-no-alerts">&#10003; No degradation warnings</div>';
+    } else {
+      for (const a of alerts) {
+        const sev    = a.flag_severity ?? '';
+        const sevCls = sev === 'CRITICAL' ? 'critical' : 'warning';
+        const wr     = a.win_rate  != null ? (a.win_rate).toFixed(1)  + '%' : '—';
+        const delta  = a.delta_pp  != null ? (a.delta_pp >= 0 ? '+' : '') + a.delta_pp.toFixed(1) + 'pp' : '—';
+        html += `
+          <div class="learning-alert-card ${escHtml(sevCls)}">
+            <span class="learning-severity-badge ${escHtml(sev)}">${escHtml(sev)}</span>
+            <div class="learning-alert-strat">${escHtml(a.strategy_name)}</div>
+            <div class="learning-alert-dim">${escHtml(a.dimension)} = ${escHtml(a.dimension_value)}</div>
+            <div class="learning-alert-wr">${escHtml(wr)}</div>
+            <div class="learning-alert-delta">${escHtml(delta)} vs baseline</div>
+            <div class="learning-alert-n">n=${escHtml(String(a.sample_size ?? 0))}</div>
+          </div>`;
+      }
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
+  }
+
   function renderSummary(data) {
-    const healthy = (data.workers ?? []).filter(w => w.healthy).length;
-    const total   = (data.workers ?? []).length;
+    const healthy      = (data.workers ?? []).filter(w => w.healthy).length;
+    const total        = (data.workers ?? []).length;
+    const alertCount   = (data.learningAlerts ?? []).length;
     const ts = data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString() : '—';
+    const alertHtml = alertCount > 0
+      ? `<div class="summary-item"><strong style="color:var(--red)">${alertCount}</strong> Learning Warnings</div>`
+      : '';
     document.getElementById('summaryBar').innerHTML = `
       <div class="summary-item"><strong>${data.signalCount24h ?? 0}</strong> Signals 24h</div>
       <div class="summary-item"><strong>${healthy}/${total}</strong> Workers Healthy</div>
+      ${alertHtml}
       <div class="last-refresh">Refreshed ${ts}</div>
       <button class="refresh-btn" onclick="load()">&#8635; Refresh</button>`;
   }
@@ -324,6 +426,7 @@
       renderRegimeGrid(data.regimes ?? {});
       renderMetrics(data.stratMetrics ?? {});
       renderClusters(data.clusters ?? {});
+      renderLearning(data.learningAlerts ?? [], data.learningBaselines ?? {});
     } catch (err) {
       document.getElementById('summaryBar').innerHTML =
         `<div class="err-msg">Failed to load dashboard: ${escHtml(err.message)}</div>
@@ -331,8 +434,27 @@
     }
   }
 
+  async function runLearning() {
+    const btn = document.getElementById('runLearningBtn');
+    btn.disabled = true;
+    btn.textContent = 'Running…';
+    try {
+      const r = await fetch('/api/admin/run-learning', { method: 'POST' });
+      const d = await r.json();
+      if (d.ok) {
+        btn.textContent = 'Started — refreshing in 35s';
+        setTimeout(() => { load(); btn.disabled = false; btn.textContent = 'Run Now'; }, 35000);
+      } else {
+        btn.textContent = 'Error';
+        setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; }, 3000);
+      }
+    } catch (_) {
+      btn.textContent = 'Error';
+      setTimeout(() => { btn.disabled = false; btn.textContent = 'Run Now'; }, 3000);
+    }
+  }
+
   load();
-  // Auto-refresh every 60s
   setInterval(load, 60000);
   </script>
 </body>
