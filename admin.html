@@ -340,13 +340,70 @@
     el.innerHTML = html;
   }
 
+  function renderLearning(alerts, baselines) {
+    const el = document.getElementById('learningGrid');
+    const hasBaselines = baselines && Object.keys(baselines).length > 0;
+    const hasAlerts    = Array.isArray(alerts) && alerts.length > 0;
+
+    if (!hasBaselines && !hasAlerts) {
+      el.innerHTML = '<div class="learning-no-data">Learning agent hasn\'t run yet — will analyze after first 6h cycle</div>';
+      return;
+    }
+
+    let html = '';
+
+    if (hasBaselines) {
+      html += '<div class="learning-baselines">';
+      for (const [strat, row] of Object.entries(baselines)) {
+        const wr  = row.win_rate != null ? (row.win_rate).toFixed(1) + '%' : '—';
+        const ts  = row.ran_at   ? new Date(row.ran_at).toLocaleString() : '—';
+        html += `
+          <div class="learning-baseline-card">
+            <div class="learning-baseline-strat">${escHtml(strat.replace('_', ' '))}</div>
+            <div class="learning-baseline-wr">${escHtml(wr)}</div>
+            <div class="learning-baseline-sub">${escHtml(row.sample_size ?? 0)} trades &bull; ${escHtml(ts)}</div>
+          </div>`;
+      }
+      html += '</div>';
+    }
+
+    html += '<div class="learning-alerts">';
+    if (!hasAlerts) {
+      html += '<div class="learning-no-alerts">&#10003; No degradation warnings</div>';
+    } else {
+      for (const a of alerts) {
+        const sev    = a.flag_severity ?? '';
+        const sevCls = sev === 'CRITICAL' ? 'critical' : 'warning';
+        const wr     = a.win_rate  != null ? (a.win_rate).toFixed(1)  + '%' : '—';
+        const delta  = a.delta_pp  != null ? (a.delta_pp >= 0 ? '+' : '') + a.delta_pp.toFixed(1) + 'pp' : '—';
+        html += `
+          <div class="learning-alert-card ${escHtml(sevCls)}">
+            <span class="learning-severity-badge ${escHtml(sev)}">${escHtml(sev)}</span>
+            <div class="learning-alert-strat">${escHtml(a.strategy_name)}</div>
+            <div class="learning-alert-dim">${escHtml(a.dimension)} = ${escHtml(a.dimension_value)}</div>
+            <div class="learning-alert-wr">${escHtml(wr)}</div>
+            <div class="learning-alert-delta">${escHtml(delta)} vs baseline</div>
+            <div class="learning-alert-n">n=${escHtml(String(a.sample_size ?? 0))}</div>
+          </div>`;
+      }
+    }
+    html += '</div>';
+
+    el.innerHTML = html;
+  }
+
   function renderSummary(data) {
-    const healthy = (data.workers ?? []).filter(w => w.healthy).length;
-    const total   = (data.workers ?? []).length;
+    const healthy      = (data.workers ?? []).filter(w => w.healthy).length;
+    const total        = (data.workers ?? []).length;
+    const alertCount   = (data.learningAlerts ?? []).length;
     const ts = data.generatedAt ? new Date(data.generatedAt).toLocaleTimeString() : '—';
+    const alertHtml = alertCount > 0
+      ? `<div class="summary-item"><strong style="color:var(--red)">${alertCount}</strong> Learning Warnings</div>`
+      : '';
     document.getElementById('summaryBar').innerHTML = `
       <div class="summary-item"><strong>${data.signalCount24h ?? 0}</strong> Signals 24h</div>
       <div class="summary-item"><strong>${healthy}/${total}</strong> Workers Healthy</div>
+      ${alertHtml}
       <div class="last-refresh">Refreshed ${ts}</div>
       <button class="refresh-btn" onclick="load()">&#8635; Refresh</button>`;
   }
@@ -366,6 +423,7 @@
       renderRegimeGrid(data.regimes ?? {});
       renderMetrics(data.stratMetrics ?? {});
       renderClusters(data.clusters ?? {});
+      renderLearning(data.learningAlerts ?? [], data.learningBaselines ?? {});
     } catch (err) {
       document.getElementById('summaryBar').innerHTML =
         `<div class="err-msg">Failed to load dashboard: ${escHtml(err.message)}</div>
