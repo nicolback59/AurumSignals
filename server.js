@@ -127,8 +127,15 @@ function applyMigrations() {
       updated_at     TEXT    NOT NULL DEFAULT (datetime('now'))
     )
   `);
+  // Add locked column if missing (idempotent — ALTER TABLE IF NOT EXISTS not supported in SQLite)
+  {
+    const ssCols = db.prepare("PRAGMA table_info(strategy_status)").all().map(r => r.name);
+    if (!ssCols.includes('locked')) {
+      db.exec("ALTER TABLE strategy_status ADD COLUMN locked INTEGER NOT NULL DEFAULT 0");
+      console.log('[migration] Added locked column to strategy_status');
+    }
+  }
   // Seed defaults — use INSERT OR IGNORE for research-only (preserve manual overrides)
-  // but INSERT OR REPLACE for live strategies to prevent silent disabling.
   for (const [name, mode] of Object.entries({
     MNQ_SWING:    'RESEARCH_ONLY',
     MNQ_50PT:     'RESEARCH_ONLY',
@@ -136,9 +143,14 @@ function applyMigrations() {
   })) {
     db.prepare('INSERT OR IGNORE INTO strategy_status (strategy_name, mode) VALUES (?, ?)').run(name, mode);
   }
-  // Live strategies: always enforce on startup — prevents accidental silent disabling
+  // Live strategies: auto-restore to LIVE_ENABLED on startup UNLESS locked=1 (intentionally disabled).
+  // Set locked=1 via the /api/strategies endpoint or direct DB update to prevent auto-restore.
   for (const name of ['MGC_SCALP', 'MNQ_INTRADAY']) {
-    const existing = db.prepare('SELECT mode FROM strategy_status WHERE strategy_name = ?').get(name);
+    const existing = db.prepare('SELECT mode, locked FROM strategy_status WHERE strategy_name = ?').get(name);
+    if (existing?.locked) {
+      console.log(`[migration] ${name} is locked — preserving mode=${existing.mode} (set locked=0 to re-enable auto-restore)`);
+      continue;
+    }
     if (existing && existing.mode === 'RESEARCH_ONLY') {
       console.log(`[migration] CRITICAL_STRATEGY_DISABLED_DETECTED: ${name} was RESEARCH_ONLY — auto-restoring to LIVE_ENABLED`);
     }
@@ -267,14 +279,19 @@ function applyMigrations() {
       console.log('[migration] Added mode to backtest_runs');
     }
   }
-  // Re-check for dedup (variable already declared above, reuse hasBtRuns)
+  // Add dedup index to speed up GROUP BY subquery (idempotent)
   if (hasBtRuns) {
-    const hasCascadeDelete = db.prepare(`
-      SELECT 1 FROM sqlite_master
-      WHERE type='trigger' AND name='_dedup_cascade_bt_trades'
-    `).get();
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_bt_runs_dedup ON backtest_runs(instrument, win_rate, trades_found)`);
+  }
+}
 
-    // Only run dedup once at startup (idempotent — safe to re-run but slow on large DBs)
+// Backtest dedup runs asynchronously after startup to avoid blocking boot.
+// The GROUP BY subquery is O(n log n) with the index above; still deferred so
+// a large DB doesn't slow first scan start.
+function _deferredBtDedup() {
+  try {
+    const hasBtRuns = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_runs'").get();
+    if (!hasBtRuns) return;
     const dupCount = db.prepare(`
       SELECT COUNT(*) AS n FROM backtest_runs
       WHERE id NOT IN (
@@ -282,36 +299,37 @@ function applyMigrations() {
         GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
       )
     `).get()?.n ?? 0;
-
-    if (dupCount > 0) {
-      console.log(`[migration] Removing ${dupCount} duplicate backtest_runs rows...`);
-      // Remove orphaned trades first (no FK cascade in SQLite unless PRAGMA foreign_keys=ON)
-      db.exec(`
-        DELETE FROM backtest_trades
-        WHERE run_id NOT IN (
-          SELECT MAX(id) FROM backtest_runs
-          GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
-        )
-      `);
-      db.exec(`
-        DELETE FROM backtest_details
-        WHERE run_id NOT IN (
-          SELECT MAX(id) FROM backtest_runs
-          GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
-        )
-      `);
-      db.exec(`
-        DELETE FROM backtest_runs
-        WHERE id NOT IN (
-          SELECT MAX(id) FROM backtest_runs
-          GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
-        )
-      `);
-      console.log('[migration] Duplicate backtest_runs cleanup complete');
-    }
+    if (dupCount === 0) return;
+    console.log(`[dedup] Removing ${dupCount} duplicate backtest_runs rows...`);
+    db.exec(`
+      DELETE FROM backtest_trades
+      WHERE run_id NOT IN (
+        SELECT MAX(id) FROM backtest_runs
+        GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
+      )
+    `);
+    db.exec(`
+      DELETE FROM backtest_details
+      WHERE run_id NOT IN (
+        SELECT MAX(id) FROM backtest_runs
+        GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
+      )
+    `);
+    db.exec(`
+      DELETE FROM backtest_runs
+      WHERE id NOT IN (
+        SELECT MAX(id) FROM backtest_runs
+        GROUP BY instrument, ROUND(COALESCE(win_rate,0), 3), COALESCE(trades_found,0)
+      )
+    `);
+    console.log('[dedup] Duplicate backtest_runs cleanup complete');
+  } catch (err) {
+    console.error('[dedup] backtest dedup error:', err.message);
   }
 }
 applyMigrations();
+// Dedup runs 5s after startup so the scanner starts immediately
+setTimeout(_deferredBtDedup, 5000);
 
 // ── One-time startup cleanup: expire all stale open trades ────────────────────
 // Runs synchronously every time the server starts — before the scanner begins.
@@ -628,7 +646,7 @@ app.get('/api/status', (req, res) => {
     } else {
       marketMode = 'RESEARCH';
     }
-  } catch { /* never crash status */ }
+  } catch (_err) { /* never crash status */ }
 
   // Data freshness from scanner bar cache
   let lastDataTimestamp = null; let dataAgeMinutes = null;
@@ -640,7 +658,7 @@ app.get('/api/status', (req, res) => {
         ? Math.round((Date.now() - new Date(lastDataTimestamp).getTime()) / 60000)
         : null;
     }
-  } catch { /* ignore */ }
+  } catch (_err) { /* ignore */ }
 
   res.json({
     scannerRunning:    !!(scanner?._running),
@@ -949,9 +967,9 @@ app.get('/api/backtest/details', (req, res) => {
 
   const result = { ...detail };
   // Parse existing JSON columns
-  try { result.by_regime   = JSON.parse(detail.regime_breakdown ?? '{}'); } catch { result.by_regime = {}; }
-  try { result.by_setup    = JSON.parse(detail.setup_breakdown  ?? '{}'); } catch { result.by_setup = {}; }
-  try { result.by_style    = JSON.parse(detail.style_breakdown  ?? '{}'); } catch { result.by_style = {}; }
+  try { result.by_regime   = JSON.parse(detail.regime_breakdown ?? '{}'); } catch (_err) { result.by_regime = {}; }
+  try { result.by_setup    = JSON.parse(detail.setup_breakdown  ?? '{}'); } catch (_err) { result.by_setup = {}; }
+  try { result.by_style    = JSON.parse(detail.style_breakdown  ?? '{}'); } catch (_err) { result.by_style = {}; }
 
   // Build per-strategy breakdown from actual trade records (accurate, not cached JSON)
   try {
@@ -992,7 +1010,7 @@ app.get('/api/backtest/details', (req, res) => {
           r.gross_loss > 0 ? +(r.gross_win / r.gross_loss).toFixed(2) : null;
       }
     }
-  } catch { result.by_strategy = {}; }
+  } catch (_err) { result.by_strategy = {}; }
 
   res.json(result);
 });
@@ -1303,7 +1321,7 @@ const _stmtHealthPing  = db.prepare('SELECT 1 n');
 const _stmtSigCount    = db.prepare('SELECT COUNT(*) n FROM signals');
 const _stmtOutCount    = db.prepare('SELECT COUNT(*) n FROM outcomes');
 let   _stmtJrnCount    = null;
-try { _stmtJrnCount = db.prepare('SELECT COUNT(*) n FROM journal_entries'); } catch { /* table may not exist */ }
+try { _stmtJrnCount = db.prepare('SELECT COUNT(*) n FROM journal_entries'); } catch (_err) { /* table may not exist */ }
 
 app.get('/api/health', (req, res) => {
   try {
@@ -1631,7 +1649,7 @@ app.get('/api/journal/entries', (req, res) => {
       'SELECT * FROM journal_entries ORDER BY created_at DESC LIMIT ?'
     ).all(limit);
     res.json(rows);
-  } catch { res.json([]); }
+  } catch (_err) { res.json([]); }
 });
 
 app.post('/api/journal/entries', (req, res) => {
@@ -1804,7 +1822,7 @@ app.get('/api/scanner/stream', (req, res) => {
   res.write('event: connected\ndata: {"connected":true}\n\n');
 
   // Keep-alive ping every 25 s (prevents proxy/load-balancer timeouts)
-  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch { cleanup(); } }, 25_000);
+  const ping = setInterval(() => { try { res.write(': ping\n\n'); } catch (_err) { cleanup(); } }, 25_000);
 
   function cleanup() {
     clearInterval(ping);
@@ -1819,7 +1837,7 @@ function _broadcastSSE(event, data) {
   if (!_sseClients.size) return;
   const payload = `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`;
   for (const client of _sseClients) {
-    try { client.write(payload); } catch { _sseClients.delete(client); }
+    try { client.write(payload); } catch (_err) { _sseClients.delete(client); }
   }
 }
 
@@ -1927,7 +1945,7 @@ app.get('/api/reports/:reportId', (req, res) => {
     if (!row) return res.status(404).json({ error: 'Report not found' });
     const report = { ...row };
     for (const f of ['metrics_json', 'strategy_json', 'backtest_json', 'recommendations_json', 'version_changes', 'failure_analysis']) {
-      if (report[f]) try { report[f.replace('_json', '')] = JSON.parse(report[f]); } catch {}
+      if (report[f]) try { report[f.replace('_json', '')] = JSON.parse(report[f]); } catch (_err) {}
     }
     res.json(report);
   } catch (err) { res.status(500).json({ error: err.message }); }
@@ -2067,7 +2085,7 @@ function parseCookies(header) {
   (header || '').split(';').forEach(c => {
     const eq = c.indexOf('=');
     if (eq < 0) return;
-    try { out[c.slice(0, eq).trim()] = decodeURIComponent(c.slice(eq + 1).trim()); } catch {}
+    try { out[c.slice(0, eq).trim()] = decodeURIComponent(c.slice(eq + 1).trim()); } catch (_err) {}
   });
   return out;
 }
@@ -2087,14 +2105,14 @@ async function verifyPassword(pw, stored) {
     const derived = await new Promise((res, rej) =>
       crypto.scrypt(pw, salt, 64, (e, k) => e ? rej(e) : res(k.toString('hex'))));
     return crypto.timingSafeEqual(Buffer.from(derived, 'hex'), Buffer.from(hash, 'hex'));
-  } catch { return false; }
+  } catch (_err) { return false; }
 }
 
 function createSession(userId) {
   const id = crypto.randomBytes(32).toString('hex');
   const exp = Date.now() + SESSION_TTL_MS;
   db.prepare('INSERT INTO user_sessions (id, user_id, expires_at) VALUES (?, ?, ?)').run(id, userId, exp);
-  try { db.prepare('DELETE FROM user_sessions WHERE expires_at <= ?').run(Date.now()); } catch {}
+  try { db.prepare('DELETE FROM user_sessions WHERE expires_at <= ?').run(Date.now()); } catch (_err) {}
   return { id, expiresAt: exp };
 }
 
@@ -2115,7 +2133,7 @@ function getSessionUser(req) {
       isPro:   (row.plan === 'pro'   || row.plan === 'elite') && subOk,
       isElite: (row.plan === 'elite') && subOk,
     };
-  } catch { return null; }
+  } catch (_err) { return null; }
 }
 
 function setSessionCookie(res, id, expiresAt) {
@@ -2185,7 +2203,7 @@ app.post('/api/auth/login', async (req, res) => {
 
 app.post('/api/auth/logout', (req, res) => {
   const sid = parseCookies(req.headers.cookie)[SESSION_COOKIE];
-  if (sid) try { db.prepare('DELETE FROM user_sessions WHERE id = ?').run(sid); } catch {}
+  if (sid) try { db.prepare('DELETE FROM user_sessions WHERE id = ?').run(sid); } catch (_err) {}
   clearSessionCookie(res);
   res.json({ ok: true });
 });
@@ -2278,7 +2296,7 @@ const APP_URL          = (process.env.APP_URL || `http://localhost:${PORT}`).rep
 let stripe = null;
 if (STRIPE_SECRET) {
   try { stripe = require('stripe')(STRIPE_SECRET); console.log('[stripe] Billing initialized'); }
-  catch { console.warn('[stripe] stripe package missing — run npm install'); }
+  catch (_err) { console.warn('[stripe] stripe package missing — run npm install'); }
 } else { console.warn('[stripe] STRIPE_SECRET_KEY not set — billing disabled'); }
 
 app.post('/api/stripe/checkout', async (req, res) => {
