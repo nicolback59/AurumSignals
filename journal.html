@@ -735,15 +735,12 @@ function renderWeeklyFeed(weekStart) {
   const d = new Date(weekStart + 'T12:00:00Z');
   const weekLabel = 'Week of ' + d.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric', timeZone: 'UTC' });
 
-  const stratOrder = ['MNQ_INTRADAY','MNQ_SWING','MNQ_50PT','MGC_SCALP','MGC_INTRADAY'];
+  const stratOrder = ['MNQ_INTRADAY', 'MGC_SCALP'];
   const sorted = [...rows].sort((a, b) => stratOrder.indexOf(a.strategy_key) - stratOrder.indexOf(b.strategy_key));
 
   const stratColors = {
     MNQ_INTRADAY: 'var(--teal)',
-    MNQ_SWING:    'var(--blue)',
-    MNQ_50PT:     'var(--purple)',
     MGC_SCALP:    'var(--orange)',
-    MGC_INTRADAY: 'var(--yellow)',
   };
 
   let html = `<div style="font-size:15px;font-weight:700;color:var(--text-primary);margin-bottom:4px;">${escH(weekLabel)}</div>`;

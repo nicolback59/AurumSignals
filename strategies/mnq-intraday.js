@@ -26,7 +26,7 @@ const {
 
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '2.5';
+const STRATEGY_VERSION = '2.6';
 
 // Minimum ATR in MNQ points for intraday to be worth trading
 const ATR_MIN_PTS = 8;  // restored from 5 — low-ATR sessions have weak follow-through
@@ -90,7 +90,7 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
 
   const sess = getSessionInfo(last.timestamp);
   // Skip low-quality sessions (pre-market, overnight, thin midday)
-  if (sess.quality < 0.35) return null;
+  if (sess.quality < 0.45) return null;
 
   // ── HTF bias ──────────────────────────────────────────────────────────────────
   const htfBias   = calcHtfBias(htfBars, 9, 21);
@@ -98,13 +98,12 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
   const htf4hBias = htf4hBars && htf4hBars.length >= 5  ? calcHtfBias(htf4hBars, 9, 21) : 0;
 
   // ── Determine direction candidates ───────────────────────────────────────────
-  // Require 5m EMA stack + both HTFs not conflicting (neutral is allowed).
-  // Hard-blocking when both HTFs agree against direction had ~30% WR; we keep
-  // that block (see HTF conflict check below) but no longer require positive HTF
-  // agreement, which was cutting too many valid neutral-HTF setups.
+  // All three HTF layers must be non-conflicting (neutral = 0 is allowed).
+  // 4h is now a hard gate — strategy-engine.js passes bars4h so htf4hBias is live.
+  // Trading against the 4h trend was the leading cause of losses in forensic review.
   const directions = [];
-  if (ema9 > ema21 && htfBias >= 0 && htf2Bias >= 0) directions.push('LONG');
-  if (ema9 < ema21 && htfBias <= 0 && htf2Bias <= 0) directions.push('SHORT');
+  if (ema9 > ema21 && htfBias >= 0 && htf2Bias >= 0 && htf4hBias >= 0) directions.push('LONG');
+  if (ema9 < ema21 && htfBias <= 0 && htf2Bias <= 0 && htf4hBias <= 0) directions.push('SHORT');
 
   for (const dir of directions) {
     const isBull = dir === 'LONG';
@@ -122,9 +121,9 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
     // The v2.1 tightening was over-reverted; this restores selectivity without
     // going back to the original strict 0.55 (which missed valid extended touches).
     const tolerance = 0.52 * atr;
-    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 8);
-    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 8);
-    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 8);
+    const pulledToVwap = hadPullbackToLevel(bars, vwap, tolerance, dir, 6);
+    const pulledTo9    = hadPullbackToLevel(bars, ema9, tolerance, dir, 6);
+    const pulledTo21   = hadPullbackToLevel(bars, ema21, tolerance, dir, 6);
     if (!pulledToVwap && !pulledTo9 && !pulledTo21) continue;
 
     // ── Pullback held (EMA support not broken) ──────────────────────────────
@@ -136,7 +135,7 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
     }
 
     // ── Confirmation candle ─────────────────────────────────────────────────
-    const confirmed = isBull ? isBullishCandle(last, 0.30) : isBearishCandle(last, 0.30);  // raised from 0.25
+    const confirmed = isBull ? isBullishCandle(last, 0.35) : isBearishCandle(last, 0.35);
     if (!confirmed) continue;
 
     // ── RSI filter ──────────────────────────────────────────────────────────
@@ -263,8 +262,8 @@ function evaluate(bars, htfBars, htf2Bars, htf4hBars, cfg = {}, barIdx = null) {
       htf_bias:         htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'MIXED',
       session:       sess.name,
       trigger_reason: [
-        `EMA9/21 ${dir} (stack=${esScore}), fresh pullback ≤8 bars, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF non-conflicting`,
-        htf4hBias !== 0 ? `4H:${htf4hBias === 1 ? 'BULL' : 'BEAR'}` : null,
+        `EMA9/21 ${dir} (stack=${esScore}), fresh pullback ≤6 bars, ${dir === 'LONG' ? 'bullish' : 'bearish'} candle, HTF aligned`,
+        `4H:${htf4hBias === 1 ? 'BULL' : htf4hBias === -1 ? 'BEAR' : 'neutral'} 1H:${htf2Bias === 1 ? 'BULL' : htf2Bias === -1 ? 'BEAR' : 'neutral'} 15m:${htfBias === 1 ? 'BULL' : htfBias === -1 ? 'BEAR' : 'neutral'}`,
         openingDriveNote,
       ].filter(Boolean).join(' | '),
       indicators: {

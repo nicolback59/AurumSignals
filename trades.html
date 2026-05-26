@@ -513,8 +513,8 @@ function fmtExpiryReason(reason) {
 // Returns the expiry reason if this trade MUST be shown as expired right now,
 // regardless of whether the backend sweep has run yet.
 // Priority: backend result > backend trade_status > client-side time check.
-const _NO_OVERNIGHT = new Set(['MGC_SCALP', 'MGC_INTRADAY', 'MNQ_INTRADAY', 'MNQ_50PT']);
-const _MAX_HOLD_MIN = { MGC_SCALP: 60, MGC_INTRADAY: 240, MNQ_INTRADAY: 240, MNQ_50PT: 360, MNQ_SWING: 72 * 60 };
+const _NO_OVERNIGHT = new Set(['MGC_SCALP', 'MNQ_INTRADAY']);
+const _MAX_HOLD_MIN = { MGC_SCALP: 60, MNQ_INTRADAY: 240 };
 
 function _toPt(d) {
   return new Date((d instanceof Date ? d : new Date(

@@ -7,8 +7,8 @@
  * system that reasons about TRADE IDEAS, not individual candle events.
  *
  * Key upgrades over signal-fingerprint.js:
- *  • Strategy FAMILY grouping — MGC_SCALP + MGC_INTRADAY share one fingerprint
- *    slot so they can never both alert for the same entry zone.
+ *  • Strategy FAMILY grouping — one fingerprint slot per family prevents
+ *    duplicate alerts for the same entry zone.
  *  • Wider fuzzy tolerances — MNQ ±10 pts, MGC ±2.5 pts (was ±7.5 / ±1.5).
  *  • SL zone included in fingerprint — prevents over-blocking setups with
  *    genuinely different risk structures at similar entries.
@@ -36,7 +36,7 @@ const ENTRY_BUCKET = { MNQ: 20, MGC: 5 };
 
 // SL zone bucket sizes — kept for logging context but NOT part of the fingerprint key.
 // Including SL caused false misses when two strategies describe the same idea with
-// marginally different SL placements (e.g. MGC_SCALP 4587.66 vs MGC_INTRADAY 4588.42).
+// marginally different SL placements between strategies in the same family.
 const SL_BUCKET = { MNQ: 30, MGC: 8 }; // retained for reference
 
 // Per-strategy suppression window (ms).  A second signal matching the same
