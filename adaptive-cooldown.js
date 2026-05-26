@@ -25,21 +25,6 @@ const STRATEGY_CONFIGS = {
     chopMin:      30,   // override when regime = choppy
     maxMin:       45,   // hard cap regardless of multipliers
   },
-  MNQ_50PT: {
-    baseMin:      20,
-    afterWinMin:  10,
-    afterLossMin: 30,
-    chopMin:      45,
-    maxMin:       75,
-    premiumMode:  true, // requires higher confidence and structure reclaim after loss
-  },
-  MNQ_SWING: {
-    baseMin:      60,
-    afterWinMin:  60,   // swing bars are 1h — after-win floor matches 1 bar
-    afterLossMin: 90,
-    chopMin:     120,
-    maxMin:      180,
-  },
   MGC_SCALP: {
     baseMin:       5,
     afterWinMin:   3,

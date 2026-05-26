@@ -14,8 +14,6 @@
  */
 
 const mnqIntraday = require('./strategies/mnq-intraday');
-const mnqSwing    = require('./strategies/mnq-swing');
-const mnq50Point  = require('./strategies/mnq-50-point');
 const mgcScalp    = require('./strategies/mgc-scalp');
 const mgcIntraday = require('./strategies/mgc-intraday');
 
@@ -61,22 +59,6 @@ function evaluateAll(barSets, cfg = {}) {
   if (instrument === 'MNQ' || instrument == null) {
     if (bars5m.length >= 60 && bars15m.length >= 30) {
       const sig = mnqIntraday.evaluate(bars5m, bars15m, bars1h, cfg, barIdx);
-      if (sig) signals.push(sig);
-    }
-  }
-
-  // ── MNQ 50-POINT ─────────────────────────────────────────────────────────────
-  if (instrument === 'MNQ' || instrument == null) {
-    if (bars5m.length >= 25 && bars15m.length >= 8) {
-      const sig = mnq50Point.evaluate(bars5m, bars15m, cfg, barIdx);
-      if (sig) signals.push(sig);
-    }
-  }
-
-  // ── MNQ SWING ────────────────────────────────────────────────────────────────
-  if (instrument === 'MNQ' || instrument == null) {
-    if (bars1h.length >= 20 && barsDly.length >= 3) {
-      const sig = mnqSwing.evaluate(bars1h, bars4h, barsDly, cfg, barIdx);
       if (sig) signals.push(sig);
     }
   }
@@ -129,8 +111,6 @@ function buildBarSetsFrom15m(bars15m) {
 
 function resetAllStrategies() {
   mnqIntraday.reset();
-  mnqSwing.reset();
-  mnq50Point.reset();
   mgcScalp.reset();
   mgcIntraday.reset();
 }
@@ -143,22 +123,6 @@ const STRATEGY_META = {
     trade_style: 'intraday',
     threshold:   THRESHOLDS.MNQ_INTRADAY,
     description: '5m VWAP + EMA-stack pullback with 15m/1h HTF confirmation',
-  },
-  MNQ_SWING: {
-    name:        'MNQ Swing',
-    instrument:  'MNQ',
-    timeframe:   '1h',
-    trade_style: 'swing',
-    threshold:   THRESHOLDS.MNQ_SWING,
-    description: '1h/daily EMA trend with 1h structure pullback entry',
-  },
-  MNQ_50PT: {
-    name:        'MNQ 50-Point',
-    instrument:  'MNQ',
-    timeframe:   '5m',
-    trade_style: 'intraday',
-    threshold:   THRESHOLDS.MNQ_50PT,
-    description: '5m consolidation breakout targeting 50 MNQ points',
   },
   MGC_SCALP: {
     name:        'MGC Scalp',

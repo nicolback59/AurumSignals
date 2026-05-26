@@ -138,8 +138,6 @@ function applyMigrations() {
   }
   // Seed defaults — use INSERT OR IGNORE for research-only (preserve manual overrides)
   for (const [name, mode] of Object.entries({
-    MNQ_SWING:    'RESEARCH_ONLY',
-    MNQ_50PT:     'RESEARCH_ONLY',
     MGC_INTRADAY: 'RESEARCH_ONLY',
   })) {
     db.prepare('INSERT OR IGNORE INTO strategy_status (strategy_name, mode) VALUES (?, ?)').run(name, mode);
@@ -667,9 +665,9 @@ app.get('/api/status', (req, res) => {
     marketMode,
     marketOpen,
     strategies: {
-      live:         ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP', 'MGC_INTRADAY'],
-      researchOnly: [],
-      disabled:     [],
+      live:         ['MNQ_INTRADAY', 'MGC_SCALP'],
+      researchOnly: ['MGC_INTRADAY'],
+      disabled:     ['MNQ_SWING', 'MNQ_50PT'],
     },
     feedType:          scanner?.feedType      ?? 'unknown',
     feedConnected:     scanner?._feed?.isConnected() ?? false,
@@ -834,7 +832,7 @@ app.get('/api/forensics/summary', (req, res) => {
     const days     = Math.min(Number(req.query.days) || 14, 90);
     const strategies = strategy
       ? [strategy]
-      : ['MGC_SCALP', 'MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
+      : ['MGC_SCALP', 'MNQ_INTRADAY', 'MGC_INTRADAY'];
     const result = {};
     for (const s of strategies) {
       result[s] = getForensicsSummary(db, s, days);
@@ -846,7 +844,7 @@ app.get('/api/forensics/summary', (req, res) => {
 // Active cluster warnings across all live strategies
 app.get('/api/forensics/clusters', (req, res) => {
   try {
-    const strategies = ['MGC_SCALP', 'MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_INTRADAY'];
+    const strategies = ['MGC_SCALP', 'MNQ_INTRADAY', 'MGC_INTRADAY'];
     const clusters = [];
     for (const s of strategies) {
       const c = _detectClusters(db, s, 10);
