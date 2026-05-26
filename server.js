@@ -898,6 +898,45 @@ app.post('/api/strategy-status/:name/unpause', (req, res) => {
   } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
+// Granular unblock for adaptive-override entries (pause, direction, session)
+app.post('/api/admin/override/:strategy/unblock', (req, res) => {
+  const { strategy } = req.params;
+  const { type, session } = req.body ?? {};
+  const allowed = ['MNQ_INTRADAY', 'MGC_SCALP'];
+  if (!allowed.includes(strategy)) return res.status(400).json({ error: 'Unknown strategy' });
+  if (!['pause', 'long', 'short', 'session'].includes(type)) return res.status(400).json({ error: 'type must be pause | long | short | session' });
+  if (type === 'session' && !session) return res.status(400).json({ error: 'session required for type=session' });
+  try {
+    const overrides = loadAdaptiveOverrides(db);
+    const ov = overrides[strategy] ?? { paused: false, blockLong: false, blockShort: false, blockedSessions: [], reasons: [] };
+    if (!ov.reasons) ov.reasons = [];
+    if (!ov.blockedSessions) ov.blockedSessions = [];
+    const ts = new Date().toISOString();
+    if (type === 'pause') {
+      ov.paused = false;
+      ov.manualPause = false;
+      ov.reasons = ov.reasons.filter(r => !r.startsWith('auto-paused'));
+      ov.reasons.push(`manually-unpaused at ${ts}`);
+    } else if (type === 'long') {
+      ov.blockLong = false;
+      ov.reasons = ov.reasons.filter(r => !r.startsWith('block-LONG'));
+      ov.reasons.push(`LONG manually-unblocked at ${ts}`);
+    } else if (type === 'short') {
+      ov.blockShort = false;
+      ov.reasons = ov.reasons.filter(r => !r.startsWith('block-SHORT'));
+      ov.reasons.push(`SHORT manually-unblocked at ${ts}`);
+    } else if (type === 'session') {
+      ov.blockedSessions = ov.blockedSessions.filter(s => s !== session);
+      ov.reasons = ov.reasons.filter(r => !r.startsWith(`block-session(${session})`));
+      ov.reasons.push(`session ${session} manually-unblocked at ${ts}`);
+    }
+    overrides[strategy] = ov;
+    saveAdaptiveOverrides(db, overrides);
+    console.log(`[admin] ${strategy} unblock type=${type}${type === 'session' ? ` session=${session}` : ''}`);
+    res.json({ ok: true, strategy, type, overrides: ov });
+  } catch (err) { res.status(500).json({ error: err.message }); }
+});
+
 app.post('/api/outcome', (req, res) => {
   const { signal_id, result, exit_price, pnl_pts, pnl_usd, notes } = req.body || {};
   if (!signal_id || !result) return res.status(400).json({ error: 'signal_id and result required' });
@@ -1098,7 +1137,56 @@ app.get('/api/admin/dashboard', (req, res) => {
       optimizerPending = db.prepare(`SELECT COUNT(*) n FROM optimizer_candidates WHERE status='pending_review'`).get()?.n ?? 0;
     } catch (_) {}
 
-    res.json({ workers, regimes, clusters, stratMetrics, signalCount24h, learningAlerts, learningBaselines, optimizerPending, generatedAt: new Date().toISOString() });
+    // Signal flow: signals/hour + rejection breakdown (last 24h)
+    let signalFlow = { perHour24h: 0, totalRejected24h: 0, rejectionBreakdown: [] };
+    try {
+      const perHour24h = +(signalCount24h / 24).toFixed(1);
+      const totalRejected24h = db.prepare(
+        `SELECT COUNT(*) n FROM signal_rejections WHERE rejected_at >= datetime('now','-1 day')`
+      ).get()?.n ?? 0;
+      const rejectionBreakdown = db.prepare(`
+        SELECT reason, COUNT(*) n
+        FROM   signal_rejections
+        WHERE  rejected_at >= datetime('now','-1 day')
+        GROUP  BY reason
+        ORDER  BY n DESC
+        LIMIT  12
+      `).all();
+      signalFlow = { perHour24h, totalRejected24h, rejectionBreakdown };
+    } catch (_) {}
+
+    // Adaptive overrides: current per-strategy blocks
+    let adaptiveOverrides = {};
+    try { adaptiveOverrides = loadAdaptiveOverrides(db) ?? {}; } catch (_) {}
+
+    // 7-day rolling win rate trend (one row per day per strategy)
+    let winRateTrend = {};
+    try {
+      const trendRows = db.prepare(`
+        SELECT date(s.received_at) AS day,
+               s.strategy_name,
+               COUNT(*) AS total,
+               SUM(CASE WHEN o.result = 'WIN' THEN 1 ELSE 0 END) AS wins
+        FROM   signals s
+        JOIN   outcomes o ON o.signal_id = s.id
+        WHERE  s.received_at    >= datetime('now', '-7 days')
+          AND  o.result         IN ('WIN', 'LOSS')
+          AND  s.strategy_name  IN ('MNQ_INTRADAY', 'MGC_SCALP')
+        GROUP  BY date(s.received_at), s.strategy_name
+        ORDER  BY day ASC
+      `).all();
+      for (const r of trendRows) {
+        if (!winRateTrend[r.strategy_name]) winRateTrend[r.strategy_name] = [];
+        winRateTrend[r.strategy_name].push({
+          day:     r.day,
+          total:   r.total,
+          wins:    r.wins,
+          winRate: r.total >= 3 ? +(r.wins / r.total * 100).toFixed(1) : null,
+        });
+      }
+    } catch (_) {}
+
+    res.json({ workers, regimes, clusters, stratMetrics, signalCount24h, learningAlerts, learningBaselines, optimizerPending, signalFlow, adaptiveOverrides, winRateTrend, generatedAt: new Date().toISOString() });
   } catch (err) {
     console.error('[api/admin/dashboard]', err.message);
     res.status(500).json({ error: err.message });

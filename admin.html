@@ -159,6 +159,64 @@
     .learning-no-alerts { font-size: 13px; color: var(--green); padding: 16px 0; }
     .learning-no-data   { font-size: 13px; color: var(--text-muted); padding: 16px 0; }
 
+    /* ── Signal flow ────────────────────────────────────────────────────── */
+    .flow-bar {
+      display: flex; gap: 16px; align-items: stretch; flex-wrap: wrap;
+    }
+    .flow-stat {
+      background: var(--bg-surface); border: 1px solid var(--border-subtle);
+      border-radius: 10px; padding: 14px 18px; min-width: 120px;
+    }
+    .flow-stat-label { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: 4px; }
+    .flow-stat-val   { font-size: 26px; font-weight: 700; letter-spacing: -.02em; color: var(--text-primary); }
+    .flow-stat-sub   { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+    .flow-breakdown {
+      flex: 1; background: var(--bg-surface); border: 1px solid var(--border-subtle);
+      border-radius: 10px; padding: 14px 16px; min-width: 260px;
+    }
+    .flow-breakdown-title { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: 10px; }
+    .flow-reason-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; font-size: 12px; }
+    .flow-reason-label { flex: 0 0 180px; color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .flow-reason-bar-wrap { flex: 1; background: var(--bg-elevated); border-radius: 3px; height: 6px; }
+    .flow-reason-bar { background: rgba(251,191,36,.5); height: 6px; border-radius: 3px; }
+    .flow-reason-n { flex: 0 0 28px; text-align: right; color: var(--text-muted); }
+    .flow-no-data { font-size: 12px; color: var(--text-muted); }
+
+    /* ── 7-day WR trend ─────────────────────────────────────────────────── */
+    .trend-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    .trend-table th { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border-subtle); }
+    .trend-table td { padding: 6px 8px; border-bottom: 1px solid var(--border-subtle); color: var(--text-secondary); }
+    .trend-table tr:last-child td { border-bottom: none; }
+    .trend-wr { font-weight: 600; }
+    .trend-wr.good { color: var(--green); }
+    .trend-wr.warn { color: var(--yellow); }
+    .trend-wr.bad  { color: var(--red); }
+    .trend-wr.na   { color: var(--text-muted); font-weight: 400; }
+    .trend-wrap { background: var(--bg-surface); border: 1px solid var(--border-subtle); border-radius: 10px; padding: 16px; }
+
+    /* ── Adaptive overrides ─────────────────────────────────────────────── */
+    .overrides-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; }
+    .override-card {
+      background: var(--bg-surface); border: 1px solid var(--border-subtle);
+      border-radius: 10px; padding: 14px 16px;
+    }
+    .override-card.has-blocks { border-color: rgba(239,68,68,.3); }
+    .override-strat { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--text-muted); margin-bottom: 10px; }
+    .override-row { display: flex; align-items: center; gap: 8px; padding: 5px 0; border-bottom: 1px solid var(--border-subtle); }
+    .override-row:last-child { border-bottom: none; }
+    .override-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+    .override-dot.active  { background: var(--red); }
+    .override-dot.clear   { background: var(--green); }
+    .override-label { font-size: 12px; color: var(--text-secondary); flex: 1; }
+    .override-label.blocked { color: var(--red); }
+    .override-unblock-btn {
+      font-size: 11px; padding: 2px 10px; border-radius: 4px; cursor: pointer;
+      background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+      color: var(--text-muted);
+    }
+    .override-unblock-btn:hover { border-color: var(--green); color: var(--green); }
+    .override-clear { font-size: 12px; color: var(--green); padding: 6px 0; }
+
     /* ── Optimizer candidates ───────────────────────────────────────────── */
     .optimizer-grid { display: flex; flex-direction: column; gap: 12px; }
     .optimizer-card {
@@ -227,6 +285,10 @@
       <div class="loading">Loading dashboard&hellip;</div>
     </div>
 
+    <!-- Signal flow -->
+    <h2>Signal Flow — Last 24h</h2>
+    <div id="signalFlowGrid"><div class="loading">Loading&hellip;</div></div>
+
     <!-- Worker health -->
     <h2>Worker Health</h2>
     <div class="worker-grid" id="workerGrid">
@@ -245,11 +307,19 @@
       <div class="loading">Loading&hellip;</div>
     </div>
 
+    <!-- 7-day WR trend -->
+    <h2>7-Day Win Rate Trend</h2>
+    <div id="wrTrendGrid"><div class="loading">Loading&hellip;</div></div>
+
     <!-- Loss clusters -->
     <h2>Loss Cluster Warnings</h2>
     <div class="cluster-grid" id="clusterGrid">
       <div class="loading">Loading&hellip;</div>
     </div>
+
+    <!-- Adaptive overrides -->
+    <h2>Adaptive Overrides</h2>
+    <div class="overrides-grid" id="overridesGrid"><div class="loading">Loading&hellip;</div></div>
 
     <!-- Learning insights -->
     <h2 style="display:flex;align-items:center;gap:12px;">
@@ -392,6 +462,139 @@
     el.innerHTML = html;
   }
 
+  function renderSignalFlow(flow) {
+    const el = document.getElementById('signalFlowGrid');
+    if (!flow) { el.innerHTML = '<div class="flow-no-data">No signal flow data yet.</div>'; return; }
+    const breakdown = flow.rejectionBreakdown ?? [];
+    const maxN = breakdown.length ? Math.max(...breakdown.map(r => r.n)) : 1;
+    const reasonRows = breakdown.map(r => {
+      const pct = maxN > 0 ? Math.round(r.n / maxN * 100) : 0;
+      return `<div class="flow-reason-row">
+        <div class="flow-reason-label" title="${escHtml(r.reason)}">${escHtml(r.reason)}</div>
+        <div class="flow-reason-bar-wrap"><div class="flow-reason-bar" style="width:${pct}%"></div></div>
+        <div class="flow-reason-n">${r.n}</div>
+      </div>`;
+    }).join('');
+    el.innerHTML = `<div class="flow-bar">
+      <div class="flow-stat">
+        <div class="flow-stat-label">Signals / hr</div>
+        <div class="flow-stat-val">${flow.perHour24h ?? 0}</div>
+        <div class="flow-stat-sub">24h average</div>
+      </div>
+      <div class="flow-stat">
+        <div class="flow-stat-label">Filtered out</div>
+        <div class="flow-stat-val">${flow.totalRejected24h ?? 0}</div>
+        <div class="flow-stat-sub">rejections 24h</div>
+      </div>
+      <div class="flow-breakdown">
+        <div class="flow-breakdown-title">Rejection breakdown</div>
+        ${reasonRows || '<div class="flow-no-data">No rejections in last 24h.</div>'}
+      </div>
+    </div>`;
+  }
+
+  function renderWrTrend(trend) {
+    const el = document.getElementById('wrTrendGrid');
+    const strats = ['MNQ_INTRADAY', 'MGC_SCALP'];
+
+    // Build unified day list across both strategies
+    const daySet = new Set();
+    for (const s of strats) { (trend[s] ?? []).forEach(r => daySet.add(r.day)); }
+    const days = [...daySet].sort().reverse();
+
+    if (!days.length) {
+      el.innerHTML = '<div class="trend-wrap"><div class="flow-no-data">No completed trade data yet (need settled WIN/LOSS outcomes).</div></div>';
+      return;
+    }
+
+    // Index by [strat][day]
+    const idx = {};
+    for (const s of strats) {
+      idx[s] = {};
+      for (const r of (trend[s] ?? [])) idx[s][r.day] = r;
+    }
+
+    function wrCell(r) {
+      if (!r || r.winRate == null) return '<span class="trend-wr na">—</span>';
+      const cls = r.winRate >= 58 ? 'good' : r.winRate >= 45 ? 'warn' : 'bad';
+      return `<span class="trend-wr ${cls}">${r.winRate.toFixed(1)}%</span> <span style="color:var(--text-muted);font-size:11px">(${r.wins}W/${r.total - r.wins}L)</span>`;
+    }
+
+    const rows = days.map(day => {
+      const label = new Date(day + 'T12:00:00Z').toLocaleDateString(undefined, { weekday: 'short', month: 'short', day: 'numeric' });
+      return `<tr>
+        <td>${escHtml(label)}</td>
+        <td>${wrCell(idx['MNQ_INTRADAY']?.[day])}</td>
+        <td>${wrCell(idx['MGC_SCALP']?.[day])}</td>
+      </tr>`;
+    }).join('');
+
+    el.innerHTML = `<div class="trend-wrap"><table class="trend-table">
+      <thead><tr><th>Day</th><th>MNQ Intraday</th><th>MGC Scalp</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`;
+  }
+
+  function renderAdaptiveOverrides(overrides) {
+    const el = document.getElementById('overridesGrid');
+    const strats = ['MNQ_INTRADAY', 'MGC_SCALP'];
+
+    el.className = 'overrides-grid';
+    el.innerHTML = strats.map(strat => {
+      const ov = overrides[strat] ?? {};
+      const paused   = !!ov.paused;
+      const blLong   = !!ov.blockLong;
+      const blShort  = !!ov.blockShort;
+      const blSess   = Array.isArray(ov.blockedSessions) ? ov.blockedSessions : [];
+      const hasBlocks = paused || blLong || blShort || blSess.length > 0;
+
+      function row(active, label, btnType, sess) {
+        const dotCls   = active ? 'active' : 'clear';
+        const labelCls = active ? 'blocked' : '';
+        const btn = active
+          ? `<button class="override-unblock-btn" onclick="unblockOverride('${escHtml(strat)}','${btnType}'${sess ? `,'${escHtml(sess)}'` : ''})">Unblock</button>`
+          : '';
+        return `<div class="override-row">
+          <div class="override-dot ${dotCls}"></div>
+          <div class="override-label ${labelCls}">${escHtml(label)}</div>
+          ${btn}
+        </div>`;
+      }
+
+      let rows = '';
+      rows += row(paused,  paused  ? 'Strategy paused — all signals blocked' : 'Strategy active', 'pause');
+      rows += row(blLong,  blLong  ? 'LONG direction blocked'  : 'LONG direction OK',  'long');
+      rows += row(blShort, blShort ? 'SHORT direction blocked' : 'SHORT direction OK', 'short');
+      if (blSess.length) {
+        for (const s of blSess) rows += row(true, `Session blocked: ${s}`, 'session', s);
+      } else {
+        rows += row(false, 'All sessions allowed', 'session');
+      }
+
+      return `<div class="override-card${hasBlocks ? ' has-blocks' : ''}">
+        <div class="override-strat">${escHtml(strat.replace('_', ' '))}</div>
+        ${rows}
+        ${ov.reasons?.length ? `<div style="font-size:11px;color:var(--text-muted);margin-top:8px;border-top:1px solid var(--border-subtle);padding-top:8px">${escHtml((ov.reasons ?? []).slice(-1)[0] ?? '')}</div>` : ''}
+      </div>`;
+    }).join('');
+  }
+
+  async function unblockOverride(strategy, type, session) {
+    const label = type === 'pause' ? 'strategy pause' : type === 'long' ? 'LONG block' : type === 'short' ? 'SHORT block' : `${session} session block`;
+    if (!confirm(`Manually clear ${label} for ${strategy}? The adaptive engine may re-block if poor WR persists.`)) return;
+    try {
+      const body = { type };
+      if (type === 'session') body.session = session;
+      const r = await fetch(`/api/admin/override/${encodeURIComponent(strategy)}/unblock`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const d = await r.json();
+      if (d.ok) { load(); } else { alert('Unblock failed: ' + (d.error ?? 'unknown')); }
+    } catch (err) { alert('Unblock failed: ' + err.message); }
+  }
+
   function renderLearning(alerts, baselines) {
     const el = document.getElementById('learningGrid');
     const hasBaselines = baselines && Object.keys(baselines).length > 0;
@@ -476,10 +679,13 @@
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
       const data = await r.json();
       renderSummary(data);
+      renderSignalFlow(data.signalFlow ?? null);
       renderWorkerGrid(data.workers ?? []);
       renderRegimeGrid(data.regimes ?? {});
       renderMetrics(data.stratMetrics ?? {});
+      renderWrTrend(data.winRateTrend ?? {});
       renderClusters(data.clusters ?? {});
+      renderAdaptiveOverrides(data.adaptiveOverrides ?? {});
       renderLearning(data.learningAlerts ?? [], data.learningBaselines ?? {});
     } catch (err) {
       document.getElementById('summaryBar').innerHTML =
