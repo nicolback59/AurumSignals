@@ -50,10 +50,12 @@ const TRANSITIONS = {
   INVALIDATED: [],
 };
 
-// Per-strategy max hold (when strategy_name is available)
+// Per-strategy max hold — set to 23 hours to disable intra-session time expiry.
+// Signals now only expire via RULE C (market close at 13:00 PT / 5 PM ET) or
+// RULE D (weekend close).  Time-based expiry during active hours is eliminated.
 const MAX_HOLD_MS_BY_STRATEGY = {
-  MGC_SCALP:    60 * 60 * 1000,  //  1 hour
-  MNQ_INTRADAY:  4 * 60 * 60 * 1000,  //  4 hours
+  MGC_SCALP:    23 * 60 * 60 * 1000,  // effectively disabled — market close rule handles it
+  MNQ_INTRADAY: 23 * 60 * 60 * 1000,  // effectively disabled — market close rule handles it
 };
 
 // Per-style fallback (when no strategy_name)

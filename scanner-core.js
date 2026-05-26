@@ -1452,7 +1452,7 @@ class Scanner extends EventEmitter {
         try {
           const stratCfg = STRATEGY_CONFIG[sig.strategy_name] || {};
           const maxMs    = MAX_HOLD_MS_BY_STRATEGY[sig.strategy_name]
-            ?? (sig.trade_style === 'swing' ? 72*3600000 : sig.trade_style === 'scalp' ? 2*3600000 : 6*3600000);
+            ?? (sig.trade_style === 'swing' ? 72*3600000 : 23*3600000);
           const ageMs    = now.getTime() - new Date(sig.received_at).getTime();
 
           let reason = null;

@@ -332,8 +332,8 @@ setTimeout(_deferredBtDedup, 5000);
 (function cleanupStaleOpenTrades() {
   try {
     const MAX_HOLD = {
-      MGC_SCALP:    1 * 3600000,
-      MNQ_INTRADAY: 4 * 3600000,
+      MGC_SCALP:    23 * 3600000,  // time-based expiry disabled — market close rule handles it
+      MNQ_INTRADAY: 23 * 3600000,  // time-based expiry disabled — market close rule handles it
     };
     const NO_WEEKEND   = new Set(['MGC_SCALP', 'MNQ_INTRADAY']);
     const NO_OVERNIGHT = NO_WEEKEND;
@@ -594,6 +594,7 @@ app.get('/api/signals', (req, res) => {
     SELECT s.*, o.result, o.exit_price, o.exit_at, o.pnl_pts, o.pnl_usd, o.expiration_reason AS outcome_expiration_reason
     FROM   signals s
     LEFT   JOIN outcomes o ON o.signal_id = s.id
+    WHERE  s.strategy_name IN ('MNQ_INTRADAY', 'MGC_SCALP')
     ORDER  BY s.received_at DESC
     LIMIT  ?
   `).all(limit);
@@ -611,6 +612,7 @@ app.get('/api/signals/open', (req, res) => {
     WHERE  o.id IS NULL
       AND  s.entry IS NOT NULL
       AND  (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
+      AND  s.strategy_name IN ('MNQ_INTRADAY', 'MGC_SCALP')
     ORDER  BY s.received_at DESC
   `).all();
   res.json(rows);
@@ -694,19 +696,21 @@ app.get('/api/status', (req, res) => {
 });
 
 app.get('/api/stats', (req, res) => {
-  const total      = db.prepare('SELECT COUNT(*) n FROM signals').get().n;
-  const last24h    = db.prepare(`SELECT COUNT(*) n FROM signals WHERE received_at >= datetime('now','-1 day')`).get().n;
-  const byGrade    = db.prepare('SELECT grade, COUNT(*) n FROM signals GROUP BY grade').all();
-  const bySetup    = db.prepare('SELECT setup, COUNT(*) n FROM signals GROUP BY setup ORDER BY n DESC').all();
-  const byStrategy = db.prepare('SELECT strategy_name, COUNT(*) n FROM signals WHERE strategy_name IS NOT NULL GROUP BY strategy_name ORDER BY n DESC').all();
-  const byDir      = db.prepare('SELECT direction, COUNT(*) n FROM signals GROUP BY direction').all();
-  const outcomes   = db.prepare('SELECT result, COUNT(*) n FROM outcomes GROUP BY result').all();
+  const STRAT_FILTER = `strategy_name IN ('MNQ_INTRADAY', 'MGC_SCALP')`;
+  const total      = db.prepare(`SELECT COUNT(*) n FROM signals WHERE ${STRAT_FILTER}`).get().n;
+  const last24h    = db.prepare(`SELECT COUNT(*) n FROM signals WHERE ${STRAT_FILTER} AND received_at >= datetime('now','-1 day')`).get().n;
+  const byGrade    = db.prepare(`SELECT grade, COUNT(*) n FROM signals WHERE ${STRAT_FILTER} GROUP BY grade`).all();
+  const bySetup    = db.prepare(`SELECT setup, COUNT(*) n FROM signals WHERE ${STRAT_FILTER} GROUP BY setup ORDER BY n DESC`).all();
+  const byStrategy = db.prepare(`SELECT strategy_name, COUNT(*) n FROM signals WHERE ${STRAT_FILTER} GROUP BY strategy_name ORDER BY n DESC`).all();
+  const byDir      = db.prepare(`SELECT direction, COUNT(*) n FROM signals WHERE ${STRAT_FILTER} GROUP BY direction`).all();
+  const outcomes   = db.prepare(`SELECT result, COUNT(*) n FROM outcomes o JOIN signals s ON s.id = o.signal_id WHERE ${STRAT_FILTER} GROUP BY result`).all();
   const expiredByReason = db.prepare(
-    `SELECT COALESCE(expiration_reason,'EXPIRED_UNKNOWN') AS reason, COUNT(*) n
-     FROM   outcomes WHERE result = 'EXPIRED'
-     GROUP  BY expiration_reason`
+    `SELECT COALESCE(o.expiration_reason,'EXPIRED_UNKNOWN') AS reason, COUNT(*) n
+     FROM   outcomes o JOIN signals s ON s.id = o.signal_id
+     WHERE  o.result = 'EXPIRED' AND ${STRAT_FILTER}
+     GROUP  BY o.expiration_reason`
   ).all();
-  const lastSignalRow = db.prepare('SELECT received_at FROM signals ORDER BY received_at DESC LIMIT 1').get();
+  const lastSignalRow = db.prepare(`SELECT received_at FROM signals WHERE ${STRAT_FILTER} ORDER BY received_at DESC LIMIT 1`).get();
   const lastSignalAt  = lastSignalRow ? lastSignalRow.received_at : null;
   res.json({ total, last24h, byGrade, bySetup, byStrategy, byDir, outcomes, expiredByReason, lastSignalAt });
 });
