@@ -2481,6 +2481,23 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`SQLite         → ${DB_PATH}`);
   console.log(`Scanner mode   → ${process.env.SCANNER_MODE === 'worker' ? 'WORKER (separate process)' : 'INLINE'}`);
 
+  // Write api-server's own heartbeat — visible in /api/status workers field
+  const _apiHeartbeat = () => {
+    try {
+      db.prepare(`
+        INSERT INTO worker_health (worker_name, status, last_heartbeat, metadata)
+        VALUES ('api-server', 'RUNNING', datetime('now'), ?)
+        ON CONFLICT(worker_name) DO UPDATE SET
+          status         = 'RUNNING',
+          last_heartbeat = datetime('now'),
+          metadata       = excluded.metadata,
+          cycle_count    = COALESCE(cycle_count, 0) + 1
+      `).run(JSON.stringify({ pid: process.pid, port: PORT, uptime: Math.floor(process.uptime()) }));
+    } catch (_) { /* never crash */ }
+  };
+  _apiHeartbeat();
+  setInterval(_apiHeartbeat, 30000); // refresh every 30s
+
   if (process.env.SCANNER_MODE === 'worker') {
     // ── WORKER MODE: scanner runs as a separate PM2 process ──────────────────
     // SSE events arrive via sse_queue table — poll every 1 second.
