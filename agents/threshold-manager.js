@@ -23,7 +23,7 @@
 // ── Inline defaults (kept in sync with confidence-scorer.js / quant-scorer.js) ─
 const DEFAULT_LIVE = {
   MNQ_INTRADAY: 67,
-  MGC_SCALP:    60,
+  MGC_SCALP:    57,
   MNQ_SWING:    85,
   MNQ_50PT:     86,
   MGC_INTRADAY: 60,

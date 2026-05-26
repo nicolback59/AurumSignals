@@ -43,9 +43,9 @@ const STRATEGY_CONFIGS = {
   MGC_SCALP: {
     baseMin:       5,
     afterWinMin:   3,
-    afterLossMin: 10,
-    chopMin:      20,
-    maxMin:       30,
+    afterLossMin:  7,  // was 10 — gold scalps recover faster than intraday positions
+    chopMin:      15,  // was 20 — VWAP/liquidity confirmation still required
+    maxMin:       25,  // was 30
   },
   MGC_INTRADAY: {
     baseMin:      10,

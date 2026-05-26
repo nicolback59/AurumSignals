@@ -322,9 +322,13 @@ function applyHealthBanner(status, stats) {
   if (stats && stats.lastSignalAt) {
     const ageMs = Date.now() - new Date(stats.lastSignalAt + 'Z').getTime();
     const ageHr = ageMs / 3_600_000;
-    if (ageHr > 2) {
+    // Only warn when market is live — overnight/maintenance silence is expected
+    const marketLive = status?.marketMode === 'LIVE';
+    const staleThreshold = marketLive ? 1 : 8; // 1h when live, 8h off-hours
+    if (ageHr > staleThreshold) {
       const ageStr = ageHr >= 48 ? `${Math.round(ageHr / 24)}d` : `${Math.round(ageHr)}h`;
-      parts.push(`Last signal ${ageStr} ago — scanner may not be emitting`);
+      const ctx = marketLive ? 'scanner may not be emitting' : 'market may be closed';
+      parts.push(`Last signal ${ageStr} ago — ${ctx}`);
     }
   }
 
