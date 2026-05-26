@@ -511,8 +511,8 @@ function renderWeekly(d, weekFilter) {
 }
 
 function renderLearningCards(rows) {
-  const stratOrder = ['MNQ_INTRADAY','MNQ_SWING','MNQ_50PT','MGC_SCALP','MGC_INTRADAY'];
-  const stratColors = { MNQ_INTRADAY:'#2e9e6a', MNQ_SWING:'#d4982e', MNQ_50PT:'#9a7a5a', MGC_SCALP:'#b07828', MGC_INTRADAY:'#c8902a' };
+  const stratOrder  = ['MNQ_INTRADAY', 'MGC_SCALP'];
+  const stratColors = { MNQ_INTRADAY: '#2e9e6a', MGC_SCALP: '#b07828' };
   const sorted = [...rows].sort((a, b) => stratOrder.indexOf(a.strategy_key) - stratOrder.indexOf(b.strategy_key));
 
   const cards = sorted.map(s => {

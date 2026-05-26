@@ -57,7 +57,7 @@ function evaluateAll(barSets, cfg = {}) {
   // ── MNQ INTRADAY ─────────────────────────────────────────────────────────────
   if (instrument === 'MNQ' || instrument == null) {
     if (bars5m.length >= 60 && bars15m.length >= 30) {
-      const sig = mnqIntraday.evaluate(bars5m, bars15m, bars1h, cfg, barIdx);
+      const sig = mnqIntraday.evaluate(bars5m, bars15m, bars1h, bars4h, cfg, barIdx);
       if (sig) signals.push(sig);
     }
   }

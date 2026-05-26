@@ -1530,6 +1530,7 @@ class Scanner extends EventEmitter {
       ? { bars3mMgc: bars3m, bars5mMgc: bars5m, bars15mMgc: bars15m, bars30mMgc: bars30m, bars45mMgc: bars45m, bars1hMgc: bars1h }
       : { bars5m, bars15m, bars1h, bars4h, barsDly };
 
+    this._log(`STRATEGY_SCAN_START instrument=${instrument} bars5m=${bars5m.length} bars15m=${bars15m.length} bars1h=${bars1h.length}`, 'signal');
     const signals         = evaluateAll(barSets, { instrument });
     const stratsFiredNames = signals.map(s => s.strategy_name);
     let anyFired          = false;
@@ -1538,8 +1539,8 @@ class Scanner extends EventEmitter {
     if (signals.length > 0) {
       const summary = signals.map(s => `${s.strategy_name}(${s.direction} conf=${s.confidence})`).join(', ');
       this._log(`SIGNAL_CANDIDATE_CREATED ${instrument} ${summary}`, 'signal');
-    } else if (this._scanCount % 10 === 0) {
-      this._log(`${instrument} — no strategy candidates this cycle (bars=${bars5m.length})`);
+    } else {
+      this._log(`STRATEGY_SCAN_COMPLETE instrument=${instrument} candidates=0 scan=#${this._scanCount}`, 'signal');
     }
 
     // ── Minimum daily signal guarantee — 3-tier confidence relaxation ────────────
@@ -1819,13 +1820,12 @@ class Scanner extends EventEmitter {
     const lastBar = bars5m.length > 0 ? bars5m[bars5m.length - 1] : null;
     const diagInfo = { close: lastBar?.close ?? null, atr: null, htfBias: null };
 
+    this._log(`STRATEGY_SCAN_COMPLETE instrument=${instrument} fired=${anyFired} candidates=${stratsFiredNames.length} scan=#${this._scanCount}`, 'signal');
     if (this.cfg.logLevel === 'full') {
       this._log(
         `📊 ${instrument} | close=${diagInfo.close ?? '?'} | regime=${regime} | ` +
         `strats=${stratsFiredNames.join(',') || 'none'} | fired=${anyFired ? 'YES' : 'no'}`
       );
-    } else if (!anyFired && this.cfg.logLevel === 'signal' && this._scanCount % 10 === 0) {
-      this._log(`${instrument} — no signal (threshold not met)`);
     }
 
     this._storeScanDiag(instrument, diagInfo, stratsFiredNames, anyFired,

@@ -300,36 +300,47 @@ function showToast(msg) {
 }
 
 /* ── Scanner health banner ───────────────────────────── */
-function applyHealthBanner(status, stats) {
+function applyHealthBanner(status, stats, heartbeat) {
   const bar = $('scanner-alert');
   const msg = $('scanner-alert-msg');
   if (!bar || !msg) return;
 
   const parts = [];
+  const marketLive = status?.marketMode === 'LIVE';
 
-  if (status) {
-    if (status.dataStatus === 'DATA_BACKOFF') {
-      const age = status.dataAgeMinutes != null ? ` · data ${status.dataAgeMinutes}m old` : '';
-      parts.push(`Scanner in DATA_BACKOFF — ${status.consecutiveErrors} consecutive data errors${age}`);
-    } else if (status.consecutiveErrors > 5) {
-      parts.push(`${status.consecutiveErrors} consecutive data errors — scanner may be degraded`);
-    }
-    if (!status.scannerRunning) {
-      parts.push('Scanner process is not running');
-    }
+  // ── Data feed / error conditions ──────────────────────────────────────────
+  if (status?.dataStatus === 'DATA_BACKOFF') {
+    const age = status.dataAgeMinutes != null ? ` · data ${status.dataAgeMinutes}m old` : '';
+    parts.push(`Data feed backoff — ${status.consecutiveErrors} consecutive errors${age}`);
+  } else if ((status?.consecutiveErrors ?? 0) > 5) {
+    parts.push(`${status.consecutiveErrors} data errors — feed may be degraded`);
   }
 
-  if (stats && stats.lastSignalAt) {
-    const ageMs = Date.now() - new Date(stats.lastSignalAt + 'Z').getTime();
-    const ageHr = ageMs / 3_600_000;
-    // Only warn when market is live — overnight/maintenance silence is expected
-    const marketLive = status?.marketMode === 'LIVE';
-    const staleThreshold = marketLive ? 1 : 8; // 1h when live, 8h off-hours
-    if (ageHr > staleThreshold) {
-      const ageStr = ageHr >= 48 ? `${Math.round(ageHr / 24)}d` : `${Math.round(ageHr)}h`;
-      const ctx = marketLive ? 'scanner may not be emitting' : 'market may be closed';
-      parts.push(`Last signal ${ageStr} ago — ${ctx}`);
+  // ── Scanner health — heartbeat is the primary signal ──────────────────────
+  // The heartbeat table is updated every scan cycle regardless of whether a
+  // signal was generated.  Using lastSignalAt for health is wrong — a scanner
+  // with no qualifying setups would always look dead.
+  const hbAgeMs   = heartbeat?.ageMs ?? null;
+  const hbOnline  = heartbeat?.online ?? null;   // true if ageMs < 120 000
+
+  if (!status?.scannerRunning) {
+    parts.push('Scanner process not running');
+  } else if (hbAgeMs !== null && hbAgeMs > 10 * 60_000) {
+    // Heartbeat stale > 10 min — scanner has stopped
+    const ageMin = Math.round(hbAgeMs / 60_000);
+    parts.push(`Scanner offline — last heartbeat ${ageMin}m ago`);
+  } else if (marketLive && hbOnline) {
+    // Scanner is alive and market is live — surface long signal silence as info only
+    if (stats?.lastSignalAt) {
+      const sigAgeMs = Date.now() - new Date(stats.lastSignalAt + 'Z').getTime();
+      const sigAgeHr = sigAgeMs / 3_600_000;
+      if (sigAgeHr > 3) {
+        const ageStr = sigAgeHr >= 48 ? `${Math.round(sigAgeHr / 24)}d` : `${Math.round(sigAgeHr)}h`;
+        parts.push(`Scanner active — no qualifying setup in ${ageStr}`);
+      }
     }
+  } else if (marketLive && hbAgeMs === null && !status?.scannerRunning) {
+    parts.push('Scanner offline');
   }
 
   if (parts.length) {
@@ -342,15 +353,17 @@ function applyHealthBanner(status, stats) {
 
 /* ── Data fetch ──────────────────────────────────────── */
 async function load() {
-  const [sigRes, statsRes, statusRes] = await Promise.allSettled([
+  const [sigRes, statsRes, statusRes, hbRes] = await Promise.allSettled([
     fetch('/api/signals?limit=50').then(r => r.json()),
     fetch('/api/stats').then(r => r.json()),
     fetch('/api/status').then(r => r.json()),
+    fetch('/api/scanner/heartbeat').then(r => r.json()),
   ]);
 
-  const sigs   = sigRes.status   === 'fulfilled' ? sigRes.value   : null;
-  const stats  = statsRes.status  === 'fulfilled' ? statsRes.value  : null;
-  const status = statusRes.status === 'fulfilled' ? statusRes.value : null;
+  const sigs      = sigRes.status     === 'fulfilled' ? sigRes.value     : null;
+  const stats     = statsRes.status   === 'fulfilled' ? statsRes.value   : null;
+  const status    = statusRes.status  === 'fulfilled' ? statusRes.value  : null;
+  const heartbeat = hbRes.status      === 'fulfilled' ? hbRes.value      : null;
 
   if (Array.isArray(sigs)) {
     const sk = $('feed-skeleton');
@@ -370,7 +383,7 @@ async function load() {
   }
 
   if (stats && !stats.error) applyStats(stats);
-  applyHealthBanner(status, stats);
+  applyHealthBanner(status, stats, heartbeat);
 }
 
 /* ── Countdown ───────────────────────────────────────── */
