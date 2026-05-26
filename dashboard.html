@@ -19,6 +19,30 @@
       .page-content { grid-template-columns: 1fr; }
       .sidebar { display: none; }
     }
+    .scanner-alert-bar {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      padding: 7px 16px;
+      background: #7c3b00;
+      border-bottom: 1px solid #c45e00;
+      font-size: 12px;
+      font-weight: 600;
+      color: #ffb347;
+      flex-shrink: 0;
+    }
+    .scanner-alert-bar button {
+      background: none;
+      border: none;
+      color: #ffb347;
+      cursor: pointer;
+      font-size: 14px;
+      line-height: 1;
+      padding: 0 2px;
+      opacity: 0.75;
+    }
+    .scanner-alert-bar button:hover { opacity: 1; }
   </style>
 </head>
 <body>
@@ -73,6 +97,12 @@
     <div class="stat-bar-label">Breakeven</div>
     <div class="stat-bar-value" style="color:var(--orange)" id="s-be">—</div>
   </div>
+</div>
+
+<!-- ── SCANNER HEALTH BANNER ─────────────────────────── -->
+<div class="scanner-alert-bar" id="scanner-alert">
+  <span id="scanner-alert-msg"></span>
+  <button onclick="document.getElementById('scanner-alert').style.display='none'" title="Dismiss">✕</button>
 </div>
 
 <!-- ── MAIN CONTENT ─────────────────────────────────── -->
@@ -269,16 +299,56 @@ function showToast(msg) {
   setTimeout(() => t.remove(), 3200);
 }
 
+/* ── Scanner health banner ───────────────────────────── */
+function applyHealthBanner(status, stats) {
+  const bar = $('scanner-alert');
+  const msg = $('scanner-alert-msg');
+  if (!bar || !msg) return;
+
+  const parts = [];
+
+  if (status) {
+    if (status.dataStatus === 'DATA_BACKOFF') {
+      const age = status.dataAgeMinutes != null ? ` · data ${status.dataAgeMinutes}m old` : '';
+      parts.push(`Scanner in DATA_BACKOFF — ${status.consecutiveErrors} consecutive data errors${age}`);
+    } else if (status.consecutiveErrors > 5) {
+      parts.push(`${status.consecutiveErrors} consecutive data errors — scanner may be degraded`);
+    }
+    if (!status.scannerRunning) {
+      parts.push('Scanner process is not running');
+    }
+  }
+
+  if (stats && stats.lastSignalAt) {
+    const ageMs = Date.now() - new Date(stats.lastSignalAt + 'Z').getTime();
+    const ageHr = ageMs / 3_600_000;
+    if (ageHr > 2) {
+      const ageStr = ageHr >= 48 ? `${Math.round(ageHr / 24)}d` : `${Math.round(ageHr)}h`;
+      parts.push(`Last signal ${ageStr} ago — scanner may not be emitting`);
+    }
+  }
+
+  if (parts.length) {
+    msg.textContent = '⚠  ' + parts.join('  ·  ');
+    bar.style.display = 'flex';
+  } else {
+    bar.style.display = 'none';
+  }
+}
+
 /* ── Data fetch ──────────────────────────────────────── */
 async function load() {
-  try {
-    const [sr, ss] = await Promise.all([
-      fetch('/api/signals?limit=50'),
-      fetch('/api/stats'),
-    ]);
-    const [sigs, stats] = await Promise.all([sr.json(), ss.json()]);
+  const [sigRes, statsRes, statusRes] = await Promise.allSettled([
+    fetch('/api/signals?limit=50').then(r => r.json()),
+    fetch('/api/stats').then(r => r.json()),
+    fetch('/api/status').then(r => r.json()),
+  ]);
 
-    // Remove skeleton on first load
+  const sigs   = sigRes.status   === 'fulfilled' ? sigRes.value   : null;
+  const stats  = statsRes.status  === 'fulfilled' ? statsRes.value  : null;
+  const status = statusRes.status === 'fulfilled' ? statusRes.value : null;
+
+  if (Array.isArray(sigs)) {
     const sk = $('feed-skeleton');
     if (sk) sk.remove();
 
@@ -291,10 +361,12 @@ async function load() {
 
     signals = sigs;
     renderFeed();
-    applyStats(stats);
-  } catch (e) {
-    console.error('Fetch error:', e);
+  } else if (sigs && !Array.isArray(sigs)) {
+    console.warn('[dashboard] /api/signals returned non-array:', sigs);
   }
+
+  if (stats && !stats.error) applyStats(stats);
+  applyHealthBanner(status, stats);
 }
 
 /* ── Countdown ───────────────────────────────────────── */

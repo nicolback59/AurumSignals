@@ -716,7 +716,9 @@ app.get('/api/stats', (req, res) => {
      FROM   outcomes WHERE result = 'EXPIRED'
      GROUP  BY expiration_reason`
   ).all();
-  res.json({ total, last24h, byGrade, bySetup, byStrategy, byDir, outcomes, expiredByReason });
+  const lastSignalRow = db.prepare('SELECT received_at FROM signals ORDER BY received_at DESC LIMIT 1').get();
+  const lastSignalAt  = lastSignalRow ? lastSignalRow.received_at : null;
+  res.json({ total, last24h, byGrade, bySetup, byStrategy, byDir, outcomes, expiredByReason, lastSignalAt });
 });
 
 // ── Strategy status ───────────────────────────────────────────────────────────
