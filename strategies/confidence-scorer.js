@@ -8,7 +8,7 @@ const {
 // RESEARCH_THRESHOLDS — minimum to generate a signal candidate for backtest/learning.
 // These stay lenient so the system keeps training on signal quality.
 const RESEARCH_THRESHOLDS = {
-  MNQ_INTRADAY: 65,
+  MNQ_INTRADAY: 70,  // raised from 65 — v3.0 quality-focused filter
   MGC_SCALP:    55,
 };
 
@@ -17,7 +17,7 @@ const RESEARCH_THRESHOLDS = {
 // live notification.  Keep close to RESEARCH_THRESHOLDS — the quant scorer
 // second gate (STRONG_A_THRESHOLD) is the real quality filter for live alerts.
 const LIVE_THRESHOLDS = {
-  MNQ_INTRADAY: 67,  // 2 pts above research min (65) — quant scorer handles quality
+  MNQ_INTRADAY: 72,  // 2 pts above research min (70) — quant scorer handles quality
   MGC_SCALP:    60,  // 5 pts above research min (55) — quant scorer handles quality
 };
 
