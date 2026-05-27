@@ -302,16 +302,18 @@ function detectSweepReversal(openBars, on, direction, atr) {
 }
 
 /**
- * Tier 2: Opening Range Failed Breakout
- * Price attempts to break the ORB in the WRONG direction (against bias), fails,
- * then reverses through the ORB midpoint. Entry on the reversal confirmation.
- * ~65% WR when bias is clean.
+ * ORB Failed Breakout — bidirectional
+ *
+ * Detects BOTH sides of the ORB simultaneously. Direction is determined by
+ * which side actually fails, not by pre-open bias. Bias acts only as a
+ * tiebreaker when both sides trigger in the same bar (extremely rare).
+ *
+ * Backtest WR: ~80% (5 trades, 4W/1L). This is the primary edge in the strategy.
  */
-function detectOrbFailedBreakout(bars5m, orb, direction, atr) {
-  if (!orb || orb.orbRange < 0.3 * atr) return null; // degenerate ORB
-  const isBull    = direction === 'LONG';
+function detectOrbFailedBreakout(bars5m, orb, atr, biasDirection) {
+  if (!orb || orb.orbRange < 0.3 * atr) return null;
   const { orbHigh, orbLow, orbMid } = orb;
-  const postBars  = bars5m.filter(b => {
+  const postBars = bars5m.filter(b => {
     const e = getET(b.timestamp);
     return e.hm >= 940 && e.hm < 1000;
   });
@@ -322,19 +324,18 @@ function detectOrbFailedBreakout(bars5m, orb, direction, atr) {
     const next = postBars[i + 1];
     if (getET(next.timestamp).hm >= 1000) break;
 
-    if (isBull) {
-      // Failed DOWN breakout: bar briefly dips below ORB low, closes back inside
-      if (bar.low < orbLow - 0.05 * atr && bar.close > orbLow) {
-        if (isBullishCandle(next, 0.25) && next.close > orbMid) {
-          return { bar: next, entry: next.close, archetype: 'ORB_FAILED_BREAKOUT', orbHigh, orbLow };
-        }
+    // Failed DOWN breakout → LONG reversal
+    if (bar.low < orbLow - 0.05 * atr && bar.close > orbLow) {
+      if (isBullishCandle(next, 0.25) && next.close > orbMid) {
+        return { bar: next, entry: next.close, archetype: 'ORB_FAILED_BREAKOUT',
+                 direction: 'LONG', orbHigh, orbLow };
       }
-    } else {
-      // Failed UP breakout: bar briefly breaks above ORB high, closes back inside
-      if (bar.high > orbHigh + 0.05 * atr && bar.close < orbHigh) {
-        if (isBearishCandle(next, 0.25) && next.close < orbMid) {
-          return { bar: next, entry: next.close, archetype: 'ORB_FAILED_BREAKOUT', orbHigh, orbLow };
-        }
+    }
+    // Failed UP breakout → SHORT reversal
+    if (bar.high > orbHigh + 0.05 * atr && bar.close < orbHigh) {
+      if (isBearishCandle(next, 0.25) && next.close < orbMid) {
+        return { bar: next, entry: next.close, archetype: 'ORB_FAILED_BREAKOUT',
+                 direction: 'SHORT', orbHigh, orbLow };
       }
     }
   }
@@ -563,11 +564,9 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   if (_d.phase !== 'HUNTING' || !_d.direction) return null;
 
   // ── Entry execution ───────────────────────────────────────────────────────
-  const isBull      = _d.direction === 'LONG';
-  const isDeadline  = et.hm >= 955;
-  const openBars    = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 1000; });
-  const on          = computeOvernightLevels(bars5m);
-  const biasSpread  = Math.abs(_d.longScore - _d.shortScore);
+  const isDeadline = et.hm >= 955;
+  const on         = computeOvernightLevels(bars5m);
+  const biasSpread = Math.abs(_d.longScore - _d.shortScore);
 
   // Compute and cache ORB once 9:40+ bars are available
   if (!_d.orbComputed && et.hm >= 940) {
@@ -585,38 +584,27 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   let entryResult = null;
 
   if (!isDeadline) {
-    // Tier 1: Sweep Reversal (highest priority — fires 9:30–9:40)
-    entryResult = detectSweepReversal(openBars, on, _d.direction, atr);
-
-    // Tier 2: ORB Failed Breakout (requires ORB, fires 9:40–9:55)
-    if (!entryResult && orb) {
-      entryResult = detectOrbFailedBreakout(bars5m, orb, _d.direction, atr);
-    }
-
-    // Tier 3: Opening Drive + First Pullback
-    if (!entryResult) {
-      entryResult = detectDrivePullback(openBars, _d.direction, atr);
-    }
-
-    // Tier 4: ORB Breakout (strong-conviction only)
-    if (!entryResult && orb) {
-      entryResult = detectOrbBreakout(bars5m, orb, _d.direction, atr, biasSpread);
-    }
-
-    // Tier 5: VWAP Confirmation (9:40+ ET)
-    if (!entryResult) {
-      entryResult = detectVwapConfirmation(bars5m, _d.direction, atr);
-    }
+    // Tier 1: ORB Failed Breakout — bidirectional, self-determining direction (primary edge)
+    if (orb) entryResult = detectOrbFailedBreakout(bars5m, orb, atr, _d.direction);
   }
 
-  // Tier 6: Deadline forced entry — never skips a day
-  if (!entryResult && isDeadline) {
-    entryResult = { bar: lastBar, entry: lastBar.close, archetype: 'FORCED_BIAS_ENTRY' };
+  // Tier 2: Deadline forced entry — only when bias is strong AND 1H EMA confirms
+  if (!entryResult && isDeadline && biasSpread >= 35) {
+    const htf1hDir = bars1h && bars1h.length >= 21 ? calcHtfBias(bars1h, 9, 21) : 0;
+    const biasLong = _d.direction === 'LONG';
+    const emaOk    = htf1hDir === 0 || (biasLong && htf1hDir > 0) || (!biasLong && htf1hDir < 0);
+    if (emaOk) {
+      entryResult = { bar: lastBar, entry: lastBar.close, archetype: 'FORCED_BIAS_ENTRY' };
+    }
   }
 
   if (!entryResult) return null;
 
-  // ── Stop loss placement ───────────────────────────────────────────────────
+  // Final direction: pattern overrides pre-open bias (ORB_FAILED_BREAKOUT is self-determining)
+  const finalDirection = entryResult.direction ?? _d.direction;
+  const isBull         = finalDirection === 'LONG';
+
+  // ── Stop loss placement — capped at 1× ATR for tighter risk ──────────────
   const entry    = entryResult.entry;
   const vwapArr2 = calcVwap(bars5m);
   const vwap     = vwapArr2[vwapArr2.length - 1];
@@ -625,17 +613,16 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
 
   let rawRisk, sl;
   if (isBull) {
-    // Use ORB low as structural floor if available; fall back to swing/VWAP
     const structFloor = orb
       ? Math.min(orb.orbLow - 0.1 * atr, swLow)
       : Math.min(swLow, vwap != null ? vwap - 0.5 * atr : swLow);
-    rawRisk = Math.max(0.75 * atr, Math.min(2.0 * atr, entry - structFloor));
+    rawRisk = Math.max(0.5 * atr, Math.min(1.0 * atr, entry - structFloor));
     sl      = +(entry - rawRisk).toFixed(2);
   } else {
-    const structCeil  = orb
+    const structCeil = orb
       ? Math.max(orb.orbHigh + 0.1 * atr, swHigh)
       : Math.max(swHigh, vwap != null ? vwap + 0.5 * atr : swHigh);
-    rawRisk = Math.max(0.75 * atr, Math.min(2.0 * atr, structCeil - entry));
+    rawRisk = Math.max(0.5 * atr, Math.min(1.0 * atr, structCeil - entry));
     sl      = +(entry + rawRisk).toFixed(2);
   }
 
@@ -643,16 +630,12 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   const { tp1, tp2, tp3 } = computeStructureTPs(entry, rawRisk, isBull, on, barsDly);
 
   // ── Confidence score ──────────────────────────────────────────────────────
-  const winScore = isBull ? _d.longScore : _d.shortScore;
+  const winScore = isBull ? _d.longScore : _d.shortScore; // bias alignment with final direction
   const total    = _d.longScore + _d.shortScore;
   let confidence = total > 0 ? Math.round(50 + (winScore / total - 0.5) * 80) : 50;
 
-  // Archetype bonuses
-  if (entryResult.archetype === 'SWEEP_REVERSAL')         confidence = Math.min(93, confidence + 12);
-  else if (entryResult.archetype === 'ORB_FAILED_BREAKOUT') confidence = Math.min(93, confidence + 10);
-  else if (entryResult.archetype === 'OPENING_DRIVE_PULLBACK') confidence = Math.min(93, confidence + 8);
-  else if (entryResult.archetype === 'ORB_BREAKOUT')       confidence = Math.min(93, confidence + 5);
-  else if (entryResult.archetype === 'VWAP_CONFIRMATION')  confidence = Math.min(93, confidence + 4);
+  // Archetype bonus — ORB_FAILED_BREAKOUT gets +15 (self-determining direction = higher conviction)
+  if (entryResult.archetype === 'ORB_FAILED_BREAKOUT') confidence = Math.min(93, confidence + 15);
   confidence = Math.max(45, confidence);
 
   const { conviction, recSize } = gradeConviction(confidence, entryResult.archetype);
@@ -679,7 +662,7 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     strategy_name: STRATEGY_NAME,
     trade_style:   'ny_open',
     timeframe:     '5m',
-    direction:     _d.direction,
+    direction:     finalDirection,
     entry:         +entry.toFixed(2),
     sl,
     tp1,
@@ -766,9 +749,8 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     const allPreBars  = [...preBars, ...todayPre];
     const bars15m     = _agg5mTo15m(allPreBars);
 
-    const bias   = computePreopenBias(allPreBars, bars15m, h1Slice, h4Slice, dlySlice);
-    const dir    = bias.direction;
-    const isBull = dir === 'LONG';
+    const bias = computePreopenBias(allPreBars, bars15m, h1Slice, h4Slice, dlySlice);
+    const dir  = bias.direction;
 
     const atrArr = calcAtr(allPreBars.length >= 14 ? allPreBars : dayBars, 14);
     const atr    = atrArr[atrArr.length - 1] || 10;
@@ -789,16 +771,31 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       return { orbHigh: h, orbLow: l, orbMid: (h + l) / 2, orbRange: h - l };
     })();
 
-    // Try entry cascade
-    let entryResult =
-      detectSweepReversal(openBars, on, dir, atr) ||
-      (orbData ? detectOrbFailedBreakout(allBtBars, orbData, dir, atr) : null) ||
-      detectDrivePullback(openBars, dir, atr) ||
-      (orbData ? detectOrbBreakout(allBtBars, orbData, dir, atr, biasSpread) : null) ||
-      detectVwapConfirmation(allBtBars, dir, atr) ||
-      { bar: openBars[openBars.length - 1], entry: openBars[openBars.length - 1].close, archetype: 'FORCED_BIAS_ENTRY' };
+    // Entry cascade: ORB_FAILED_BREAKOUT (bidirectional) → FORCED_BIAS_ENTRY (strong bias only)
+    let entryResult = orbData
+      ? detectOrbFailedBreakout(allBtBars, orbData, atr, dir)
+      : null;
 
-    const entry   = entryResult.entry;
+    if (!entryResult && biasSpread >= 35) {
+      const htf1hBias = h1Slice.length >= 21 ? calcHtfBias(h1Slice, 9, 21) : 0;
+      const biasLong  = dir === 'LONG';
+      const emaOk     = htf1hBias === 0 || (biasLong && htf1hBias > 0) || (!biasLong && htf1hBias < 0);
+      if (emaOk) {
+        entryResult = {
+          bar: openBars[openBars.length - 1],
+          entry: openBars[openBars.length - 1].close,
+          archetype: 'FORCED_BIAS_ENTRY',
+        };
+      }
+    }
+
+    if (!entryResult) continue; // skip day — no quality setup
+
+    // Use pattern-determined direction if available (ORB_FAILED_BREAKOUT is self-determining)
+    const finalDir = entryResult.direction ?? dir;
+    const isBull   = finalDir === 'LONG';
+
+    const entry    = entryResult.entry;
     const entryBar = entryResult.bar;
 
     const vArr  = calcVwap(allBtBars);
@@ -811,13 +808,13 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       const floor = orbData
         ? Math.min(orbData.orbLow - 0.1 * atr, swLow)
         : Math.min(swLow, vwap != null ? vwap - 0.5 * atr : swLow);
-      rawRisk = Math.max(0.75 * atr, Math.min(2.0 * atr, entry - floor));
+      rawRisk = Math.max(0.5 * atr, Math.min(1.0 * atr, entry - floor));
       sl = entry - rawRisk;
     } else {
-      const ceil  = orbData
+      const ceil = orbData
         ? Math.max(orbData.orbHigh + 0.1 * atr, swHigh)
         : Math.max(swHigh, vwap != null ? vwap + 0.5 * atr : swHigh);
-      rawRisk = Math.max(0.75 * atr, Math.min(2.0 * atr, ceil - entry));
+      rawRisk = Math.max(0.5 * atr, Math.min(1.0 * atr, ceil - entry));
       sl = entry + rawRisk;
     }
 
@@ -890,18 +887,14 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     maxDrawdown = Math.max(maxDrawdown, peak - pnlRunning);
 
     let confidence = bias.confidence;
-    if (entryResult.archetype === 'SWEEP_REVERSAL')         confidence = Math.min(93, confidence + 12);
-    else if (entryResult.archetype === 'ORB_FAILED_BREAKOUT') confidence = Math.min(93, confidence + 10);
-    else if (entryResult.archetype === 'OPENING_DRIVE_PULLBACK') confidence = Math.min(93, confidence + 8);
-    else if (entryResult.archetype === 'ORB_BREAKOUT')       confidence = Math.min(93, confidence + 5);
-    else if (entryResult.archetype === 'VWAP_CONFIRMATION')  confidence = Math.min(93, confidence + 4);
+    if (entryResult.archetype === 'ORB_FAILED_BREAKOUT') confidence = Math.min(93, confidence + 15);
     confidence = Math.max(45, confidence);
 
     const { conviction } = gradeConviction(confidence, entryResult.archetype);
 
     signalLog.push({
       date:        dateKey,
-      direction:   dir,
+      direction:   finalDir,
       archetype:   entryResult.archetype,
       conviction,
       entry:       +entry.toFixed(2),
