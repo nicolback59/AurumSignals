@@ -18,7 +18,7 @@
 const fs       = require('fs');
 const path     = require('path');
 const Database = require('better-sqlite3');
-const { backtestNyOpen } = require('../strategies/nq-ny-open');
+const { backtestNyOpen } = require('../strategies/nq-ny-open-v3');
 
 // ── CLI args ──────────────────────────────────────────────────────────────────
 const argv    = process.argv.slice(2);
