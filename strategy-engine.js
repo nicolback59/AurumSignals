@@ -15,7 +15,7 @@
 
 const mnqIntraday = require('./strategies/mnq-intraday');
 const mgcScalp    = require('./strategies/mgc-scalp');
-const nqNyOpen    = require('./strategies/nq-ny-open');
+const nqNyOpen    = require('./strategies/nq-ny-open-v3');
 
 const {
   aggregate1mTo5m,
@@ -155,8 +155,8 @@ const STRATEGY_META = {
     instrument:  'MNQ',
     timeframe:   '5m',
     trade_style: 'ny_open',
-    threshold:   40,
-    description: 'One-trade-per-day NY open auction model — HTF bias + gap + overnight scoring',
+    threshold:   55,
+    description: 'One-trade-per-day NY open auction model v3 — self-determining archetypes, hard 35-pt stop cap, WATCHING phase',
   },
 };
 

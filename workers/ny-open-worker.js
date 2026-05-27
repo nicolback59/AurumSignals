@@ -15,7 +15,7 @@
 
 const path = require('path');
 const { openDb, heartbeat, bumpCycle, logWorkerError } = require('./worker-utils');
-const { computePreopenBias } = require('../strategies/nq-ny-open');
+const { computePreopenBias } = require('../strategies/nq-ny-open-v3');
 
 const WORKER_NAME = 'ny-open-worker';
 const SYMBOL_MNQ  = process.env.SYMBOL_MNQ  || 'MNQ1!';

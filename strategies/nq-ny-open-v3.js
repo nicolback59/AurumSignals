@@ -1,0 +1,923 @@
+'use strict';
+
+/**
+ * STRATEGY — NQ NY OPEN  v3.0  (Institutional-Grade Opening Auction)
+ *
+ * Instrument:  MNQ only
+ * Entry window: 9:35–10:00 ET  (9:30–9:34 is WATCHING — no entries)
+ * Time stop:   90 min / 11:00 ET
+ * Max stop:    35 MNQ pts (hard cap — eliminates catastrophic outlier losses)
+ *
+ * ── Design philosophy ────────────────────────────────────────────────────────
+ * v2.x failed (28.3% WR) because:
+ *   1. Pre-open directional bias used lagging EMAs → wrong direction >70% of the time
+ *   2. Pattern detectors were bias-dependent → scanned wrong side when bias was wrong
+ *   3. Stop cap was 2× ATR → catastrophic -286/-295 pt single-trade losses
+ *
+ * v3.0 fixes:
+ *   1. ALL pattern detectors are SELF-DETERMINING for direction — pattern = direction
+ *   2. Pre-open bias used as CONFIRMATION BONUS only, never as direction authority
+ *   3. Hard 35-pt stop cap eliminates outlier losses
+ *   4. First 5 minutes (9:30–9:34) are observation-only — no impulse chasing
+ *   5. Clean-room filter: TP1 path must be structurally clear
+ *
+ * ── Archetype hierarchy ──────────────────────────────────────────────────────
+ *   TIER 1  ORB_FAILED_BREAKOUT      — bidirectional, proven 80% WR in sample
+ *   TIER 1  LIQUIDITY_SWEEP_REVERSAL — bidirectional, overnight stop hunt reversal
+ *   TIER 2  FIRST_PULLBACK           — self-determining from opening drive direction
+ *   TIER 2  DISPLACEMENT_CONTINUATION— self-determining from displacement bar
+ *   TIER 3  VWAP_RECLAIM             — bidirectional VWAP reclaim/rejection
+ *   TIER 4  FORCED_BIAS_ENTRY        — deadline 10:00 ET, spread ≥ 40 only
+ */
+
+const {
+  calcAtr, calcVwap, calcRsi, calcAdx,
+  calcHtfBias, hasVolumeSpike,
+  detectMarketStructure,
+  isBullishCandle, isBearishCandle,
+  recentSwingLow, recentSwingHigh,
+  isChoppingAroundVwap,
+  getSessionInfo,
+} = require('./shared-indicators');
+
+const { deriveGradeAndProbs } = require('./confidence-scorer');
+
+const STRATEGY_NAME    = 'NQ_NY_OPEN';
+const STRATEGY_VERSION = '3.0';
+const LIVE_THRESHOLD   = 40;
+const MAX_STOP_PTS     = 35;  // hard stop cap — never risk more than this per trade
+
+// ── Macro blackout state ──────────────────────────────────────────────────────
+const _blackoutDates = new Set();
+function setBlackoutDates(dates) {
+  _blackoutDates.clear();
+  for (const d of (dates || [])) _blackoutDates.add(d);
+}
+
+// ── Daily state ───────────────────────────────────────────────────────────────
+const _d = {
+  dateKey:      null,
+  direction:    null,
+  longScore:    0,
+  shortScore:   0,
+  biasNotes:    [],
+  archetype:    null,
+  conviction:   null,
+  phase:        'IDLE',   // IDLE → PRE_OPEN → WATCHING → HUNTING → DONE
+  emitted:      false,
+  orbComputed:  false,
+  orbHigh:      null,
+  orbLow:       null,
+  openDriveDir: null,   // direction established by first 2-3 bars
+  openDriveAmt: 0,      // magnitude of opening drive in pts
+};
+
+// ── ET time helper ────────────────────────────────────────────────────────────
+function getET(ts) {
+  const d = new Date(ts);
+  try {
+    const et = new Date(d.toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    return {
+      h:   et.getHours(),
+      m:   et.getMinutes(),
+      hm:  et.getHours() * 100 + et.getMinutes(),
+      dow: et.getDay(),
+      dateKey: `${et.getFullYear()}-${String(et.getMonth()+1).padStart(2,'0')}-${String(et.getDate()).padStart(2,'0')}`,
+    };
+  } catch {
+    const h = ((d.getUTCHours() - 4) + 24) % 24;
+    return {
+      h, m: d.getUTCMinutes(), hm: h * 100 + d.getUTCMinutes(),
+      dow: d.getUTCDay(),
+      dateKey: d.toISOString().slice(0, 10),
+    };
+  }
+}
+
+// ── Overnight levels ──────────────────────────────────────────────────────────
+function computeOvernightLevels(bars5m) {
+  const ov = bars5m.slice(-Math.min(120, bars5m.length - 1), -1).filter(b => {
+    const e = getET(b.timestamp);
+    return e.hm < 930 || e.hm >= 1600;
+  });
+  if (ov.length < 5) return null;
+  const oHigh = Math.max(...ov.map(b => b.high));
+  const oLow  = Math.min(...ov.map(b => b.low));
+  return { overnightHigh: oHigh, overnightLow: oLow, overnightMid: (oHigh + oLow) / 2 };
+}
+
+// ── Opening range ─────────────────────────────────────────────────────────────
+function computeOpeningRange(bars5m) {
+  const orbBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 940; });
+  if (orbBars.length < 2) return null;
+  const h = Math.max(...orbBars.map(b => b.high));
+  const l = Math.min(...orbBars.map(b => b.low));
+  return { orbHigh: h, orbLow: l, orbMid: (h + l) / 2, orbRange: h - l };
+}
+
+// ── Key levels (S/R that can block price to TP1) ──────────────────────────────
+function buildKeyLevels(on, orb, barsDly, vwap) {
+  const levels = [];
+  if (on)       { levels.push(on.overnightHigh, on.overnightLow); }
+  if (orb)      { levels.push(orb.orbHigh, orb.orbLow); }
+  if (vwap)     { levels.push(vwap); }
+  if (barsDly?.length >= 2) {
+    const pd = barsDly[barsDly.length - 2];
+    levels.push(pd.high, pd.low, pd.close);
+  }
+  return levels.filter(l => l != null && l > 0);
+}
+
+// Returns true if the path from entry to tp1 has no key level blocking > 70% of the way
+function hasCleanRoom(entry, tp1, direction, keyLevels) {
+  const dist = Math.abs(tp1 - entry);
+  if (dist === 0) return false;
+  for (const l of keyLevels) {
+    const dToLevel = Math.abs(l - entry);
+    if (direction === 'LONG'  && l > entry + dist * 0.05 && l < tp1 - dist * 0.05) {
+      if (dToLevel < 0.70 * dist) return false;
+    }
+    if (direction === 'SHORT' && l < entry - dist * 0.05 && l > tp1 + dist * 0.05) {
+      if (dToLevel < 0.70 * dist) return false;
+    }
+  }
+  return true;
+}
+
+// ── Displacement bar check ────────────────────────────────────────────────────
+function isDisplacement(bar, atr, minBodyRatio = 0.45, minBodyAtr = 0.30) {
+  const body  = Math.abs(bar.close - bar.open);
+  const range = bar.high - bar.low;
+  return range > 0 && body >= minBodyRatio * range && body >= minBodyAtr * atr;
+}
+
+// ── Pre-open scoring (3 clean pillars, non-lagging) ───────────────────────────
+function computePreopenBias(bars5m, bars15m, bars1h, bars4h, barsDly) {
+  let lS = 0, sS = 0;
+  const notes = [];
+
+  // Pillar 1: Opening Gap Structure — 40 pts (most actionable pre-open signal)
+  if (barsDly?.length >= 2 && bars5m?.length > 0) {
+    const prevClose = barsDly[barsDly.length - 2]?.close;
+    const cur       = bars5m[bars5m.length - 1].close;
+    if (prevClose && cur) {
+      const g    = (cur - prevClose) / prevClose * 100;
+      const gAbs = Math.abs(g);
+      if (gAbs < 0.10) {
+        lS += 5; sS += 5; notes.push(`gap:flat(${g.toFixed(2)}%)`);
+      } else if (gAbs < 0.50) {
+        if (g > 0) { lS += 30; notes.push(`gap:up_cont(${g.toFixed(2)}%)`); }
+        else       { sS += 30; notes.push(`gap:dn_cont(${g.toFixed(2)}%)`); }
+      } else if (gAbs < 0.90) {
+        if (g > 0) { lS += 18; sS += 6; notes.push(`gap:up_med(${g.toFixed(2)}%)`); }
+        else       { sS += 18; lS += 6; notes.push(`gap:dn_med(${g.toFixed(2)}%)`); }
+      } else {
+        // Exhaustion gap (>0.9%) — fade bias ~62% historical
+        if (g > 0) { sS += 30; lS += 4; notes.push(`gap:exhaust_up(${g.toFixed(2)}%,FADE)`); }
+        else       { lS += 30; sS += 4; notes.push(`gap:exhaust_dn(${g.toFixed(2)}%,FADE)`); }
+      }
+    }
+  }
+
+  // Pillar 2: 1H EMA alignment — 35 pts (cleanest non-lagging trend filter)
+  if (bars1h?.length >= 21) {
+    const b = calcHtfBias(bars1h, 9, 21);
+    if (b > 0)      { lS += 35; notes.push('1H:BULL'); }
+    else if (b < 0) { sS += 35; notes.push('1H:BEAR'); }
+    else            { lS += 10; sS += 10; notes.push('1H:NEUT'); }
+  }
+
+  // Pillar 3: Overnight structure positioning — 25 pts
+  const on = computeOvernightLevels(bars5m ?? []);
+  if (on && bars5m?.length > 0) {
+    const price  = bars5m[bars5m.length - 1].close;
+    const oRange = on.overnightHigh - on.overnightLow;
+    const pos    = oRange > 0 ? (price - on.overnightLow) / oRange : 0.5;
+    if (pos > 0.70)      { lS += 20; notes.push(`ON:upper(${pos.toFixed(2)})`); }
+    else if (pos < 0.30) { sS += 20; notes.push(`ON:lower(${pos.toFixed(2)})`); }
+    else                 { lS += 5; sS += 5; notes.push(`ON:mid(${pos.toFixed(2)})`); }
+    // Near extreme = strong S/R
+    if (pos <= 0.08) { lS += 5; notes.push('ON:at_low_support'); }
+    if (pos >= 0.92) { sS += 5; notes.push('ON:at_high_resist'); }
+  }
+
+  const direction  = lS >= sS ? 'LONG' : 'SHORT';
+  const winScore   = Math.max(lS, sS);
+  const total      = lS + sS;
+  const confidence = total > 0 ? Math.round(50 + (winScore / total - 0.5) * 80) : 50;
+  return { direction, longScore: lS, shortScore: sS, confidence, notes };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ARCHETYPE DETECTORS — all self-determining for direction
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * TIER 1: ORB Failed Breakout (bidirectional)
+ * Price breaks ORB in one direction, fails, reverses through midpoint.
+ * Direction = opposite of the failed break.
+ * Window: 9:40–9:55 ET
+ */
+function detectOrbFailedBreakout(bars5m, orb, atr) {
+  if (!orb || orb.orbRange < 0.25 * atr) return null;
+  const { orbHigh, orbLow, orbMid } = orb;
+  const postBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 940 && e.hm < 1000; });
+  if (postBars.length < 2) return null;
+
+  for (let i = 0; i < postBars.length - 1; i++) {
+    const bar  = postBars[i];
+    const next = postBars[i + 1];
+    if (getET(next.timestamp).hm >= 1000) break;
+
+    // Failed DOWN → LONG reversal
+    if (bar.low < orbLow - 0.05 * atr && bar.close > orbLow) {
+      if (isBullishCandle(next, 0.30) && next.close > orbMid) {
+        return { bar: next, entry: next.close, direction: 'LONG', archetype: 'ORB_FAILED_BREAKOUT',
+                 structStop: orbLow - 3, orbHigh, orbLow };
+      }
+    }
+    // Failed UP → SHORT reversal
+    if (bar.high > orbHigh + 0.05 * atr && bar.close < orbHigh) {
+      if (isBearishCandle(next, 0.30) && next.close < orbMid) {
+        return { bar: next, entry: next.close, direction: 'SHORT', archetype: 'ORB_FAILED_BREAKOUT',
+                 structStop: orbHigh + 3, orbHigh, orbLow };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * TIER 1: Liquidity Sweep Reversal (bidirectional)
+ * NQ spikes through overnight high/low (institutional stop hunt), then reverses hard.
+ * Direction = opposite of the sweep.
+ * Window: 9:30–9:44 ET  (sweeps typically happen in first 15 min)
+ */
+function detectLiquiditySweepReversal(bars5m, on, atr) {
+  if (!on) return null;
+  const openBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 945; });
+  if (openBars.length < 2) return null;
+
+  for (let i = 0; i < openBars.length - 1; i++) {
+    const bar  = openBars[i];
+    const next = openBars[i + 1];
+    if (getET(next.timestamp).hm >= 945) break;
+
+    // Sweep of overnight LOW → LONG reversal
+    if (bar.low < on.overnightLow - 0.20 * atr
+        && bar.close > on.overnightLow + 0.05 * atr) {
+      if (isDisplacement(next, atr, 0.40, 0.30) && isBullishCandle(next, 0.40)) {
+        return { bar: next, entry: next.close, direction: 'LONG',
+                 archetype: 'LIQUIDITY_SWEEP_REVERSAL',
+                 structStop: bar.low - 2, sweepLevel: on.overnightLow };
+      }
+    }
+    // Sweep of overnight HIGH → SHORT reversal
+    if (bar.high > on.overnightHigh + 0.20 * atr
+        && bar.close < on.overnightHigh - 0.05 * atr) {
+      if (isDisplacement(next, atr, 0.40, 0.30) && isBearishCandle(next, 0.40)) {
+        return { bar: next, entry: next.close, direction: 'SHORT',
+                 archetype: 'LIQUIDITY_SWEEP_REVERSAL',
+                 structStop: bar.high + 2, sweepLevel: on.overnightHigh };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * TIER 2: First Pullback Continuation
+ * Opening drive establishes a clear direction (>0.8× ATR), price pulls back
+ * 35–55%, then resumes with a displacement bar.
+ * Direction = opening drive direction (self-determining).
+ * Window: 9:38–9:55 ET
+ */
+function detectFirstPullback(bars5m, atr) {
+  const driveBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 940; });
+  if (driveBars.length < 2) return null;
+
+  const openPrice = driveBars[0].open;
+  const driveHigh = Math.max(...driveBars.map(b => b.high));
+  const driveLow  = Math.min(...driveBars.map(b => b.low));
+  const lastClose = driveBars[driveBars.length - 1].close;
+
+  const upDrive   = lastClose - openPrice;
+  const downDrive = openPrice - lastClose;
+  const driveDir  = Math.abs(upDrive) >= Math.abs(downDrive) ? (upDrive > 0 ? 'LONG' : 'SHORT') : null;
+  if (!driveDir) return null;
+
+  const driveMag = Math.abs(lastClose - openPrice);
+  if (driveMag < 0.8 * atr) return null; // drive too small — not a real impulse
+
+  const pullBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 938 && e.hm < 1000; });
+  if (pullBars.length < 2) return null;
+
+  const isBull = driveDir === 'LONG';
+
+  for (let i = 0; i < pullBars.length - 1; i++) {
+    const bar  = pullBars[i];
+    const next = pullBars[i + 1];
+    if (getET(next.timestamp).hm >= 1000) break;
+
+    const pbRatio = isBull
+      ? driveMag > 0 ? (driveHigh - bar.low)  / driveMag : 0
+      : driveMag > 0 ? (bar.high  - driveLow) / driveMag : 0;
+
+    if (pbRatio >= 0.35 && pbRatio <= 0.55) {
+      if (isBull && isDisplacement(next, atr, 0.40) && isBullishCandle(next, 0.40)) {
+        const structStop = Math.min(bar.low, driveBars[driveBars.length - 1].low) - 3;
+        return { bar: next, entry: next.close, direction: 'LONG',
+                 archetype: 'FIRST_PULLBACK', structStop, driveMag };
+      }
+      if (!isBull && isDisplacement(next, atr, 0.40) && isBearishCandle(next, 0.40)) {
+        const structStop = Math.max(bar.high, driveBars[driveBars.length - 1].high) + 3;
+        return { bar: next, entry: next.close, direction: 'SHORT',
+                 archetype: 'FIRST_PULLBACK', structStop, driveMag };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * TIER 2: Displacement Continuation
+ * A large displacement candle (body > 0.55× range, > 0.45× ATR) establishes
+ * a direction. Price pulls back 40–60% to the displacement midpoint on smaller
+ * bars. Entry on resumption bar that closes beyond the pullback extreme.
+ * Window: 9:38–9:55 ET
+ */
+function detectDisplacementContinuation(bars5m, atr) {
+  const eligible = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 1000; });
+  if (eligible.length < 3) return null;
+
+  for (let i = 0; i < eligible.length - 2; i++) {
+    const dispBar = eligible[i];
+    if (getET(dispBar.timestamp).hm < 930) continue;
+    if (!isDisplacement(dispBar, atr, 0.55, 0.45)) continue;
+
+    const isBull    = dispBar.close > dispBar.open;
+    const dispRange = Math.abs(dispBar.close - dispBar.open);
+    const dispMid   = (dispBar.open + dispBar.close) / 2;
+
+    // Find a pullback bar that retraces to dispMid zone (40-65%)
+    for (let j = i + 1; j < eligible.length - 1; j++) {
+      const bar  = eligible[j];
+      const next = eligible[j + 1];
+      if (getET(next.timestamp).hm >= 1000) break;
+
+      const atMid = isBull
+        ? bar.low <= dispMid + 0.20 * dispRange && bar.low >= dispMid - 0.35 * dispRange
+        : bar.high >= dispMid - 0.20 * dispRange && bar.high <= dispMid + 0.35 * dispRange;
+
+      if (!atMid) continue;
+
+      if (isBull && isBullishCandle(next, 0.35) && next.close > dispBar.close - 0.10 * dispRange) {
+        const structStop = Math.min(bar.low, dispBar.open) - 4;
+        return { bar: next, entry: next.close, direction: 'LONG',
+                 archetype: 'DISPLACEMENT_CONTINUATION', structStop };
+      }
+      if (!isBull && isBearishCandle(next, 0.35) && next.close < dispBar.close + 0.10 * dispRange) {
+        const structStop = Math.max(bar.high, dispBar.open) + 4;
+        return { bar: next, entry: next.close, direction: 'SHORT',
+                 archetype: 'DISPLACEMENT_CONTINUATION', structStop };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * TIER 3: VWAP Reclaim / Rejection
+ * Price crosses VWAP with conviction, confirming a direction.
+ * Direction = direction of the VWAP cross.
+ * Window: 9:40–9:55 ET
+ */
+function detectVwapReclaim(bars5m, atr) {
+  const vwapArr = calcVwap(bars5m);
+  const lateBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 940 && e.hm < 1000; });
+
+  for (const bar of lateBars) {
+    const idx  = bars5m.indexOf(bar);
+    const vwap = idx >= 0 ? vwapArr[idx] : null;
+    if (!vwap) continue;
+
+    const prev = bars5m[idx - 1];
+    if (!prev) continue;
+    const prevVwap = vwapArr[idx - 1];
+    if (!prevVwap) continue;
+
+    const next = bars5m[idx + 1];
+    if (!next || getET(next.timestamp).hm >= 1000) continue;
+
+    // LONG reclaim: prior close < VWAP, current close > VWAP + 0.12× ATR with body
+    if (prev.close < prevVwap && bar.close > vwap + 0.12 * atr && isDisplacement(bar, atr, 0.35, 0.25)) {
+      if (isBullishCandle(next, 0.30) && next.close > vwap) {
+        return { bar: next, entry: next.close, direction: 'LONG',
+                 archetype: 'VWAP_RECLAIM', structStop: vwap - 0.45 * atr };
+      }
+    }
+    // SHORT rejection: prior close > VWAP, current close < VWAP - 0.12× ATR with body
+    if (prev.close > prevVwap && bar.close < vwap - 0.12 * atr && isDisplacement(bar, atr, 0.35, 0.25)) {
+      if (isBearishCandle(next, 0.30) && next.close < vwap) {
+        return { bar: next, entry: next.close, direction: 'SHORT',
+                 archetype: 'VWAP_RECLAIM', structStop: vwap + 0.45 * atr };
+      }
+    }
+  }
+  return null;
+}
+
+// ── Conviction grading ────────────────────────────────────────────────────────
+const TIER1_SET = new Set(['ORB_FAILED_BREAKOUT', 'LIQUIDITY_SWEEP_REVERSAL']);
+const TIER2_SET = new Set(['FIRST_PULLBACK', 'DISPLACEMENT_CONTINUATION']);
+
+function gradeConviction(confidence, archetype) {
+  if (confidence >= 78 && TIER1_SET.has(archetype)) return { conviction: 'A+', recSize: 'FULL' };
+  if (confidence >= 65 && (TIER1_SET.has(archetype) || TIER2_SET.has(archetype))) return { conviction: 'A', recSize: 'FULL' };
+  if (confidence >= 55) return { conviction: 'B', recSize: 'HALF' };
+  return { conviction: 'C', recSize: 'MIN' };
+}
+
+// ── Structure-snapped TPs ─────────────────────────────────────────────────────
+function computeStructureTPs(entry, rawRisk, isBull, on, barsDly) {
+  const b1 = isBull ? entry + 1.5 * rawRisk : entry - 1.5 * rawRisk;
+  const b2 = isBull ? entry + 2.5 * rawRisk : entry - 2.5 * rawRisk;
+  const b3 = isBull ? entry + 3.5 * rawRisk : entry - 3.5 * rawRisk;
+
+  let tp2 = b2;
+  if (on) {
+    const snap = isBull ? on.overnightHigh : on.overnightLow;
+    if (snap && Math.abs(snap - b2) / rawRisk < 0.4) tp2 = snap;
+  }
+  let tp3 = b3;
+  if (barsDly?.length >= 2) {
+    const pd   = barsDly[barsDly.length - 2];
+    const snap = isBull ? pd.high : pd.low;
+    if (Math.abs(snap - b3) / rawRisk < 0.4) tp3 = snap;
+  }
+  return { tp1: +b1.toFixed(2), tp2: +tp2.toFixed(2), tp3: +tp3.toFixed(2) };
+}
+
+// ── Confidence per archetype ──────────────────────────────────────────────────
+const BASE_CONFIDENCE = {
+  ORB_FAILED_BREAKOUT:         72,
+  LIQUIDITY_SWEEP_REVERSAL:    68,
+  FIRST_PULLBACK:              62,
+  DISPLACEMENT_CONTINUATION:   60,
+  VWAP_RECLAIM:                57,
+  FORCED_BIAS_ENTRY:           50,
+};
+
+function calcConfidence(archetype, entryDir, biasDir, biasSpread) {
+  let c = BASE_CONFIDENCE[archetype] ?? 50;
+  if (entryDir === biasDir)    c += 5;  // bias agrees with pattern direction
+  if (biasSpread >= 30)        c += 3;  // strong pre-open conviction
+  return Math.min(93, Math.max(45, c));
+}
+
+// ── Main evaluate ─────────────────────────────────────────────────────────────
+function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
+  if (!bars5m || bars5m.length < 20) return null;
+
+  const lastBar = bars5m[bars5m.length - 1];
+  const et      = getET(lastBar.timestamp);
+  if (et.dow === 0 || et.dow === 6) return null;
+
+  // Macro blackout
+  if (_blackoutDates.has(et.dateKey)) {
+    if (_d.dateKey !== et.dateKey) console.log(`[NQ_NY_OPEN] ${et.dateKey} MACRO BLACKOUT — skipped`);
+    _d.dateKey = et.dateKey;
+    return null;
+  }
+
+  // Daily state reset
+  if (et.dateKey !== _d.dateKey) {
+    Object.assign(_d, {
+      dateKey: et.dateKey, direction: null, longScore: 0, shortScore: 0,
+      biasNotes: [], archetype: null, conviction: null, phase: 'IDLE',
+      emitted: false, orbComputed: false, orbHigh: null, orbLow: null,
+      openDriveDir: null, openDriveAmt: 0,
+    });
+  }
+
+  if (_d.emitted) return null;
+  if (et.hm < 920 || et.hm >= 1005) return null;
+
+  const barsDly    = cfg.barsDly ?? [];
+  const atrArr     = calcAtr(bars5m, 14);
+  const atr        = atrArr[atrArr.length - 1];
+  if (!atr || atr < 4) return null;
+
+  // Pre-open scoring 9:20–9:29
+  if (et.hm < 930 && (_d.phase === 'IDLE' || _d.phase === 'PRE_OPEN')) {
+    const bias   = computePreopenBias(bars5m, bars15m, bars1h, bars4h, barsDly);
+    _d.direction = bias.direction;
+    _d.longScore = bias.longScore; _d.shortScore = bias.shortScore;
+    _d.biasNotes = bias.notes; _d.phase = 'PRE_OPEN';
+    return null;
+  }
+
+  // 9:30–9:34: WATCHING — observe first bar, no entries
+  if (et.hm >= 930 && et.hm < 935) {
+    if (_d.phase === 'IDLE' || _d.phase === 'PRE_OPEN') {
+      if (!_d.direction) {
+        const bias   = computePreopenBias(bars5m, bars15m, bars1h, bars4h, barsDly);
+        _d.direction = bias.direction;
+        _d.longScore = bias.longScore; _d.shortScore = bias.shortScore;
+        _d.biasNotes = bias.notes;
+      }
+      _d.phase = 'WATCHING';
+    }
+    return null;
+  }
+
+  // Transition to HUNTING at 9:35
+  if (et.hm >= 935 && (_d.phase === 'WATCHING' || _d.phase === 'IDLE' || _d.phase === 'PRE_OPEN')) {
+    if (!_d.direction) {
+      const bias   = computePreopenBias(bars5m, bars15m, bars1h, bars4h, barsDly);
+      _d.direction = bias.direction;
+      _d.longScore = bias.longScore; _d.shortScore = bias.shortScore;
+      _d.biasNotes = bias.notes;
+    }
+    _d.phase = 'HUNTING';
+  }
+
+  if (_d.phase !== 'HUNTING') return null;
+
+  const isDeadline = et.hm >= 1000;
+  const on         = computeOvernightLevels(bars5m);
+  const biasSpread = Math.abs(_d.longScore - _d.shortScore);
+
+  // Cache ORB at 9:40+
+  if (!_d.orbComputed && et.hm >= 940) {
+    const o = computeOpeningRange(bars5m);
+    if (o) { _d.orbHigh = o.orbHigh; _d.orbLow = o.orbLow; _d.orbComputed = true; }
+  }
+  const orb = (_d.orbHigh && _d.orbLow)
+    ? { orbHigh: _d.orbHigh, orbLow: _d.orbLow, orbMid: (_d.orbHigh + _d.orbLow) / 2, orbRange: _d.orbHigh - _d.orbLow }
+    : null;
+
+  let entryResult = null;
+
+  if (!isDeadline) {
+    // TIER 1
+    entryResult = detectLiquiditySweepReversal(bars5m, on, atr);
+    if (!entryResult && orb) entryResult = detectOrbFailedBreakout(bars5m, orb, atr);
+    // TIER 2
+    if (!entryResult) entryResult = detectFirstPullback(bars5m, atr);
+    if (!entryResult) entryResult = detectDisplacementContinuation(bars5m, atr);
+    // TIER 3
+    if (!entryResult) entryResult = detectVwapReclaim(bars5m, atr);
+  }
+
+  // TIER 4: Deadline forced entry (10:00 ET) — strong bias + EMA confirmation only
+  if (!entryResult && isDeadline && biasSpread >= 40) {
+    const ema1h = bars1h?.length >= 21 ? calcHtfBias(bars1h, 9, 21) : 0;
+    const biasL = _d.direction === 'LONG';
+    const emaOk = ema1h === 0 || (biasL && ema1h > 0) || (!biasL && ema1h < 0);
+    if (emaOk) entryResult = { bar: lastBar, entry: lastBar.close, direction: _d.direction, archetype: 'FORCED_BIAS_ENTRY' };
+  }
+
+  if (!entryResult) return null;
+
+  const finalDir = entryResult.direction ?? _d.direction;
+  const isBull   = finalDir === 'LONG';
+
+  // ── Stop placement ──────────────────────────────────────────────────────────
+  const entry    = entryResult.entry;
+  const vwapArr2 = calcVwap(bars5m);
+  const vwap     = vwapArr2[vwapArr2.length - 1];
+  const swLow    = recentSwingLow(bars5m,  10);
+  const swHigh   = recentSwingHigh(bars5m, 10);
+
+  let rawRisk;
+  if (entryResult.structStop != null) {
+    // Use archetype-specific structural stop
+    rawRisk = Math.abs(entry - entryResult.structStop);
+  } else if (isBull) {
+    const floor = orb
+      ? Math.min(orb.orbLow - 0.1 * atr, swLow)
+      : Math.min(swLow, vwap != null ? vwap - 0.4 * atr : swLow);
+    rawRisk = Math.max(0.4 * atr, entry - floor);
+  } else {
+    const ceil = orb
+      ? Math.max(orb.orbHigh + 0.1 * atr, swHigh)
+      : Math.max(swHigh, vwap != null ? vwap + 0.4 * atr : swHigh);
+    rawRisk = Math.max(0.4 * atr, ceil - entry);
+  }
+
+  // Hard cap
+  rawRisk = Math.min(rawRisk, MAX_STOP_PTS);
+  rawRisk = Math.max(rawRisk, 8); // minimum 8 pts — prevent degenerate stops
+
+  const sl = isBull ? +(entry - rawRisk).toFixed(2) : +(entry + rawRisk).toFixed(2);
+
+  // ── TPs + clean-room filter ─────────────────────────────────────────────────
+  const { tp1, tp2, tp3 } = computeStructureTPs(entry, rawRisk, isBull, on, barsDly);
+  const keyLevels = buildKeyLevels(on, orb, barsDly, vwap);
+  if (!hasCleanRoom(entry, tp1, finalDir, keyLevels)) return null; // blocked path — skip
+
+  // ── Confidence and conviction ───────────────────────────────────────────────
+  const confidence     = calcConfidence(entryResult.archetype, finalDir, _d.direction, biasSpread);
+  const { conviction, recSize } = gradeConviction(confidence, entryResult.archetype);
+
+  // ── Indicators ─────────────────────────────────────────────────────────────
+  const rsiArr = calcRsi(bars5m.map(b => b.close), 14);
+  const rsi    = rsiArr[rsiArr.length - 1];
+  const b4     = bars4h?.length >= 5  ? calcHtfBias(bars4h, 9, 21) : 0;
+  const b1     = bars1h?.length >= 21 ? calcHtfBias(bars1h, 9, 21) : 0;
+  const struct = bars1h?.length >= 20 ? detectMarketStructure(bars1h, 20) : 'UNCLEAR';
+  const sess   = getSessionInfo(lastBar.timestamp);
+  const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
+
+  _d.emitted = true; _d.archetype = entryResult.archetype;
+  _d.conviction = conviction; _d.phase = 'DONE';
+
+  return {
+    instrument:    'MNQ',
+    strategy_name: STRATEGY_NAME,
+    trade_style:   'ny_open',
+    timeframe:     '5m',
+    direction:     finalDir,
+    entry:         +entry.toFixed(2),
+    sl,
+    tp1, tp2, tp3,
+    rr:            1.5,
+    confidence,
+    conviction,
+    rec_size:      recSize,
+    grade,
+    win_prob_tp1, win_prob_tp2, win_prob_tp3,
+    score:         Math.round(confidence / 4),
+    setup:         'NQ NY Open v3',
+    archetype:     entryResult.archetype,
+    strategy_version: STRATEGY_VERSION,
+    htf_bias:      b4 > 0 ? 'BULL' : b4 < 0 ? 'BEAR' : 'MIXED',
+    session:       sess?.name ?? 'NY_OPEN',
+    be_trail_at_hm: 1015,
+    scale_out: [
+      { pct: 50, at: 'TP1', rr: 1.5 },
+      { pct: 30, at: 'TP2', rr: 2.5 },
+      { pct: 20, at: 'TP3', rr: 3.5 },
+    ],
+    trigger_reason: [
+      `${entryResult.archetype} | ${finalDir} | ${conviction}(${recSize})`,
+      `bias=${confidence}% biasSpread=${biasSpread} ${_d.direction}`,
+      `1H:${b1 > 0 ? 'BULL' : b1 < 0 ? 'BEAR' : 'NEUT'} struct=${struct}`,
+      entryResult.archetype === 'FORCED_BIAS_ENTRY' ? 'DEADLINE_10:00' : null,
+    ].filter(Boolean).join(' | '),
+    indicators: {
+      atr:        +atr.toFixed(2),
+      vwap:       vwap  != null ? +vwap.toFixed(2) : null,
+      rsi:        rsi   != null ? +rsi.toFixed(1)  : null,
+      htfBias:    b4,
+      htf2Bias:   b1,
+      htfStruct:  struct,
+      longScore:  _d.longScore,
+      shortScore: _d.shortScore,
+      biasSpread,
+      regime:     b4 > 0 ? 'TREND_BULL' : b4 < 0 ? 'TREND_BEAR' : 'MIXED',
+      orbHigh:    orb ? +orb.orbHigh.toFixed(2) : null,
+      orbLow:     orb ? +orb.orbLow.toFixed(2)  : null,
+    },
+    timestamp:    lastBar.timestamp,
+    trade_status: 'PENDING',
+  };
+}
+
+// ── Enhanced backtest with MFE/MAE ────────────────────────────────────────────
+function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
+  const dayMap = new Map();
+  for (const bar of bars5m) {
+    const { dateKey } = getET(bar.timestamp);
+    if (!dayMap.has(dateKey)) dayMap.set(dateKey, []);
+    dayMap.get(dateKey).push(bar);
+  }
+
+  const signalLog = [];
+  let wins = 0, losses = 0, totalPnl = 0;
+  let pnlRunning = 0, peak = 0, maxDrawdown = 0;
+
+  for (const dateKey of [...dayMap.keys()].sort()) {
+    const dayBars = dayMap.get(dateKey);
+    if (!dayBars || dayBars.length < 10) continue;
+    const et = getET(dayBars[0].timestamp);
+    if (et.dow === 0 || et.dow === 6) continue;
+
+    const cutoff   = dayBars[0].timestamp;
+    const h1Slice  = bars1h  ? bars1h.filter(b  => b.timestamp < cutoff) : [];
+    const h4Slice  = bars4h  ? bars4h.filter(b  => b.timestamp < cutoff) : [];
+    const dlySlice = barsDly ? barsDly.filter(b => b.timestamp < cutoff) : [];
+
+    const preBars    = bars5m.filter(b => b.timestamp < cutoff).slice(-200);
+    const todayPre   = dayBars.filter(b => getET(b.timestamp).hm < 930);
+    const allPreBars = [...preBars, ...todayPre];
+    const bars15m    = _agg5mTo15m(allPreBars);
+
+    const bias       = computePreopenBias(allPreBars, bars15m, h1Slice, h4Slice, dlySlice);
+    const biasDir    = bias.direction;
+    const biasSpread = Math.abs(bias.longScore - bias.shortScore);
+
+    const atrArr = calcAtr(allPreBars.length >= 14 ? allPreBars : dayBars, 14);
+    const atr    = atrArr[atrArr.length - 1] || 10;
+
+    const openBars = dayBars.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 1005; });
+    if (openBars.length < 2) continue;
+
+    const allBtBars = [...allPreBars, ...openBars];
+    const on        = computeOvernightLevels(allBtBars);
+
+    const orbData = (() => {
+      const ob = openBars.filter(b => getET(b.timestamp).hm < 940);
+      if (ob.length < 2) return null;
+      const h = Math.max(...ob.map(b => b.high));
+      const l = Math.min(...ob.map(b => b.low));
+      return { orbHigh: h, orbLow: l, orbMid: (h + l) / 2, orbRange: h - l };
+    })();
+
+    // Run same cascade as evaluate()
+    let entryResult =
+      detectLiquiditySweepReversal(allBtBars, on, atr) ||
+      (orbData ? detectOrbFailedBreakout(allBtBars, orbData, atr) : null) ||
+      detectFirstPullback(allBtBars, atr) ||
+      detectDisplacementContinuation(allBtBars, atr) ||
+      detectVwapReclaim(allBtBars, atr);
+
+    if (!entryResult && biasSpread >= 40) {
+      const ema1h  = h1Slice.length >= 21 ? calcHtfBias(h1Slice, 9, 21) : 0;
+      const biasL  = biasDir === 'LONG';
+      const emaOk  = ema1h === 0 || (biasL && ema1h > 0) || (!biasL && ema1h < 0);
+      if (emaOk) {
+        const lastOB = openBars[openBars.length - 1];
+        entryResult = { bar: lastOB, entry: lastOB.close, direction: biasDir, archetype: 'FORCED_BIAS_ENTRY' };
+      }
+    }
+
+    if (!entryResult) continue;
+
+    const finalDir = entryResult.direction ?? biasDir;
+    const isBull   = finalDir === 'LONG';
+    const entry    = entryResult.entry;
+    const entryBar = entryResult.bar;
+
+    const vArr  = calcVwap(allBtBars);
+    const vwap  = vArr[vArr.length - 1];
+    const swLow  = recentSwingLow(allBtBars,  10);
+    const swHigh = recentSwingHigh(allBtBars, 10);
+
+    let rawRisk;
+    if (entryResult.structStop != null) {
+      rawRisk = Math.abs(entry - entryResult.structStop);
+    } else if (isBull) {
+      const floor = orbData
+        ? Math.min(orbData.orbLow - 0.1 * atr, swLow)
+        : Math.min(swLow, vwap != null ? vwap - 0.4 * atr : swLow);
+      rawRisk = Math.max(0.4 * atr, entry - floor);
+    } else {
+      const ceil = orbData
+        ? Math.max(orbData.orbHigh + 0.1 * atr, swHigh)
+        : Math.max(swHigh, vwap != null ? vwap + 0.4 * atr : swHigh);
+      rawRisk = Math.max(0.4 * atr, ceil - entry);
+    }
+    rawRisk = Math.min(rawRisk, MAX_STOP_PTS);
+    rawRisk = Math.max(rawRisk, 8);
+
+    const sl       = isBull ? entry - rawRisk : entry + rawRisk;
+    const tps      = computeStructureTPs(entry, rawRisk, isBull, on, dlySlice);
+    const { tp1, tp2, tp3 } = tps;
+
+    // Clean-room filter
+    const keyLevels = buildKeyLevels(on, orbData, dlySlice, vwap);
+    if (!hasCleanRoom(entry, tp1, finalDir, keyLevels)) continue;
+
+    // 3-tranche simulation with MFE/MAE tracking
+    const futureBars = dayBars.filter(b => {
+      const e = getET(b.timestamp);
+      return b.timestamp > entryBar.timestamp && e.hm <= 1100;
+    });
+
+    let pnlPts = 0, stopLvl = sl, openFrac = 1.0;
+    let t1Done = false, t2Done = false, t3Done = false;
+    let mfe = 0, mae = 0; // max favorable/adverse excursion in pts
+
+    for (const bar of futureBars) {
+      const eBt = getET(bar.timestamp);
+      if (!t1Done && eBt.hm >= 1015) stopLvl = entry; // BE advancement at 10:15
+
+      const favorable = isBull ? bar.high - entry : entry - bar.low;
+      const adverse   = isBull ? entry - bar.low  : bar.high - entry;
+      mfe = Math.max(mfe, favorable);
+      mae = Math.max(mae, adverse);
+
+      if (isBull) {
+        if (openFrac > 0 && bar.low <= stopLvl) { pnlPts += openFrac * (stopLvl - entry); break; }
+        if (!t1Done && bar.high >= tp1)  { t1Done = true; pnlPts += 0.5 * (tp1 - entry); openFrac = 0.5; stopLvl = entry; }
+        if (t1Done && !t2Done && bar.high >= tp2) { t2Done = true; pnlPts += 0.3 * (tp2 - entry); openFrac = 0.2; }
+        if (t2Done && !t3Done && bar.high >= tp3) { t3Done = true; pnlPts += 0.2 * (tp3 - entry); openFrac = 0; break; }
+      } else {
+        if (openFrac > 0 && bar.high >= stopLvl) { pnlPts += openFrac * (entry - stopLvl); break; }
+        if (!t1Done && bar.low <= tp1)  { t1Done = true; pnlPts += 0.5 * (entry - tp1); openFrac = 0.5; stopLvl = entry; }
+        if (t1Done && !t2Done && bar.low <= tp2) { t2Done = true; pnlPts += 0.3 * (entry - tp2); openFrac = 0.2; }
+        if (t2Done && !t3Done && bar.low <= tp3) { t3Done = true; pnlPts += 0.2 * (entry - tp3); openFrac = 0; break; }
+      }
+    }
+    if (openFrac > 0) {
+      const last = futureBars[futureBars.length - 1];
+      if (last) pnlPts += openFrac * (isBull ? last.close - entry : entry - last.close);
+    }
+    pnlPts = +pnlPts.toFixed(2);
+
+    const outcome = t1Done ? 'WIN' : 'LOSS';
+    if (outcome === 'WIN') wins++; else losses++;
+    totalPnl   += pnlPts;
+    pnlRunning += pnlPts;
+    peak        = Math.max(peak, pnlRunning);
+    maxDrawdown = Math.max(maxDrawdown, peak - pnlRunning);
+
+    const confidence = calcConfidence(entryResult.archetype, finalDir, biasDir, biasSpread);
+    const { conviction } = gradeConviction(confidence, entryResult.archetype);
+
+    signalLog.push({
+      date: dateKey, direction: finalDir, archetype: entryResult.archetype,
+      conviction, entry: +entry.toFixed(2), sl: +sl.toFixed(2), tp1,
+      rawRisk: +rawRisk.toFixed(2), outcome, pnl_pts: pnlPts,
+      t1Hit: t1Done, t2Hit: t2Done, t3Hit: t3Done,
+      mfe: +mfe.toFixed(2), mae: +mae.toFixed(2),
+      confidence, longScore: bias.longScore, shortScore: bias.shortScore,
+      biasAlignment: finalDir === biasDir ? 'ALIGNED' : 'CONTRA',
+      strategy_name: STRATEGY_NAME,
+      hour_et: getET(entryBar.timestamp).h,
+      session: 'NY_OPEN',
+      regime: h4Slice.length >= 5
+        ? (calcHtfBias(h4Slice, 9, 21) > 0 ? 'TREND_BULL' : calcHtfBias(h4Slice, 9, 21) < 0 ? 'TREND_BEAR' : 'MIXED')
+        : 'UNKNOWN',
+    });
+  }
+
+  const tradeCount   = wins + losses;
+  const winRate      = tradeCount > 0 ? wins / tradeCount : 0;
+  const wTrades      = signalLog.filter(t => t.outcome === 'WIN');
+  const lTrades      = signalLog.filter(t => t.outcome === 'LOSS');
+  const avgWin       = wTrades.length ? wTrades.reduce((s, t) => s + t.pnl_pts, 0) / wTrades.length : 0;
+  const avgLoss      = lTrades.length ? Math.abs(lTrades.reduce((s, t) => s + t.pnl_pts, 0) / lTrades.length) : 0;
+  const profitFactor = avgLoss > 0 ? (wins * avgWin) / (losses * avgLoss) : null;
+  const returns      = signalLog.map(t => t.pnl_pts);
+  const mean         = returns.reduce((s, v) => s + v, 0) / (returns.length || 1);
+  const variance     = returns.reduce((s, v) => s + (v - mean) ** 2, 0) / Math.max(returns.length - 1, 1);
+  const sharpe       = variance > 0 ? +(mean / Math.sqrt(variance) * Math.sqrt(252)).toFixed(3) : null;
+
+  const avgMfe = signalLog.length ? +(signalLog.reduce((s, t) => s + t.mfe, 0) / signalLog.length).toFixed(2) : 0;
+  const avgMae = signalLog.length ? +(signalLog.reduce((s, t) => s + t.mae, 0) / signalLog.length).toFixed(2) : 0;
+  const alignedTrades = signalLog.filter(t => t.biasAlignment === 'ALIGNED');
+  const alignedWR     = alignedTrades.length ? alignedTrades.filter(t => t.outcome === 'WIN').length / alignedTrades.length : null;
+
+  const byArchetype = {};
+  for (const t of signalLog) {
+    if (!byArchetype[t.archetype]) byArchetype[t.archetype] = { wins: 0, total: 0, totalPnl: 0 };
+    byArchetype[t.archetype].total++;
+    byArchetype[t.archetype].totalPnl += t.pnl_pts;
+    if (t.outcome === 'WIN') byArchetype[t.archetype].wins++;
+  }
+
+  return {
+    metrics: {
+      tradeCount, winRate, wins, losses,
+      totalPnl:     +totalPnl.toFixed(2),
+      expectancy:   tradeCount > 0 ? +(totalPnl / tradeCount).toFixed(2) : 0,
+      profitFactor: profitFactor != null ? +profitFactor.toFixed(3) : null,
+      maxDrawdown:  +maxDrawdown.toFixed(2),
+      sharpe, avgWin: +avgWin.toFixed(2), avgLoss: +avgLoss.toFixed(2),
+      avgMfe, avgMae,
+      alignedWR:    alignedWR != null ? +alignedWR.toFixed(4) : null,
+      byArchetype,
+    },
+    signalLog,
+  };
+}
+
+function _agg5mTo15m(bars) {
+  const out = [];
+  for (let i = 0; i + 2 < bars.length; i += 3) {
+    const s = bars.slice(i, i + 3);
+    out.push({
+      timestamp: s[0].timestamp, open: s[0].open,
+      high: Math.max(...s.map(b => b.high)), low: Math.min(...s.map(b => b.low)),
+      close: s[2].close, volume: s.reduce((a, b) => a + (b.volume || 0), 0),
+    });
+  }
+  return out;
+}
+
+function reset() {
+  Object.assign(_d, {
+    dateKey: null, direction: null, longScore: 0, shortScore: 0,
+    biasNotes: [], archetype: null, conviction: null, phase: 'IDLE',
+    emitted: false, orbComputed: false, orbHigh: null, orbLow: null,
+    openDriveDir: null, openDriveAmt: 0,
+  });
+}
+
+module.exports = {
+  evaluate, reset, backtestNyOpen, computePreopenBias, setBlackoutDates,
+  STRATEGY_NAME, STRATEGY_VERSION, LIVE_THRESHOLD,
+};
