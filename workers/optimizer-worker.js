@@ -15,6 +15,28 @@ const MIN_TRADES_90D     = 30;
 const VARIATIONS_PER_RUN = 25;
 const TUNABLE = ['slPts', 'minScore', 'stdvLen', 'std2', 'swingLook', 'swingL'];
 
+// MGC-specific designed candidates — tested on every run alongside random perturbations.
+// Each encodes a distinct research hypothesis about what lifts MGC Scalp edge.
+// Param semantics (wired in strategies/mgc-scalp.js):
+//   slPts    → max risk pts gate (6–14; lower = fewer but higher-RR setups)
+//   minScore → confidence boost above base threshold 55 (minScore-7 added; 7 = baseline)
+//   std2     → chop filter threshold (2.2 → 0.70; higher = stricter)
+//   stdvLen  → ADX floor for trend entries (direct value; default 16)
+//   swingLook → swing lookback bars for SL placement (higher = wider, better-defined levels)
+//   swingL   → SR distance min in ATR (swingL=5 → 0.35 ATR; lower swingL = more lenient)
+const MGC_DESIGNED_CANDIDATES = [
+  // V2_QUALITY: raise quality gate and tighten chop filter — fewer, cleaner setups
+  { name: 'V2_QUALITY',        slPts: 9,  minScore: 10, std2: 2.4, stdvLen: 16, swingLook: 14, swingL: 6 },
+  // CHOP_PROTECTED: aggressive chop filtering + higher ADX floor for trend entries
+  { name: 'CHOP_PROTECTED',    slPts: 9,  minScore: 9,  std2: 2.6, stdvLen: 18, swingLook: 12, swingL: 5 },
+  // VWAP_ELITE: highest confidence threshold + longer swing lookback for robust SL levels
+  { name: 'VWAP_ELITE',        slPts: 8,  minScore: 12, std2: 2.3, stdvLen: 16, swingLook: 18, swingL: 7 },
+  // TREND_FILTERED: high ADX gate + tighter chop + deeper swing detection
+  { name: 'TREND_FILTERED',    slPts: 10, minScore: 10, std2: 2.4, stdvLen: 22, swingLook: 20, swingL: 5 },
+  // CONSERVATIVE: tightest max-risk forces only best RR + highest conf gate
+  { name: 'CONSERVATIVE',      slPts: 8,  minScore: 11, std2: 2.5, stdvLen: 16, swingLook: 14, swingL: 6 },
+];
+
 const START_TIME = Date.now();
 
 const db = openDb();
@@ -60,10 +82,27 @@ function loadBars(db, symbols, daysBack) {
   return [];
 }
 
-function generateVariations(baseParams, count) {
+function generateVariations(baseParams, count, instrument) {
   const variations = [];
   const intKeys = new Set(['slPts', 'minScore', 'stdvLen', 'swingLook', 'swingL', 'atrLen']);
 
+  // MGC: always test designed candidates first, then fill remaining slots with perturbations
+  if (instrument === 'MGC') {
+    for (const dc of MGC_DESIGNED_CANDIDATES) {
+      if (variations.length >= count) break;
+      const candidate = { ...baseParams };
+      for (const [k, v] of Object.entries(dc)) {
+        if (k === 'name') continue;
+        const bounds = PARAM_BOUNDS[k];
+        if (!bounds) continue;
+        candidate[k] = Math.min(Math.max(v, bounds.min), bounds.max);
+      }
+      const isDupe = JSON.stringify(candidate) === JSON.stringify(baseParams);
+      if (!isDupe) variations.push(candidate);
+    }
+  }
+
+  // Fill remaining slots with random ±20% perturbations (works for both MNQ and MGC)
   let attempts = 0;
   while (variations.length < count && attempts < count * 10) {
     attempts++;
@@ -155,7 +194,7 @@ for (const strat of STRATEGIES) {
 
   console.log(`[${WORKER_NAME}] ${name}: baseline WR 30d=${baseline30.wr}% 90d=${baseline90.wr}%`);
 
-  const variations = generateVariations(baseParams, VARIATIONS_PER_RUN);
+  const variations = generateVariations(baseParams, VARIATIONS_PER_RUN, instrument);
   const passing = [];
 
   for (const variation of variations) {
