@@ -824,7 +824,7 @@ class Scanner extends EventEmitter {
       return;
     }
     const STRAT_LABELS = {
-      MNQ_INTRADAY: 'MNQ Intraday', MGC_SCALP: 'MGC Scalp',
+      MNQ_INTRADAY: 'MNQ Intraday', MGC_SCALP: 'MGC Scalp', NQ_NY_OPEN: 'NQ NY Open',
     };
     const stratLabel = STRAT_LABELS[sig.strategy_name] || sig.strategy_name || sig.instrument;
     const pnlStr     = pnlPts != null ? ` (+${pnlPts} pts)` : '';
@@ -3163,6 +3163,7 @@ class Scanner extends EventEmitter {
       const STRATEGY_CONFIGS = [
         { key: 'MGC_SCALP',    label: 'MGC Scalp',   instrument: 'MGC' },
         { key: 'MNQ_INTRADAY', label: 'MNQ Intraday', instrument: 'MNQ' },
+        { key: 'NQ_NY_OPEN',   label: 'NQ NY Open',  instrument: 'MNQ' },
       ];
 
       const weekEnd = new Date(weekStart + 'T00:00:00Z');

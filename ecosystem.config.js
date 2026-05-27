@@ -167,6 +167,30 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── NY OPEN PRE-OPEN ANALYSIS WORKER ──────────────────────────────────────
+    // Runs at 9:20 ET Mon–Fri, calculates the day's LONG/SHORT thesis, logs to DB.
+    // Provides an audit trail of pre-open analysis independent of the live signal.
+    // Cron uses system timezone; set TZ=America/New_York on the Droplet, OR adjust
+    // the cron offset to match UTC (13:20 UTC during EST, 12:20 UTC during EDT).
+    {
+      name:         'ny-open-worker',
+      script:       'workers/ny-open-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '20 9 * * 1-5',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/ny-open-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/ny-open-worker-out.log',
+      merge_logs:      true,
+    },
+
     // {
     //   name:         'report-worker',
     //   script:       'workers/report-worker.js',

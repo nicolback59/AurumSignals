@@ -15,6 +15,7 @@
 
 const mnqIntraday = require('./strategies/mnq-intraday');
 const mgcScalp    = require('./strategies/mgc-scalp');
+const nqNyOpen    = require('./strategies/nq-ny-open');
 
 const {
   aggregate1mTo5m,
@@ -62,6 +63,16 @@ function evaluateAll(barSets, cfg = {}) {
     }
   }
 
+  // ── NQ NY OPEN ───────────────────────────────────────────────────────────────
+  // One-trade-per-day opening auction model. barsDly passed via cfg so the strategy
+  // can compute gap structure and prior-day context without changing the call signature.
+  if (instrument === 'MNQ' || instrument == null) {
+    if (bars5m.length >= 20) {
+      const sig = nqNyOpen.evaluate(bars5m, bars15m, bars1h, bars4h, { ...cfg, barsDly }, barIdx);
+      if (sig) signals.push(sig);
+    }
+  }
+
   // ── MGC SCALP ────────────────────────────────────────────────────────────────
   // bars3mMgc is the execution TF (preferred); falls back to bars5m inside the strategy.
   if (instrument === 'MGC' || instrument == null) {
@@ -102,6 +113,7 @@ function buildBarSetsFrom15m(bars15m) {
 function resetAllStrategies() {
   mnqIntraday.reset();
   mgcScalp.reset();
+  nqNyOpen.reset();
 }
 
 const STRATEGY_META = {
@@ -120,6 +132,14 @@ const STRATEGY_META = {
     trade_style: 'scalp',
     threshold:   THRESHOLDS.MGC_SCALP,
     description: '5m VWAP/EMA scalp with 15m/30m/45m/1h multi-timeframe confluence',
+  },
+  NQ_NY_OPEN: {
+    name:        'NQ NY Open',
+    instrument:  'MNQ',
+    timeframe:   '5m',
+    trade_style: 'ny_open',
+    threshold:   40,
+    description: 'One-trade-per-day NY open auction model — HTF bias + gap + overnight scoring',
   },
 };
 

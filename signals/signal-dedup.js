@@ -27,6 +27,7 @@
 const FAMILY = {
   MNQ_INTRADAY: 'MNQ_MOMENTUM',
   MGC_SCALP:    'MGC',
+  NQ_NY_OPEN:   'NQ_NY_OPEN',   // own family — never suppressed by MNQ_INTRADAY
 };
 
 // Entry zone bucket sizes.  Half-bucket = the effective ±tolerance per side.
@@ -44,6 +45,7 @@ const SL_BUCKET = { MNQ: 30, MGC: 8 }; // retained for reference
 const TTL_MS = {
   MNQ_INTRADAY: 30 * 60_000,     // 30 min
   MGC_SCALP:    15 * 60_000,     // 15 min
+  NQ_NY_OPEN:   24 * 60 * 60_000, // one per day — suppress any re-fire for 24h
 };
 const TTL_DEFAULT = 30 * 60_000;
 

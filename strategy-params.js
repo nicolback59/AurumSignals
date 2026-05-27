@@ -37,6 +37,14 @@ const DEFAULT_PARAMS_BY_STYLE = {
     slPts: 10, minScore: 7, stdvLen: 12, std2: 2.2, swingLook: 12,
     tradeStyleMode: 'scalp',
   },
+  NQ_NY_OPEN: {
+    ...DEFAULT_PARAMS.MNQ,
+    // NQ NY Open is an opening auction model — params control the scoring weights
+    // and entry trigger sensitivity, NOT the generic intraday EMA stack
+    slPts: 20, minScore: 6, stdvLen: 14, std2: 2.0, swingLook: 10, swingL: 5,
+    tradeStyleMode: 'ny_open',
+    instrument: 'MNQ',
+  },
 };
 
 // Hard bounds — adjustments never exceed these limits
