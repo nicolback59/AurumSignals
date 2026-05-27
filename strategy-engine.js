@@ -116,6 +116,23 @@ function resetAllStrategies() {
   nqNyOpen.reset();
 }
 
+/**
+ * Load macro blackout dates into NQ_NY_OPEN from the SQLite DB.
+ * Call once at startup and once per day. Only HIGH-impact events block the trade.
+ *
+ * @param {import('better-sqlite3').Database} db
+ */
+function refreshNyOpenBlacklist(db) {
+  try {
+    const rows = db.prepare(
+      `SELECT date_key FROM macro_calendar WHERE impact = 'HIGH' AND date_key >= date('now', '-1 day')`
+    ).all();
+    nqNyOpen.setBlackoutDates(rows.map(r => r.date_key));
+  } catch {
+    // macro_calendar table may not exist yet — safe to ignore
+  }
+}
+
 const STRATEGY_META = {
   MNQ_INTRADAY: {
     name:        'MNQ Intraday',
@@ -149,6 +166,7 @@ module.exports = {
   buildBarSetsFrom1m,
   buildBarSetsFrom15m,
   resetAllStrategies,
+  refreshNyOpenBlacklist,
   STRATEGY_META,
   THRESHOLDS,
 };

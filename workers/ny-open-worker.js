@@ -46,6 +46,28 @@ db.exec(`
 db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ny_thesis_date ON ny_open_thesis(date_key)`);
 db.exec(`DELETE FROM ny_open_thesis WHERE logged_at < datetime('now', '-90 days')`);
 
+// ── Macro calendar table ──────────────────────────────────────────────────────
+db.exec(`
+  CREATE TABLE IF NOT EXISTS macro_calendar (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    date_key    TEXT    NOT NULL,
+    event_name  TEXT    NOT NULL,
+    impact      TEXT    NOT NULL DEFAULT 'HIGH',
+    added_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+    notes       TEXT,
+    UNIQUE(date_key, event_name)
+  )
+`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_macro_cal_date ON macro_calendar(date_key)`);
+
+// ── Macro blackout check ──────────────────────────────────────────────────────
+function checkMacroBlackout(dateKey) {
+  const events = db.prepare(
+    `SELECT event_name, impact FROM macro_calendar WHERE date_key = ? AND impact = 'HIGH'`
+  ).all(dateKey);
+  return events;
+}
+
 // ── Load recent bars from historical_bars table ────────────────────────────────
 function loadBars(symbol, interval, daysBack) {
   const cutoff = new Date(Date.now() - daysBack * 24 * 3600 * 1000)
@@ -122,9 +144,22 @@ async function run() {
       });
     }
 
-    const bias = computePreopenBias(bars5m, bars15m, bars1h, h4, dly);
-    const now  = new Date();
+    const now     = new Date();
     const dateKey = now.toLocaleDateString('en-CA', { timeZone: 'America/New_York' }); // YYYY-MM-DD
+
+    // ── Macro blackout gate ─────────────────────────────────────────────────
+    const blockers = checkMacroBlackout(dateKey);
+    if (blockers.length > 0) {
+      const eventList = blockers.map(e => e.event_name).join(', ');
+      console.log(`[${WORKER_NAME}] ${dateKey} MACRO BLACKOUT: ${eventList} — skipping thesis`);
+      heartbeat(db, WORKER_NAME, 'IDLE', {
+        skipped: true, reason: 'macro_blackout', events: eventList, dateKey,
+      });
+      db.close();
+      process.exit(0);
+    }
+
+    const bias = computePreopenBias(bars5m, bars15m, bars1h, h4, dly);
 
     // Gap pct (today open vs prior day close)
     let gapPct = null;

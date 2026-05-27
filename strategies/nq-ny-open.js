@@ -49,6 +49,13 @@ const STRATEGY_NAME    = 'NQ_NY_OPEN';
 const STRATEGY_VERSION = '2.0';
 const LIVE_THRESHOLD   = 40; // always live — every signal is a mandatory trade
 
+// ── Macro blackout — populated by setBlackoutDates() ─────────────────────────
+const _blackoutDates = new Set();
+function setBlackoutDates(dates) {
+  _blackoutDates.clear();
+  for (const d of (dates || [])) _blackoutDates.add(d);
+}
+
 // ── Daily state — module-level, persists across scan cycles ──────────────────
 const _d = {
   dateKey:      null,
@@ -495,6 +502,15 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
 
   if (et.dow === 0 || et.dow === 6) return null;
 
+  // ── Macro blackout gate ───────────────────────────────────────────────────
+  if (_blackoutDates.has(et.dateKey)) {
+    if (_d.dateKey !== et.dateKey) {
+      console.log(`[NQ_NY_OPEN] ${et.dateKey} MACRO BLACKOUT — trade skipped`);
+    }
+    _d.dateKey = et.dateKey; // prevent repeated log on every bar
+    return null;
+  }
+
   // ── Daily state reset ─────────────────────────────────────────────────────
   if (et.dateKey !== _d.dateKey) {
     _d.dateKey     = et.dateKey;
@@ -704,8 +720,14 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
       orbHigh:    orb ? +orb.orbHigh.toFixed(2) : null,
       orbLow:     orb ? +orb.orbLow.toFixed(2)  : null,
     },
-    timestamp:    lastBar.timestamp,
-    trade_status: 'PENDING',
+    timestamp:       lastBar.timestamp,
+    trade_status:    'PENDING',
+    be_trail_at_hm:  1015,  // advance stop to BE at 10:15 ET
+    scale_out: [
+      { pct: 50, at: 'TP1', rr: 1.5 },
+      { pct: 30, at: 'TP2', rr: 2.5 },
+      { pct: 20, at: 'TP3', rr: 3.5 },
+    ],
   };
 }
 
@@ -802,30 +824,65 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     const tps  = computeStructureTPs(entry, rawRisk, isBull, on, dlySlice);
     const tp1  = tps.tp1;
 
-    // Simulate against bars from entry to 11:00 ET
+    // Simulate against bars from entry to 11:00 ET — 3-tranche exit model:
+    //   50% at TP1 (1.5R), 30% at TP2 (2.5R), 20% at TP3 (3.5R)
+    //   Stop advances to BE after T1 or at 10:15 ET (whichever comes first)
     const futureBars = dayBars.filter(b => {
       const e = getET(b.timestamp);
       return b.timestamp > entryBar.timestamp && e.hm <= 1100;
     });
 
-    let outcome = 'TIMEOUT';
-    let exitPrice = entry;
+    let pnlPts  = 0;
+    let stopLvl = sl;
+    let openFrac = 1.0;
+    let t1Done = false, t2Done = false, t3Done = false;
+    const { tp2, tp3 } = computeStructureTPs(entry, rawRisk, isBull, on, dlySlice);
+
     for (const bar of futureBars) {
+      const eBt = getET(bar.timestamp);
+      // Time-based BE gate: 10:15 ET — if T1 not yet hit, move stop to entry
+      if (!t1Done && eBt.hm >= 1015) stopLvl = entry;
+
       if (isBull) {
-        if (bar.high >= tp1) { outcome = 'WIN';  exitPrice = tp1; break; }
-        if (bar.low  <= sl)  { outcome = 'LOSS'; exitPrice = sl;  break; }
+        if (openFrac > 0 && bar.low <= stopLvl) {
+          pnlPts += openFrac * (stopLvl - entry); break;
+        }
+        if (!t1Done && bar.high >= tp1) {
+          t1Done = true; pnlPts += 0.5 * (tp1 - entry);
+          openFrac = 0.5; stopLvl = entry;
+        }
+        if (t1Done && !t2Done && bar.high >= tp2) {
+          t2Done = true; pnlPts += 0.3 * (tp2 - entry); openFrac = 0.2;
+        }
+        if (t2Done && !t3Done && bar.high >= tp3) {
+          t3Done = true; pnlPts += 0.2 * (tp3 - entry); openFrac = 0; break;
+        }
       } else {
-        if (bar.low  <= tp1) { outcome = 'WIN';  exitPrice = tp1; break; }
-        if (bar.high >= sl)  { outcome = 'LOSS'; exitPrice = sl;  break; }
+        if (openFrac > 0 && bar.high >= stopLvl) {
+          pnlPts += openFrac * (entry - stopLvl); break;
+        }
+        if (!t1Done && bar.low <= tp1) {
+          t1Done = true; pnlPts += 0.5 * (entry - tp1);
+          openFrac = 0.5; stopLvl = entry;
+        }
+        if (t1Done && !t2Done && bar.low <= tp2) {
+          t2Done = true; pnlPts += 0.3 * (entry - tp2); openFrac = 0.2;
+        }
+        if (t2Done && !t3Done && bar.low <= tp3) {
+          t3Done = true; pnlPts += 0.2 * (entry - tp3); openFrac = 0; break;
+        }
       }
     }
-    if (outcome === 'TIMEOUT') {
+    // Time exit for remaining open tranche(s)
+    if (openFrac > 0) {
       const last = futureBars[futureBars.length - 1];
-      exitPrice = last ? last.close : entry;
-      outcome   = (isBull ? exitPrice - entry : entry - exitPrice) >= 0 ? 'WIN' : 'LOSS';
+      if (last) pnlPts += openFrac * (isBull ? last.close - entry : entry - last.close);
     }
+    pnlPts = +pnlPts.toFixed(2);
 
-    const pnlPts = isBull ? +(exitPrice - entry).toFixed(2) : +(entry - exitPrice).toFixed(2);
+    // WIN = T1 was hit (guaranteed net-positive from that point forward due to BE stop)
+    // LOSS = stop hit before T1
+    const outcome = t1Done ? 'WIN' : 'LOSS';
     if (outcome === 'WIN') wins++; else losses++;
     totalPnl   += pnlPts;
     pnlRunning += pnlPts;
@@ -852,6 +909,9 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       tp1,
       outcome,
       pnl_pts:     pnlPts,
+      t1Hit:       t1Done,
+      t2Hit:       t2Done,
+      t3Hit:       t3Done,
       confidence,
       longScore:   bias.longScore,
       shortScore:  bias.shortScore,
@@ -879,8 +939,9 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
   // Per-archetype breakdown
   const byArchetype = {};
   for (const t of signalLog) {
-    if (!byArchetype[t.archetype]) byArchetype[t.archetype] = { wins: 0, total: 0 };
+    if (!byArchetype[t.archetype]) byArchetype[t.archetype] = { wins: 0, total: 0, totalPnl: 0 };
     byArchetype[t.archetype].total++;
+    byArchetype[t.archetype].totalPnl += t.pnl_pts;
     if (t.outcome === 'WIN') byArchetype[t.archetype].wins++;
   }
 
@@ -936,6 +997,7 @@ module.exports = {
   reset,
   backtestNyOpen,
   computePreopenBias,
+  setBlackoutDates,
   STRATEGY_NAME,
   STRATEGY_VERSION,
   LIVE_THRESHOLD,
