@@ -1899,7 +1899,7 @@ class Scanner extends EventEmitter {
       const sess = classifyNow().session || 'LIVE';
       const headers = {
         'Content-Type': 'text/plain',
-        'Title':    'Aurum Signals — Market Resuming',
+        'Title':    'Aurum Signals - Market Resuming',
         'Priority': 'default',
         'Tags':     'chart_with_upwards_trend',
       };
@@ -2827,7 +2827,7 @@ class Scanner extends EventEmitter {
               .join('\n');
             const headers = {
               'Content-Type': 'text/plain',
-              'Title': `AI Forensics Analysis — Week of ${weekStart}`,
+              'Title': `AI Forensics Analysis - Week of ${weekStart}`,
               'Priority': 'default',
               'Tags': 'robot,bar_chart',
             };
@@ -2851,7 +2851,7 @@ class Scanner extends EventEmitter {
         const btDecl = (report.backtest?.strategies ?? []).filter(s => s.wr_trend === 'declining').length;
         const headers = {
           'Content-Type': 'text/plain',
-          'Title': `Weekly Deep Dive — WR=${wr ?? '?'}% (${n} trades)`,
+          'Title': `Weekly Deep Dive - WR=${wr ?? '?'}% (${n} trades)`,
           'Priority': lvl,
           'Tags': lvl === 'high' ? 'warning,bar_chart' : 'bar_chart',
         };
@@ -3556,7 +3556,7 @@ class Scanner extends EventEmitter {
         try {
           const headers = {
             'Content-Type': 'text/plain',
-            'Title':    'Aurum Signals — Online',
+            'Title':    'Aurum Signals - Online',
             'Priority': 'default',
             'Tags':     'white_check_mark',
           };
