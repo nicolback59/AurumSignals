@@ -43,7 +43,7 @@ const {
 const { deriveGradeAndProbs } = require('./confidence-scorer');
 
 const STRATEGY_NAME       = 'NQ_NY_OPEN';
-const STRATEGY_VERSION    = '3.2';
+const STRATEGY_VERSION    = '3.3';
 const LIVE_THRESHOLD      = 40;
 const MAX_STOP_PTS        = 35;  // hard stop cap — never risk more than this per trade
 const SECONDARY_WAIT_MIN  = 30;  // minutes after primary before secondary entry is eligible
@@ -369,7 +369,7 @@ function detectDisplacementContinuation(bars5m, atr) {
   for (let i = 0; i < eligible.length - 2; i++) {
     const dispBar = eligible[i];
     if (getET(dispBar.timestamp).hm < 930) continue;
-    if (!isDisplacement(dispBar, atr, 0.50, 0.40)) continue; // relaxed from 0.55/0.45
+    if (!isDisplacement(dispBar, atr, 0.45, 0.35)) continue; // relaxed from 0.55/0.45 → 0.45/0.35
 
     const isBull    = dispBar.close > dispBar.open;
     const dispRange = Math.abs(dispBar.close - dispBar.open);
@@ -426,8 +426,8 @@ function detectOpeningDriveContinuation(bars5m, atr) {
 
     const body  = Math.abs(drive.close - drive.open);
     const range = drive.high - drive.low;
-    // Drive bar must have strong directional conviction
-    if (range === 0 || body < 0.50 * atr || body / range < 0.50) continue;
+    // Drive bar must have strong directional conviction (lowered 0.50→0.42 to capture moderate drives)
+    if (range === 0 || body < 0.42 * atr || body / range < 0.48) continue;
 
     const isBull = drive.close > drive.open;
 
@@ -517,9 +517,112 @@ function detectMomentumExpansion(bars5m, atr) {
 
 // VWAP_BOUNCE removed — 0% WR in backtest. Replaced by OPENING_DRIVE_CONTINUATION and DISPLACEMENT_CONTINUATION.
 
+/**
+ * TIER 2: ORB Breakout Continuation
+ * Price breaks cleanly above/below the opening range with a displacement bar,
+ * then continues with a confirmation bar in the same direction.
+ * Complements ORB_FAILED_BREAKOUT — fires when the breakout HOLDS.
+ * Window: 9:40–10:15 ET
+ */
+function detectOrbBreakoutContinuation(bars5m, orb, atr) {
+  if (!orb || orb.orbRange < 0.25 * atr) return null;
+  const { orbHigh, orbLow } = orb;
+  const postBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 940 && e.hm < 1015; });
+  if (postBars.length < 2) return null;
+
+  for (let i = 0; i < postBars.length - 1; i++) {
+    const bar  = postBars[i];
+    const next = postBars[i + 1];
+    if (getET(next.timestamp).hm >= 1015) break;
+
+    // Bullish breakout: displacement bar closes clearly above ORB high, confirmation follows
+    if (bar.close > orbHigh + 0.15 * atr && isDisplacement(bar, atr, 0.45, 0.28)) {
+      if (isBullishCandle(next, 0.28) && next.close > bar.open) {
+        return {
+          bar: next, entry: next.close, direction: 'LONG',
+          archetype: 'ORB_BREAKOUT_CONTINUATION',
+          structStop: Math.min(orbLow, bar.open) - 3,
+        };
+      }
+    }
+
+    // Bearish breakout: displacement bar closes clearly below ORB low, confirmation follows
+    if (bar.close < orbLow - 0.15 * atr && isDisplacement(bar, atr, 0.45, 0.28)) {
+      if (isBearishCandle(next, 0.28) && next.close < bar.open) {
+        return {
+          bar: next, entry: next.close, direction: 'SHORT',
+          archetype: 'ORB_BREAKOUT_CONTINUATION',
+          structStop: Math.max(orbHigh, bar.open) + 3,
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * TIER 2: Session Trend Pullback
+ * Three consecutive bars form a clear HH+HL (bull) or LL+LH (bear) structure
+ * with meaningful range (≥0.60× ATR). Price then pulls back 25–60% of the
+ * trend range before resuming with a bullish/bearish bar.
+ * Fires on most trending days — the most common institutional intraday pattern.
+ * Window: 9:30–10:20 ET
+ */
+function detectSessionTrendPullback(bars5m, atr) {
+  const sessionBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 1020; });
+  if (sessionBars.length < 5) return null;
+
+  for (let i = 2; i < sessionBars.length - 2; i++) {
+    const b0  = sessionBars[i - 2];
+    const b1  = sessionBars[i - 1];
+    const b2  = sessionBars[i];
+    const pb  = sessionBars[i + 1]; // pullback bar
+    const res = sessionBars[i + 2]; // resumption bar
+    if (!pb || !res) break;
+    if (getET(res.timestamp).hm >= 1020) break;
+
+    // Bull trend: 3 bars with higher highs AND higher lows
+    const isBullTrend = b2.high > b1.high && b1.high > b0.high &&
+                        b2.low  > b1.low  && b1.low  > b0.low;
+    if (isBullTrend) {
+      const trendAmt = b2.high - b0.low;
+      if (trendAmt < 0.60 * atr) continue;
+      const pbRatio = trendAmt > 0 ? (b2.high - pb.low) / trendAmt : 0;
+      if (pbRatio >= 0.25 && pbRatio <= 0.62) {
+        if (res.close > pb.high && isBullishCandle(res, 0.32)) {
+          return {
+            bar: res, entry: res.close, direction: 'LONG',
+            archetype: 'SESSION_TREND_PULLBACK',
+            structStop: pb.low - 3,
+          };
+        }
+      }
+    }
+
+    // Bear trend: 3 bars with lower lows AND lower highs
+    const isBearTrend = b2.low  < b1.low  && b1.low  < b0.low &&
+                        b2.high < b1.high && b1.high < b0.high;
+    if (isBearTrend) {
+      const trendAmt = b0.high - b2.low;
+      if (trendAmt < 0.60 * atr) continue;
+      const pbRatio = trendAmt > 0 ? (pb.high - b2.low) / trendAmt : 0;
+      if (pbRatio >= 0.25 && pbRatio <= 0.62) {
+        if (res.close < pb.low && isBearishCandle(res, 0.32)) {
+          return {
+            bar: res, entry: res.close, direction: 'SHORT',
+            archetype: 'SESSION_TREND_PULLBACK',
+            structStop: pb.high + 3,
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
 // ── Conviction grading ────────────────────────────────────────────────────────
 const TIER1_SET = new Set(['ORB_FAILED_BREAKOUT', 'LIQUIDITY_SWEEP_REVERSAL', 'OPENING_DRIVE_CONTINUATION']);
-const TIER2_SET = new Set(['FIRST_PULLBACK', 'DISPLACEMENT_CONTINUATION', 'MOMENTUM_EXPANSION']);
+const TIER2_SET = new Set(['FIRST_PULLBACK', 'DISPLACEMENT_CONTINUATION', 'MOMENTUM_EXPANSION', 'ORB_BREAKOUT_CONTINUATION', 'SESSION_TREND_PULLBACK']);
 
 // Separate thresholds for TIER1 (reversal/high-conviction) and TIER2 (continuation/pattern-based).
 // TIER2 earns Conviction A at confidence >= 60 — eliminates the hidden direction-dependency
@@ -556,9 +659,11 @@ function computeStructureTPs(entry, rawRisk, isBull, on, barsDly) {
 const BASE_CONFIDENCE = {
   ORB_FAILED_BREAKOUT:           72,
   LIQUIDITY_SWEEP_REVERSAL:      68,
-  OPENING_DRIVE_CONTINUATION:    66,  // strong opening setup, TIER1
+  OPENING_DRIVE_CONTINUATION:    66,
   FIRST_PULLBACK:                63,
+  ORB_BREAKOUT_CONTINUATION:     63,
   MOMENTUM_EXPANSION:            62,
+  SESSION_TREND_PULLBACK:        61,
   DISPLACEMENT_CONTINUATION:     60,
   FORCED_BIAS_ENTRY:             50,
 };
@@ -667,9 +772,11 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     entryResult = detectLiquiditySweepReversal(bars5m, on, atr);
     if (!entryResult && orb) entryResult = detectOrbFailedBreakout(bars5m, orb, atr);
     if (!entryResult) entryResult = detectOpeningDriveContinuation(bars5m, atr);
-    // TIER 2 — continuation patterns
+    // TIER 2 — continuation patterns (ordered by base confidence descending)
     if (!entryResult) entryResult = detectFirstPullback(bars5m, atr);
+    if (!entryResult && orb) entryResult = detectOrbBreakoutContinuation(bars5m, orb, atr);
     if (!entryResult) entryResult = detectMomentumExpansion(bars5m, atr);
+    if (!entryResult) entryResult = detectSessionTrendPullback(bars5m, atr);
     if (!entryResult) entryResult = detectDisplacementContinuation(bars5m, atr);
   }
 
@@ -874,7 +981,9 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       (orbData ? detectOrbFailedBreakout(allBtBars, orbData, atr) : null) ||
       detectOpeningDriveContinuation(allBtBars, atr) ||
       detectFirstPullback(allBtBars, atr) ||
+      (orbData ? detectOrbBreakoutContinuation(allBtBars, orbData, atr) : null) ||
       detectMomentumExpansion(allBtBars, atr) ||
+      detectSessionTrendPullback(allBtBars, atr) ||
       detectDisplacementContinuation(allBtBars, atr);
 
     if (!entryResult && biasSpread >= 40) {
@@ -972,10 +1081,16 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     }
     if (openFrac > 0) {
       const last = futureBars[futureBars.length - 1];
-      if (last) pnlPts += openFrac * (isBull ? last.close - entry : entry - last.close);
+      if (last) {
+        // Respect current stop level — prevents end-of-session fallback from exceeding the hard cap
+        const exitPx = isBull
+          ? Math.max(last.close, stopLvl)  // LONG: never exit below current stop
+          : Math.min(last.close, stopLvl); // SHORT: never exit above current stop
+        pnlPts += openFrac * (isBull ? exitPx - entry : entry - exitPx);
+      }
     }
-    // Safety clamp: full-position loss cannot exceed stop cap; guards against data edge cases
-    if (!t1Done) pnlPts = Math.max(pnlPts, -MAX_STOP_PTS);
+    // Unconditional hard floor — catches any remaining edge cases
+    pnlPts = Math.max(pnlPts, -MAX_STOP_PTS);
     pnlPts = +pnlPts.toFixed(2);
 
     const outcome = t1Done ? 'WIN' : 'LOSS';
