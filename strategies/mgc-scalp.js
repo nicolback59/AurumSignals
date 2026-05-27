@@ -44,7 +44,7 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '4.4';
+const STRATEGY_VERSION = '4.5';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
 const MAX_RISK_PTS = 10;  // hard cap on SL distance — skip any setup requiring >10pt risk
@@ -285,10 +285,10 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
 
   const priorDay  = getPriorDayLevels(bars1h);
 
-  // Earlier chop detection: block at 0.70 instead of 0.80.
-  // Forensic finding: 0.80 threshold was too permissive — moderate chop (0.70-0.80)
-  // was treated as normal, leading to continuation entries in choppy conditions.
-  const isChop    = chopScore > 0.70;
+  // Chop threshold is tunable via std2 param (std2=2.2 → 0.70 default).
+  // Higher std2 = stricter filter; lower = more permissive.
+  const chopThreshEarly = Math.min(0.88, 0.55 + ((+(cfg.params?.std2 ?? 2.2)) - 1.5) * 0.20);
+  const isChop    = chopScore > chopThreshEarly;
   // SOFT_CHOP regime: indecisive price action, restrict to reversal archetypes only.
   const isSoftChop = !isChop && regime === 'SOFT_CHOP';
   const rsiOB     = rsi != null && rsi > 76;
@@ -299,6 +299,23 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   // Displacement strength: current bar body vs average of prior 10 bars
   const dispStrength = displacementStrength(exec);
 
+  // ── Tuneable param overrides (from optimizer / strategy-params) ───────────
+  // These allow the optimizer worker to test parameter variations that
+  // actually affect signal generation, not just metadata.
+  const p = cfg.params ?? {};
+  // maxRiskPts: tighter = fewer but higher-RR setups; PARAM_BOUNDS slPts 10–60
+  const maxRiskPts  = Math.max(6, Math.min(14, +(p.slPts ?? MAX_RISK_PTS)));
+  // confBoost: added to base confidence threshold; minScore=7 = no change
+  const confBoost   = Math.max(0, Math.round((p.minScore ?? 7) - 7));
+  // chopThresh: higher = stricter chop filter; std2=2.2 ≈ 0.70 default
+  const chopThresh  = Math.min(0.88, 0.55 + ((+(p.std2 ?? 2.2)) - 1.5) * 0.20);
+  // adxFloor: ADX minimum for trend-regime continuation entries; stdvLen=16 default
+  const adxFloor    = Math.round(+(p.stdvLen ?? 16));
+  // swingBars: lookback for swing high/low in SL placement; swingLook=12 ≈ 10 bars
+  const swingBars   = Math.max(4, Math.min(25, Math.round(+(p.swingLook ?? 12))));
+  // srMinAtr: minimum ATR distance to nearest S/R; swingL=5 = 0.35 ATR default
+  const srMinAtr    = Math.max(0.15, 0.45 - (+(p.swingL ?? 5)) * 0.02);
+
   // ── Evaluation context object ───────────────────────────────────────────────
   const ctx = {
     exec, bars5m, bars15m, bars1h, n, last, closes, atr, vwap, vwapArr,
@@ -306,6 +323,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
     regime, chopScore, vwapState, volRegime, htfBias, htf1hBias,
     htf30mBias, htf45mBias, priorDay, isChop, isSoftChop, adxVal, sess,
     dispStrength,
+    maxRiskPts, adxFloor, swingBars, srMinAtr,
   };
 
   // ── Try each archetype ──────────────────────────────────────────────────────
@@ -377,7 +395,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
     baseConf + confluenceBonus + regimeAdj + (best.bonus ?? 0) - chopPenalty,
   ));
 
-  if (confidence < THRESHOLDS.MGC_SCALP) return null;
+  if (confidence < THRESHOLDS.MGC_SCALP + confBoost) return null;
 
   // Block entry within 0.2 ATR of prior day H/L (immediate S/R only)
   if (priorDay) {
@@ -459,9 +477,9 @@ function evalContinuationPullback(ctx) {
   if (sess.quality < 0.70) return null;
 
   // Trend-following entries require ADX confirmation of directional strength.
-  // Without ADX > 16 the price is oscillating, not trending — continuation fails.
+  // adxFloor is tunable via stdvLen param (default 16).
   const trendRegime = regime === 'TREND_BULL' || regime === 'TREND_BEAR';
-  if (trendRegime && adxVal != null && adxVal < 16) return null;
+  if (trendRegime && adxVal != null && adxVal < (ctx.adxFloor ?? 16)) return null;
 
   const dirs = [];
   if (ema9 > ema21 && htfBias >= 0 && last.close >= vwap * 0.9985) dirs.push('LONG');
@@ -495,17 +513,17 @@ function evalContinuationPullback(ctx) {
       if (against) continue;
     }
 
-    const swLow  = recentSwingLow(exec, 8);
-    const swHigh = recentSwingHigh(exec, 8);
+    const swLow  = recentSwingLow(exec, ctx.swingBars ?? 8);
+    const swHigh = recentSwingHigh(exec, ctx.swingBars ?? 8);
     const sl     = isBull ? Math.min(swLow, ema21) - 0.3 * atr : Math.max(swHigh, ema21) + 0.3 * atr;
     const risk   = isBull ? last.close - sl : sl - last.close;
-    if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) continue;
+    if (risk < ATR_MIN_PTS * 0.4 || risk > (ctx.maxRiskPts ?? MAX_RISK_PTS)) continue;
 
     const rr     = +(14 / risk).toFixed(2);
     if (rr < 0.8) continue;
 
     const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
-    if (srDist < 0.35) continue;
+    if (srDist < (ctx.srMinAtr ?? 0.35)) continue;
 
     const trendBonus = trendRegime ? 5 : 0;
     const adxBonus   = adxVal != null && adxVal >= 25 ? 3 : 0;
@@ -538,17 +556,18 @@ function evalVwapReclaimReject(ctx) {
   // Confirmation candle
   if (!(isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25))) return null;
 
-  const swLow  = recentSwingLow(exec, 6);
-  const swHigh = recentSwingHigh(exec, 6);
+  const swBars = Math.max(4, (ctx.swingBars ?? 8) - 2);
+  const swLow  = recentSwingLow(exec, swBars);
+  const swHigh = recentSwingHigh(exec, swBars);
   const sl     = isBull ? Math.min(swLow, vwap) - 0.3 * atr : Math.max(swHigh, vwap) + 0.3 * atr;
   const risk   = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) return null;
+  if (risk < ATR_MIN_PTS * 0.4 || risk > (ctx.maxRiskPts ?? MAX_RISK_PTS)) return null;
 
   const rr     = +(14 / risk).toFixed(2);
   if (rr < 0.8) return null;
 
   const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
-  if (srDist < 0.35) return null;
+  if (srDist < (ctx.srMinAtr ?? 0.35)) return null;
 
   // Displacement strength: strong momentum bar adds conviction to the VWAP reclaim/rejection
   const dispBonus = (dispStrength ?? 0) >= 1.4 ? 4 : 0;
@@ -583,7 +602,7 @@ function evalSweepReversal(ctx) {
       ? sweepBar.low  - 0.25 * atr
       : sweepBar.high + 0.25 * atr;
     const risk = isBull ? last.close - sl : sl - last.close;
-    if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) continue;
+    if (risk < ATR_MIN_PTS * 0.4 || risk > (ctx.maxRiskPts ?? MAX_RISK_PTS)) continue;
 
     const rr     = +(14 / risk).toFixed(2);
     if (rr < 0.7) continue;
@@ -639,7 +658,7 @@ function evalCompressionBreakout(ctx) {
 
   const sl   = isBull ? rangeLow - 0.2 * atr : rangeHigh + 0.2 * atr;
   const risk = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.4 || risk > MAX_RISK_PTS) return null;
+  if (risk < ATR_MIN_PTS * 0.4 || risk > (ctx.maxRiskPts ?? MAX_RISK_PTS)) return null;
 
   const rr     = +(14 / risk).toFixed(2);
   if (rr < 0.7) return null;
@@ -674,7 +693,7 @@ function evalChopMeanRevert(ctx) {
 
   const sl   = isBull ? exec[n-1].low  - 0.2 * atr : exec[n-1].high + 0.2 * atr;
   const risk = isBull ? last.close - sl : sl - last.close;
-  if (risk < ATR_MIN_PTS * 0.3 || risk > MAX_RISK_PTS) return null;
+  if (risk < ATR_MIN_PTS * 0.3 || risk > (ctx.maxRiskPts ?? MAX_RISK_PTS)) return null;
 
   // Smaller target in chop (aim for VWAP, ~TP1)
   const rr = +(10 / risk).toFixed(2);

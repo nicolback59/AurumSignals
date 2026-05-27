@@ -307,7 +307,7 @@ function _runBacktest(bars1m, instrument, opts = {}) {
       ? { bars5mMgc: slc5m, bars15mMgc: slc15m, bars30mMgc: slc30m, bars45mMgc: slc45m, bars1hMgc: slc1h }
       : { bars5m: slc5m, bars15m: slc15m, bars1h: slc1h, bars4h: slc4h, barsDly: slcDly };
 
-    const signals = evaluateAll(barSets, { instrument, barIdx: i });
+    const signals = evaluateAll(barSets, { instrument, barIdx: i, params: opts.params ?? {} });
 
     for (const sig of signals) {
       const strat = sig.strategy_name;
@@ -521,6 +521,7 @@ function runBacktest5m(bars5m, params = {}, opts = {}) {
     maxResolve:           opts.maxResolve ?? 60,
     cooldown5m,
     alreadyAggregated5m:  true,
+    params,
   });
 
   result.slippageUsed = slippage;
