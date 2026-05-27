@@ -2596,6 +2596,14 @@ class Scanner extends EventEmitter {
     const symbol = this.cfg.btSymbols[instrument];
     if (!symbol) return;
 
+    // Safety guard: 60d of 5m bars + walkForward backtest needs ~500MB headroom.
+    // On constrained deployments (Render, --max-old-space-size=400) skip entirely.
+    const heapLimitMB = Math.round(require('v8').getHeapStatistics().heap_size_limit / 1_048_576);
+    if (heapLimitMB < 500) {
+      this._log(`DEEP HIST BT SKIP (${instrument}): heap limit ${heapLimitMB}MB < 500MB — use SCANNER_MODE=worker`);
+      return;
+    }
+
     try {
       this._log(`DEEP HIST BT START: ${instrument} — fetching 60d of 5m bars`);
 
@@ -3489,17 +3497,20 @@ class Scanner extends EventEmitter {
     });
 
     // Deep historical backtest (60-day 5m bars from Yahoo Finance).
-    // Runs once at startup (after 25 min to avoid heap contention with normal backtests)
-    // then weekly on Sundays. This gives ~8× more history than the 7-day 1m backtest.
-    setTimeout(() => this.runDeepHistoricalBacktest('MNQ'), 55 * 60_000);
-    setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 65 * 60_000);
-    this._intervals.push(setInterval(() => {
-      const now = new Date();
-      if (now.getDay() === 0 && now.getHours() >= 18) {  // Sunday 18:00+ local (futures re-open)
-        this.runDeepHistoricalBacktest('MNQ');
-        setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 8 * 60_000);
-      }
-    }, 60 * 60_000)); // check every hour
+    // Only runs in worker mode (dedicated process on Droplet with ≥1GB RAM).
+    // Skipped in INLINE mode (Render 512MB) — loading ~23k bars + walkForward backtest
+    // exhausts the 400MB heap and causes a silent OOM kill every ~60 minutes.
+    if (process.env.SCANNER_MODE === 'worker') {
+      setTimeout(() => this.runDeepHistoricalBacktest('MNQ'), 55 * 60_000);
+      setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 65 * 60_000);
+      this._intervals.push(setInterval(() => {
+        const now = new Date();
+        if (now.getDay() === 0 && now.getHours() >= 18) {  // Sunday 18:00+ local (futures re-open)
+          this.runDeepHistoricalBacktest('MNQ');
+          setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 8 * 60_000);
+        }
+      }, 60 * 60_000)); // check every hour
+    }
 
     // Periodic backtests — same interval for both instruments; MGC offset by 4 min
     // so they never run at the same time and compete for rate-limit budget.
