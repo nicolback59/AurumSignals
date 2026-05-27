@@ -3,7 +3,7 @@
 const { openDb, heartbeat, bumpCycle, logWorkerError } = require('./worker-utils');
 
 const WORKER_NAME   = 'learning-agent';
-const STRATEGIES    = ['MNQ_INTRADAY', 'MGC_SCALP'];
+const STRATEGIES    = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN'];
 const LOOKBACK_DAYS = 90;
 const MIN_SAMPLE    = 5;
 const WARN_DELTA    = -10;

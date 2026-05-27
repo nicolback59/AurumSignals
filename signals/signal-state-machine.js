@@ -56,6 +56,7 @@ const TRANSITIONS = {
 const MAX_HOLD_MS_BY_STRATEGY = {
   MGC_SCALP:    23 * 60 * 60 * 1000,  // effectively disabled — market close rule handles it
   MNQ_INTRADAY: 23 * 60 * 60 * 1000,  // effectively disabled — market close rule handles it
+  NQ_NY_OPEN:   90 * 60 * 1000,        // 90-min hard stop (11:00 ET time exit)
 };
 
 // Per-style fallback (when no strategy_name)
@@ -70,6 +71,7 @@ const DEFAULT_HOLD_MS = MAX_HOLD_MS.intraday;
 const STRATEGY_CONFIG = {
   MGC_SCALP:    { allowHoldOvernight: false, allowHoldWeekend: false },
   MNQ_INTRADAY: { allowHoldOvernight: false, allowHoldWeekend: false },
+  NQ_NY_OPEN:   { allowHoldOvernight: false, allowHoldWeekend: false },
 };
 
 /**
