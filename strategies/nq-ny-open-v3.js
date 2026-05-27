@@ -42,10 +42,11 @@ const {
 
 const { deriveGradeAndProbs } = require('./confidence-scorer');
 
-const STRATEGY_NAME    = 'NQ_NY_OPEN';
-const STRATEGY_VERSION = '3.0';
-const LIVE_THRESHOLD   = 40;
-const MAX_STOP_PTS     = 35;  // hard stop cap — never risk more than this per trade
+const STRATEGY_NAME       = 'NQ_NY_OPEN';
+const STRATEGY_VERSION    = '3.1';
+const LIVE_THRESHOLD      = 40;
+const MAX_STOP_PTS        = 35;  // hard stop cap — never risk more than this per trade
+const SECONDARY_WAIT_MIN  = 30;  // minutes after primary before secondary entry is eligible
 
 // ── Macro blackout state ──────────────────────────────────────────────────────
 const _blackoutDates = new Set();
@@ -56,20 +57,23 @@ function setBlackoutDates(dates) {
 
 // ── Daily state ───────────────────────────────────────────────────────────────
 const _d = {
-  dateKey:      null,
-  direction:    null,
-  longScore:    0,
-  shortScore:   0,
-  biasNotes:    [],
-  archetype:    null,
-  conviction:   null,
-  phase:        'IDLE',   // IDLE → PRE_OPEN → WATCHING → HUNTING → DONE
-  emitted:      false,
-  orbComputed:  false,
-  orbHigh:      null,
-  orbLow:       null,
-  openDriveDir: null,   // direction established by first 2-3 bars
-  openDriveAmt: 0,      // magnitude of opening drive in pts
+  dateKey:         null,
+  direction:       null,
+  longScore:       0,
+  shortScore:      0,
+  biasNotes:       [],
+  archetype:       null,
+  conviction:      null,
+  phase:           'IDLE',   // IDLE → PRE_OPEN → WATCHING → HUNTING → DONE
+  emitted:         false,    // primary trade emitted
+  secondEmitted:   false,    // secondary trade emitted
+  firstEntryMinET: null,     // primary entry time in minutes-from-midnight ET (for 30-min wait)
+  firstEntryDir:   null,     // direction of primary entry (secondary must match)
+  orbComputed:     false,
+  orbHigh:         null,
+  orbLow:          null,
+  openDriveDir:    null,   // direction established by first 2-3 bars
+  openDriveAmt:    0,      // magnitude of opening drive in pts
 };
 
 // ── ET time helper ────────────────────────────────────────────────────────────
@@ -216,18 +220,18 @@ function computePreopenBias(bars5m, bars15m, bars1h, bars4h, barsDly) {
  * TIER 1: ORB Failed Breakout (bidirectional)
  * Price breaks ORB in one direction, fails, reverses through midpoint.
  * Direction = opposite of the failed break.
- * Window: 9:40–9:55 ET
+ * Window: 9:40–10:15 ET
  */
 function detectOrbFailedBreakout(bars5m, orb, atr) {
   if (!orb || orb.orbRange < 0.25 * atr) return null;
   const { orbHigh, orbLow, orbMid } = orb;
-  const postBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 940 && e.hm < 1000; });
+  const postBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 940 && e.hm < 1015; });
   if (postBars.length < 2) return null;
 
   for (let i = 0; i < postBars.length - 1; i++) {
     const bar  = postBars[i];
     const next = postBars[i + 1];
-    if (getET(next.timestamp).hm >= 1000) break;
+    if (getET(next.timestamp).hm >= 1015) break;
 
     // Failed DOWN → LONG reversal
     if (bar.low < orbLow - 0.05 * atr && bar.close > orbLow) {
@@ -251,17 +255,17 @@ function detectOrbFailedBreakout(bars5m, orb, atr) {
  * TIER 1: Liquidity Sweep Reversal (bidirectional)
  * NQ spikes through overnight high/low (institutional stop hunt), then reverses hard.
  * Direction = opposite of the sweep.
- * Window: 9:30–9:44 ET  (sweeps typically happen in first 15 min)
+ * Window: 9:30–9:50 ET
  */
 function detectLiquiditySweepReversal(bars5m, on, atr) {
   if (!on) return null;
-  const openBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 945; });
+  const openBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 950; });
   if (openBars.length < 2) return null;
 
   for (let i = 0; i < openBars.length - 1; i++) {
     const bar  = openBars[i];
     const next = openBars[i + 1];
-    if (getET(next.timestamp).hm >= 945) break;
+    if (getET(next.timestamp).hm >= 950) break;
 
     // Sweep of overnight LOW → LONG reversal
     if (bar.low < on.overnightLow - 0.20 * atr
@@ -287,13 +291,15 @@ function detectLiquiditySweepReversal(bars5m, on, atr) {
 
 /**
  * TIER 2: First Pullback Continuation
- * Opening drive establishes a clear direction (>0.8× ATR), price pulls back
- * 35–55%, then resumes with a displacement bar.
+ * Opening drive establishes a clear direction (>0.6× ATR), price pulls back
+ * 25–70%, then resumes with a directional displacement bar.
+ * Window extended to 10:20 to catch slower or later impulse setups.
  * Direction = opening drive direction (self-determining).
- * Window: 9:38–9:55 ET
+ * Window: 9:35–10:20 ET
  */
 function detectFirstPullback(bars5m, atr) {
-  const driveBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 940; });
+  // Extended drive observation window (9:30–9:45) to catch later impulses
+  const driveBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 945; });
   if (driveBars.length < 2) return null;
 
   const openPrice = driveBars[0].open;
@@ -307,9 +313,10 @@ function detectFirstPullback(bars5m, atr) {
   if (!driveDir) return null;
 
   const driveMag = Math.abs(lastClose - openPrice);
-  if (driveMag < 0.8 * atr) return null; // drive too small — not a real impulse
+  if (driveMag < 0.60 * atr) return null; // lowered from 0.8× — catches moderate opening drives
 
-  const pullBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 938 && e.hm < 1000; });
+  // Extended pullback window to 10:20 ET
+  const pullBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 935 && e.hm < 1020; });
   if (pullBars.length < 2) return null;
 
   const isBull = driveDir === 'LONG';
@@ -317,19 +324,20 @@ function detectFirstPullback(bars5m, atr) {
   for (let i = 0; i < pullBars.length - 1; i++) {
     const bar  = pullBars[i];
     const next = pullBars[i + 1];
-    if (getET(next.timestamp).hm >= 1000) break;
+    if (getET(next.timestamp).hm >= 1020) break;
 
     const pbRatio = isBull
       ? driveMag > 0 ? (driveHigh - bar.low)  / driveMag : 0
       : driveMag > 0 ? (bar.high  - driveLow) / driveMag : 0;
 
-    if (pbRatio >= 0.35 && pbRatio <= 0.55) {
-      if (isBull && isDisplacement(next, atr, 0.40) && isBullishCandle(next, 0.40)) {
+    // Widened from 35–55% to 25–70% — captures shallow (aggressive) and deep (test) pullbacks
+    if (pbRatio >= 0.25 && pbRatio <= 0.70) {
+      if (isBull && isDisplacement(next, atr, 0.35, 0.20) && isBullishCandle(next, 0.35)) {
         const structStop = Math.min(bar.low, driveBars[driveBars.length - 1].low) - 3;
         return { bar: next, entry: next.close, direction: 'LONG',
                  archetype: 'FIRST_PULLBACK', structStop, driveMag };
       }
-      if (!isBull && isDisplacement(next, atr, 0.40) && isBearishCandle(next, 0.40)) {
+      if (!isBull && isDisplacement(next, atr, 0.35, 0.20) && isBearishCandle(next, 0.35)) {
         const structStop = Math.max(bar.high, driveBars[driveBars.length - 1].high) + 3;
         return { bar: next, entry: next.close, direction: 'SHORT',
                  archetype: 'FIRST_PULLBACK', structStop, driveMag };
@@ -387,40 +395,129 @@ function detectDisplacementContinuation(bars5m, atr) {
 }
 
 /**
- * TIER 3: VWAP Reclaim / Rejection
- * Price crosses VWAP with conviction, confirming a direction.
- * Direction = direction of the VWAP cross.
- * Window: 9:40–9:55 ET
+ * TIER 2: Momentum Expansion Continuation
+ * An anchor bar shows clear directional conviction (body > 0.40× ATR),
+ * followed by a tight 1-bar consolidation (range ≤ 0.30× ATR),
+ * then an expansion bar that closes beyond both the consolidation and anchor
+ * with a strong displacement body. Captures the "measured-move" institutional pattern.
+ * Window: 9:35–10:20 ET
  */
-function detectVwapReclaim(bars5m, atr) {
-  const vwapArr = calcVwap(bars5m);
-  const lateBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 940 && e.hm < 1000; });
+function detectMomentumExpansion(bars5m, atr) {
+  const eligible = bars5m.filter(b => {
+    const e = getET(b.timestamp);
+    return e.hm >= 935 && e.hm < 1020;
+  });
+  if (eligible.length < 3) return null;
 
-  for (const bar of lateBars) {
-    const idx  = bars5m.indexOf(bar);
-    const vwap = idx >= 0 ? vwapArr[idx] : null;
-    if (!vwap) continue;
+  for (let i = 1; i < eligible.length - 1; i++) {
+    const prev = eligible[i - 1]; // anchor bar
+    const bar  = eligible[i];     // consolidation bar
+    const next = eligible[i + 1]; // expansion bar
+    if (getET(next.timestamp).hm >= 1020) break;
 
-    const prev = bars5m[idx - 1];
-    if (!prev) continue;
-    const prevVwap = vwapArr[idx - 1];
-    if (!prevVwap) continue;
+    // Anchor bar: strong directional body
+    const anchorBody = Math.abs(prev.close - prev.open);
+    if (anchorBody < 0.40 * atr) continue;
 
-    const next = bars5m[idx + 1];
-    if (!next || getET(next.timestamp).hm >= 1000) continue;
+    const isBull = prev.close > prev.open;
 
-    // LONG reclaim: prior close < VWAP, current close > VWAP + 0.12× ATR with body
-    if (prev.close < prevVwap && bar.close > vwap + 0.12 * atr && isDisplacement(bar, atr, 0.35, 0.25)) {
-      if (isBullishCandle(next, 0.30) && next.close > vwap) {
-        return { bar: next, entry: next.close, direction: 'LONG',
-                 archetype: 'VWAP_RECLAIM', structStop: vwap - 0.45 * atr };
+    // Consolidation bar: tight range (no strong counter move)
+    const consRange = bar.high - bar.low;
+    if (consRange > Math.min(0.30 * atr, 12)) continue;
+    // Consolidation should not close strongly against the trend
+    if (isBull  && bar.close < prev.close - 0.15 * atr) continue;
+    if (!isBull && bar.close > prev.close + 0.15 * atr) continue;
+
+    // Expansion bar: closes beyond consolidation AND anchor in trend direction
+    if (isBull) {
+      const breakLevel = Math.max(bar.high, prev.high);
+      if (next.close > breakLevel
+          && isDisplacement(next, atr, 0.40, 0.25)
+          && isBullishCandle(next, 0.40)) {
+        return {
+          bar: next, entry: next.close, direction: 'LONG',
+          archetype: 'MOMENTUM_EXPANSION',
+          structStop: Math.min(bar.low, prev.low) - 3,
+        };
+      }
+    } else {
+      const breakLevel = Math.min(bar.low, prev.low);
+      if (next.close < breakLevel
+          && isDisplacement(next, atr, 0.40, 0.25)
+          && isBearishCandle(next, 0.40)) {
+        return {
+          bar: next, entry: next.close, direction: 'SHORT',
+          archetype: 'MOMENTUM_EXPANSION',
+          structStop: Math.max(bar.high, prev.high) + 3,
+        };
       }
     }
-    // SHORT rejection: prior close > VWAP, current close < VWAP - 0.12× ATR with body
-    if (prev.close > prevVwap && bar.close < vwap - 0.12 * atr && isDisplacement(bar, atr, 0.35, 0.25)) {
-      if (isBearishCandle(next, 0.30) && next.close < vwap) {
-        return { bar: next, entry: next.close, direction: 'SHORT',
-                 archetype: 'VWAP_RECLAIM', structStop: vwap + 0.45 * atr };
+  }
+  return null;
+}
+
+/**
+ * TIER 2: VWAP Bounce (replaces VWAP_RECLAIM)
+ * Price establishes a 3-bar VWAP regime (all closes above or below VWAP),
+ * pulls back to touch the VWAP zone (within 0.15× ATR), closes back in
+ * regime direction, then the confirming bar continues.
+ * This is the institutionally-used VWAP pullback entry — NOT a cross entry.
+ * Window: 9:40–10:25 ET
+ */
+function detectVwapBounce(bars5m, atr) {
+  const vwapArr  = calcVwap(bars5m);
+  const eligible = bars5m.filter(b => {
+    const e = getET(b.timestamp);
+    return e.hm >= 940 && e.hm < 1025;
+  });
+
+  for (let i = 3; i < eligible.length - 1; i++) {
+    const bar  = eligible[i];
+    const next = eligible[i + 1];
+    const idx  = bars5m.indexOf(bar);
+    if (idx < 3) continue;
+    const vwap = vwapArr[idx];
+    if (!vwap) continue;
+
+    // Require 3-bar VWAP regime above
+    const prevAbove = [1, 2, 3].every(k => {
+      const pv = vwapArr[idx - k];
+      return pv != null && bars5m[idx - k]?.close > pv;
+    });
+    if (prevAbove) {
+      // Touch: low dips into VWAP zone but close recovers above VWAP
+      if (bar.low <= vwap + 0.15 * atr
+          && bar.close > vwap + 0.04 * atr
+          && isBullishCandle(bar, 0.30)) {
+        const nextIdx  = bars5m.indexOf(next);
+        const nextVwap = nextIdx >= 0 ? vwapArr[nextIdx] : null;
+        if (nextVwap && isBullishCandle(next, 0.25) && next.close > bar.close) {
+          return {
+            bar: next, entry: next.close, direction: 'LONG',
+            archetype: 'VWAP_BOUNCE', structStop: bar.low - 2,
+          };
+        }
+      }
+    }
+
+    // Require 3-bar VWAP regime below
+    const prevBelow = [1, 2, 3].every(k => {
+      const pv = vwapArr[idx - k];
+      return pv != null && bars5m[idx - k]?.close < pv;
+    });
+    if (prevBelow) {
+      // Touch: high reaches VWAP zone but close stays below
+      if (bar.high >= vwap - 0.15 * atr
+          && bar.close < vwap - 0.04 * atr
+          && isBearishCandle(bar, 0.30)) {
+        const nextIdx  = bars5m.indexOf(next);
+        const nextVwap = nextIdx >= 0 ? vwapArr[nextIdx] : null;
+        if (nextVwap && isBearishCandle(next, 0.25) && next.close < bar.close) {
+          return {
+            bar: next, entry: next.close, direction: 'SHORT',
+            archetype: 'VWAP_BOUNCE', structStop: bar.high + 2,
+          };
+        }
       }
     }
   }
@@ -429,7 +526,7 @@ function detectVwapReclaim(bars5m, atr) {
 
 // ── Conviction grading ────────────────────────────────────────────────────────
 const TIER1_SET = new Set(['ORB_FAILED_BREAKOUT', 'LIQUIDITY_SWEEP_REVERSAL']);
-const TIER2_SET = new Set(['FIRST_PULLBACK', 'DISPLACEMENT_CONTINUATION']);
+const TIER2_SET = new Set(['FIRST_PULLBACK', 'DISPLACEMENT_CONTINUATION', 'MOMENTUM_EXPANSION', 'VWAP_BOUNCE']);
 
 function gradeConviction(confidence, archetype) {
   if (confidence >= 78 && TIER1_SET.has(archetype)) return { conviction: 'A+', recSize: 'FULL' };
@@ -462,9 +559,10 @@ function computeStructureTPs(entry, rawRisk, isBull, on, barsDly) {
 const BASE_CONFIDENCE = {
   ORB_FAILED_BREAKOUT:         72,
   LIQUIDITY_SWEEP_REVERSAL:    68,
-  FIRST_PULLBACK:              62,
+  FIRST_PULLBACK:              63,
+  MOMENTUM_EXPANSION:          62,
   DISPLACEMENT_CONTINUATION:   60,
-  VWAP_RECLAIM:                57,
+  VWAP_BOUNCE:                 59,
   FORCED_BIAS_ENTRY:           50,
 };
 
@@ -495,13 +593,14 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     Object.assign(_d, {
       dateKey: et.dateKey, direction: null, longScore: 0, shortScore: 0,
       biasNotes: [], archetype: null, conviction: null, phase: 'IDLE',
-      emitted: false, orbComputed: false, orbHigh: null, orbLow: null,
+      emitted: false, secondEmitted: false, firstEntryMinET: null, firstEntryDir: null,
+      orbComputed: false, orbHigh: null, orbLow: null,
       openDriveDir: null, openDriveAmt: 0,
     });
   }
 
-  if (_d.emitted) return null;
-  if (et.hm < 920 || et.hm >= 1005) return null;
+  if (_d.emitted && _d.secondEmitted) return null;
+  if (et.hm < 920 || et.hm >= 1035) return null;
 
   const barsDly    = cfg.barsDly ?? [];
   const atrArr     = calcAtr(bars5m, 14);
@@ -544,7 +643,14 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
 
   if (_d.phase !== 'HUNTING') return null;
 
-  const isDeadline = et.hm >= 1000;
+  // Secondary entry eligibility: 30-min cooling period after primary, same direction only
+  const runningAsSecondary = _d.emitted && !_d.secondEmitted;
+  if (runningAsSecondary) {
+    const curMinET = et.h * 60 + et.m;
+    if (!_d.firstEntryMinET || curMinET - _d.firstEntryMinET < SECONDARY_WAIT_MIN) return null;
+  }
+
+  const isDeadline = et.hm >= 1020; // extended from 10:00 to 10:20
   const on         = computeOvernightLevels(bars5m);
   const biasSpread = Math.abs(_d.longScore - _d.shortScore);
 
@@ -565,13 +671,13 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     if (!entryResult && orb) entryResult = detectOrbFailedBreakout(bars5m, orb, atr);
     // TIER 2
     if (!entryResult) entryResult = detectFirstPullback(bars5m, atr);
+    if (!entryResult) entryResult = detectMomentumExpansion(bars5m, atr);
     if (!entryResult) entryResult = detectDisplacementContinuation(bars5m, atr);
-    // TIER 3
-    if (!entryResult) entryResult = detectVwapReclaim(bars5m, atr);
+    if (!entryResult) entryResult = detectVwapBounce(bars5m, atr);
   }
 
-  // TIER 4: Deadline forced entry (10:00 ET) — strong bias + EMA confirmation only
-  if (!entryResult && isDeadline && biasSpread >= 40) {
+  // FORCED_BIAS_ENTRY deadline (10:20 ET) — primary only, strong bias + EMA confirmation
+  if (!entryResult && isDeadline && !runningAsSecondary && biasSpread >= 40) {
     const ema1h = bars1h?.length >= 21 ? calcHtfBias(bars1h, 9, 21) : 0;
     const biasL = _d.direction === 'LONG';
     const emaOk = ema1h === 0 || (biasL && ema1h > 0) || (!biasL && ema1h < 0);
@@ -579,6 +685,23 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   }
 
   if (!entryResult) return null;
+
+  // ── SHORT quality gate ──────────────────────────────────────────────────────
+  // NQ has a long-side structural bias; reject shorts in a 1H bull trend unless
+  // price is near the overnight high (institutional supply zone)
+  if (entryResult.direction === 'SHORT') {
+    const ema1h = bars1h?.length >= 21 ? calcHtfBias(bars1h, 9, 21) : 0;
+    if (ema1h > 0) {
+      const onRange = on ? on.overnightHigh - on.overnightLow : 0;
+      const onPos   = onRange > 0 ? (entryResult.entry - on.overnightLow) / onRange : 0.5;
+      if (onPos < 0.80) return null; // reject short in bull 1H unless near overnight high
+    }
+  }
+
+  // ── Secondary entry gates ───────────────────────────────────────────────────
+  if (runningAsSecondary) {
+    if (entryResult.direction !== _d.firstEntryDir) return null; // must match primary direction
+  }
 
   const finalDir = entryResult.direction ?? _d.direction;
   const isBull   = finalDir === 'LONG';
@@ -621,6 +744,9 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   const confidence     = calcConfidence(entryResult.archetype, finalDir, _d.direction, biasSpread);
   const { conviction, recSize } = gradeConviction(confidence, entryResult.archetype);
 
+  // Block Conviction B/C from live signals — only A and A+ fire
+  if (conviction === 'B' || conviction === 'C') return null;
+
   // ── Indicators ─────────────────────────────────────────────────────────────
   const rsiArr = calcRsi(bars5m.map(b => b.close), 14);
   const rsi    = rsiArr[rsiArr.length - 1];
@@ -630,8 +756,17 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   const sess   = getSessionInfo(lastBar.timestamp);
   const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
 
-  _d.emitted = true; _d.archetype = entryResult.archetype;
-  _d.conviction = conviction; _d.phase = 'DONE';
+  if (!runningAsSecondary) {
+    _d.emitted         = true;
+    _d.firstEntryMinET = et.h * 60 + et.m;
+    _d.firstEntryDir   = finalDir;
+    // Keep phase HUNTING so secondary entry can still fire
+  } else {
+    _d.secondEmitted = true;
+    _d.phase = 'DONE';
+  }
+  _d.archetype  = entryResult.archetype;
+  _d.conviction = conviction;
 
   return {
     instrument:    'MNQ',
@@ -662,9 +797,10 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     ],
     trigger_reason: [
       `${entryResult.archetype} | ${finalDir} | ${conviction}(${recSize})`,
+      runningAsSecondary ? 'SECONDARY_ENTRY' : 'PRIMARY_ENTRY',
       `bias=${confidence}% biasSpread=${biasSpread} ${_d.direction}`,
       `1H:${b1 > 0 ? 'BULL' : b1 < 0 ? 'BEAR' : 'NEUT'} struct=${struct}`,
-      entryResult.archetype === 'FORCED_BIAS_ENTRY' ? 'DEADLINE_10:00' : null,
+      entryResult.archetype === 'FORCED_BIAS_ENTRY' ? 'DEADLINE_10:20' : null,
     ].filter(Boolean).join(' | '),
     indicators: {
       atr:        +atr.toFixed(2),
@@ -740,8 +876,9 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       detectLiquiditySweepReversal(allBtBars, on, atr) ||
       (orbData ? detectOrbFailedBreakout(allBtBars, orbData, atr) : null) ||
       detectFirstPullback(allBtBars, atr) ||
+      detectMomentumExpansion(allBtBars, atr) ||
       detectDisplacementContinuation(allBtBars, atr) ||
-      detectVwapReclaim(allBtBars, atr);
+      detectVwapBounce(allBtBars, atr);
 
     if (!entryResult && biasSpread >= 40) {
       const ema1h  = h1Slice.length >= 21 ? calcHtfBias(h1Slice, 9, 21) : 0;
@@ -754,6 +891,21 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     }
 
     if (!entryResult) continue;
+
+    // Mirror live conviction filter: skip B/C grade entries in backtest too
+    const btConf = calcConfidence(entryResult.archetype, entryResult.direction ?? biasDir, biasDir, biasSpread);
+    const { conviction: btConviction } = gradeConviction(btConf, entryResult.archetype);
+    if (btConviction === 'B' || btConviction === 'C') continue;
+
+    // SHORT quality gate (same as evaluate())
+    if (entryResult.direction === 'SHORT') {
+      const ema1h = h1Slice.length >= 21 ? calcHtfBias(h1Slice, 9, 21) : 0;
+      if (ema1h > 0) {
+        const onRange = on ? on.overnightHigh - on.overnightLow : 0;
+        const onPos   = onRange > 0 ? (entryResult.entry - on.overnightLow) / onRange : 0.5;
+        if (onPos < 0.80) continue;
+      }
+    }
 
     const finalDir = entryResult.direction ?? biasDir;
     const isBull   = finalDir === 'LONG';
@@ -912,7 +1064,8 @@ function reset() {
   Object.assign(_d, {
     dateKey: null, direction: null, longScore: 0, shortScore: 0,
     biasNotes: [], archetype: null, conviction: null, phase: 'IDLE',
-    emitted: false, orbComputed: false, orbHigh: null, orbLow: null,
+    emitted: false, secondEmitted: false, firstEntryMinET: null, firstEntryDir: null,
+    orbComputed: false, orbHigh: null, orbLow: null,
     openDriveDir: null, openDriveAmt: 0,
   });
 }
