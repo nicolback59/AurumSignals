@@ -3464,7 +3464,10 @@ class Scanner extends EventEmitter {
     const isTradovate = this.feedType === 'TradovateFeed';
     const fallbackMs  = isTradovate ? 5 * 60_000 : cfg.scanInterval;
 
-    this._intervals.push(setInterval(() => this.scan(), fallbackMs));
+    this._intervals.push(setInterval(
+      () => this.scan().catch(e => this._err('scan-interval crash', e)),
+      fallbackMs
+    ));
 
     this._log(`SCANNER_LOOP_STARTED interval=${fallbackMs / 1000}s`, 'signal');
 
@@ -3472,16 +3475,19 @@ class Scanner extends EventEmitter {
     // pass, and GC has had multiple cycles before the memory-heavy backtest runs.
     // Runs in a Worker Thread (see _runBacktestInWorker) so the main event loop
     // stays free during computation — no more health-check timeouts.
-    setTimeout(() => this.runBacktestCycle('MNQ', 'startup'), 30 * 60_000);   // 30 min
-    setTimeout(() => this.runBacktestCycle('MGC', 'startup'), 40 * 60_000);   // 40 min
+    setTimeout(() => this.runBacktestCycle('MNQ', 'startup').catch(e => this._err('startup backtest MNQ', e)), 30 * 60_000);
+    setTimeout(() => this.runBacktestCycle('MGC', 'startup').catch(e => this._err('startup backtest MGC', e)), 40 * 60_000);
 
     // Startup optimizers (after backtests finish)
-    setTimeout(() => this.runOptimizerCycle('MNQ'), 70 * 60_000);
-    setTimeout(() => this.runOptimizerCycle('MGC'), 78 * 60_000);
+    setTimeout(() => this.runOptimizerCycle('MNQ').catch(e => this._err('startup optimizer MNQ', e)), 70 * 60_000);
+    setTimeout(() => this.runOptimizerCycle('MGC').catch(e => this._err('startup optimizer MGC', e)), 78 * 60_000);
 
     // News at startup + every 30 min
-    setTimeout(() => this.fetchAndStoreNews(), 8_000);
-    this._intervals.push(setInterval(() => this.fetchAndStoreNews(), 30 * 60_000));
+    setTimeout(() => this.fetchAndStoreNews().catch(e => this._err('news fetch startup', e)), 8_000);
+    this._intervals.push(setInterval(
+      () => this.fetchAndStoreNews().catch(e => this._err('news fetch interval', e)),
+      30 * 60_000
+    ));
 
     // Storage cleanup
     setTimeout(() => this.runStorageCleanup(), 15_000);
@@ -3502,13 +3508,13 @@ class Scanner extends EventEmitter {
     // Skipped in INLINE mode (Render 512MB) — loading ~23k bars + walkForward backtest
     // exhausts the 400MB heap and causes a silent OOM kill every ~60 minutes.
     if (process.env.SCANNER_MODE === 'worker') {
-      setTimeout(() => this.runDeepHistoricalBacktest('MNQ'), 55 * 60_000);
-      setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 65 * 60_000);
+      setTimeout(() => this.runDeepHistoricalBacktest('MNQ').catch(e => this._err('deep backtest MNQ', e)), 55 * 60_000);
+      setTimeout(() => this.runDeepHistoricalBacktest('MGC').catch(e => this._err('deep backtest MGC', e)), 65 * 60_000);
       this._intervals.push(setInterval(() => {
         const now = new Date();
         if (now.getDay() === 0 && now.getHours() >= 18) {  // Sunday 18:00+ local (futures re-open)
-          this.runDeepHistoricalBacktest('MNQ');
-          setTimeout(() => this.runDeepHistoricalBacktest('MGC'), 8 * 60_000);
+          this.runDeepHistoricalBacktest('MNQ').catch(e => this._err('weekly deep backtest MNQ', e));
+          setTimeout(() => this.runDeepHistoricalBacktest('MGC').catch(e => this._err('weekly deep backtest MGC', e)), 8 * 60_000);
         }
       }, 60 * 60_000)); // check every hour
     }
@@ -3516,17 +3522,29 @@ class Scanner extends EventEmitter {
     // Periodic backtests — same interval for both instruments; MGC offset by 4 min
     // so they never run at the same time and compete for rate-limit budget.
     const btMs  = cfg.btIntervalH * 3_600_000;
-    this._intervals.push(setInterval(() => this.runBacktestCycle('MNQ'), btMs));
+    this._intervals.push(setInterval(
+      () => this.runBacktestCycle('MNQ').catch(e => this._err('backtest cycle MNQ', e)),
+      btMs
+    ));
     // Delay first MGC periodic run by 4 min so the two timers are staggered for life
     setTimeout(() => {
-      this._intervals.push(setInterval(() => this.runBacktestCycle('MGC'), btMs));
+      this._intervals.push(setInterval(
+        () => this.runBacktestCycle('MGC').catch(e => this._err('backtest cycle MGC', e)),
+        btMs
+      ));
     }, 4 * 60_000);
 
     // Periodic optimizers — same cadence, offset by 5 min
     const optMs = cfg.optIntervalH * 3_600_000;
-    this._intervals.push(setInterval(() => this.runOptimizerCycle('MNQ'), optMs));
+    this._intervals.push(setInterval(
+      () => this.runOptimizerCycle('MNQ').catch(e => this._err('optimizer cycle MNQ', e)),
+      optMs
+    ));
     setTimeout(() => {
-      this._intervals.push(setInterval(() => this.runOptimizerCycle('MGC'), optMs));
+      this._intervals.push(setInterval(
+        () => this.runOptimizerCycle('MGC').catch(e => this._err('optimizer cycle MGC', e)),
+        optMs
+      ));
     }, 5 * 60_000);
 
     // Weekly learning summary — check every hour; generates once per week on Friday after close
