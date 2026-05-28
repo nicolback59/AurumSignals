@@ -43,7 +43,7 @@ const {
 const { deriveGradeAndProbs } = require('./confidence-scorer');
 
 const STRATEGY_NAME       = 'NQ_NY_OPEN';
-const STRATEGY_VERSION    = '3.3';
+const STRATEGY_VERSION    = '3.4';
 const LIVE_THRESHOLD      = 40;
 const MAX_STOP_PTS        = 35;  // hard stop cap — never risk more than this per trade
 const SECONDARY_WAIT_MIN  = 30;  // minutes after primary before secondary entry is eligible
@@ -334,17 +334,15 @@ function detectFirstPullback(bars5m, atr) {
     // Widened from 35–55% to 25–70% — captures shallow (aggressive) and deep (test) pullbacks
     if (pbRatio >= 0.25 && pbRatio <= 0.70) {
       if (isBull && isDisplacement(next, atr, 0.35, 0.20) && isBullishCandle(next, 0.35)) {
-        // Entry quality gate: close must be in the top 40% of bar range (strong close, not wick)
         const nextRange = next.high - next.low;
-        if (nextRange > 0 && (next.close - next.low) / nextRange < 0.40) continue;
+        if (nextRange > 0 && (next.close - next.low) / nextRange < 0.28) continue;
         const structStop = Math.min(bar.low, driveBars[driveBars.length - 1].low) - 3;
         return { bar: next, entry: next.close, direction: 'LONG',
                  archetype: 'FIRST_PULLBACK', structStop, driveMag };
       }
       if (!isBull && isDisplacement(next, atr, 0.35, 0.20) && isBearishCandle(next, 0.35)) {
-        // Entry quality gate: close must be in the bottom 40% of bar range
         const nextRange = next.high - next.low;
-        if (nextRange > 0 && (next.high - next.close) / nextRange < 0.40) continue;
+        if (nextRange > 0 && (next.high - next.close) / nextRange < 0.28) continue;
         const structStop = Math.max(bar.high, driveBars[driveBars.length - 1].high) + 3;
         return { bar: next, entry: next.close, direction: 'SHORT',
                  archetype: 'FIRST_PULLBACK', structStop, driveMag };
@@ -562,10 +560,10 @@ function detectOrbBreakoutContinuation(bars5m, orb, atr) {
 
 /**
  * TIER 2: Session Trend Pullback
- * Three consecutive bars form a clear HH+HL (bull) or LL+LH (bear) structure
- * with meaningful range (≥0.60× ATR). Price then pulls back 25–60% of the
- * trend range before resuming with a bullish/bearish bar.
- * Fires on most trending days — the most common institutional intraday pattern.
+ * Three consecutive bars with progressively higher/lower CLOSES (not strict HH+HL)
+ * and a meaningful net move (≥0.60× ATR). Price then pulls back 22–68% of the
+ * trend range before resuming with a directional bar.
+ * Using successive closes (not strict HH+HL) fires on far more trending days.
  * Window: 9:30–10:20 ET
  */
 function detectSessionTrendPullback(bars5m, atr) {
@@ -576,20 +574,20 @@ function detectSessionTrendPullback(bars5m, atr) {
     const b0  = sessionBars[i - 2];
     const b1  = sessionBars[i - 1];
     const b2  = sessionBars[i];
-    const pb  = sessionBars[i + 1]; // pullback bar
-    const res = sessionBars[i + 2]; // resumption bar
+    const pb  = sessionBars[i + 1];
+    const res = sessionBars[i + 2];
     if (!pb || !res) break;
     if (getET(res.timestamp).hm >= 1020) break;
 
-    // Bull trend: 3 bars with higher highs AND higher lows
-    const isBullTrend = b2.high > b1.high && b1.high > b0.high &&
-                        b2.low  > b1.low  && b1.low  > b0.low;
+    // Bull trend: 3 successive higher closes with meaningful net move from b0 open
+    const isBullTrend = b2.close > b1.close && b1.close > b0.close;
     if (isBullTrend) {
-      const trendAmt = b2.high - b0.low;
+      const trendAmt = b2.close - b0.open;
       if (trendAmt < 0.60 * atr) continue;
-      const pbRatio = trendAmt > 0 ? (b2.high - pb.low) / trendAmt : 0;
-      if (pbRatio >= 0.25 && pbRatio <= 0.62) {
-        if (res.close > pb.high && isBullishCandle(res, 0.32)) {
+      const trendRange = Math.max(b0.high, b1.high, b2.high) - Math.min(b0.low, b1.low, b2.low);
+      const pbRatio = trendRange > 0 ? (b2.high - pb.low) / trendRange : 0;
+      if (pbRatio >= 0.22 && pbRatio <= 0.68) {
+        if (res.close > pb.high && isBullishCandle(res, 0.28)) {
           return {
             bar: res, entry: res.close, direction: 'LONG',
             archetype: 'SESSION_TREND_PULLBACK',
@@ -599,15 +597,15 @@ function detectSessionTrendPullback(bars5m, atr) {
       }
     }
 
-    // Bear trend: 3 bars with lower lows AND lower highs
-    const isBearTrend = b2.low  < b1.low  && b1.low  < b0.low &&
-                        b2.high < b1.high && b1.high < b0.high;
+    // Bear trend: 3 successive lower closes with meaningful net move from b0 open
+    const isBearTrend = b2.close < b1.close && b1.close < b0.close;
     if (isBearTrend) {
-      const trendAmt = b0.high - b2.low;
+      const trendAmt = b0.open - b2.close;
       if (trendAmt < 0.60 * atr) continue;
-      const pbRatio = trendAmt > 0 ? (pb.high - b2.low) / trendAmt : 0;
-      if (pbRatio >= 0.25 && pbRatio <= 0.62) {
-        if (res.close < pb.low && isBearishCandle(res, 0.32)) {
+      const trendRange = Math.max(b0.high, b1.high, b2.high) - Math.min(b0.low, b1.low, b2.low);
+      const pbRatio = trendRange > 0 ? (pb.high - b2.low) / trendRange : 0;
+      if (pbRatio >= 0.22 && pbRatio <= 0.68) {
+        if (res.close < pb.low && isBearishCandle(res, 0.28)) {
           return {
             bar: res, entry: res.close, direction: 'SHORT',
             archetype: 'SESSION_TREND_PULLBACK',
@@ -620,9 +618,67 @@ function detectSessionTrendPullback(bars5m, atr) {
   return null;
 }
 
+/**
+ * TIER 2: Morning Continuation
+ * Session establishes a clear directional anchor in the first 20 minutes
+ * (9:30–9:50, net move ≥ 0.55× ATR from open). A pullback of 20–65% follows,
+ * then a resumption bar closes beyond the pullback bar's extreme.
+ * Less strict than SESSION_TREND_PULLBACK — fires on most trending mornings
+ * including moderate-strength and slightly choppy opening drives.
+ * Window: 9:45–10:25 ET
+ */
+function detectMorningContinuation(bars5m, atr) {
+  const anchorBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 950; });
+  if (anchorBars.length < 2) return null;
+
+  const sessionOpen = anchorBars[0].open;
+  const anchorHigh  = Math.max(...anchorBars.map(b => b.high));
+  const anchorLow   = Math.min(...anchorBars.map(b => b.low));
+  const lastClose   = anchorBars[anchorBars.length - 1].close;
+
+  const netUp   = lastClose - sessionOpen;
+  const netDown = sessionOpen - lastClose;
+  if (Math.max(netUp, netDown) < 0.55 * atr) return null;
+
+  const isBull  = netUp >= netDown;
+  const extreme = isBull ? anchorHigh : anchorLow;
+  const driveMag = Math.max(netUp, netDown);
+
+  const pullBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 945 && e.hm < 1025; });
+  if (pullBars.length < 2) return null;
+
+  for (let i = 0; i < pullBars.length - 1; i++) {
+    const bar  = pullBars[i];
+    const next = pullBars[i + 1];
+    if (getET(next.timestamp).hm >= 1025) break;
+
+    const pbRatio = driveMag > 0
+      ? (isBull ? (extreme - bar.low) / driveMag : (bar.high - extreme) / driveMag)
+      : 0;
+
+    if (pbRatio < 0.20 || pbRatio > 0.65) continue;
+
+    if (isBull && isBullishCandle(next, 0.28) && next.close > bar.high) {
+      return {
+        bar: next, entry: next.close, direction: 'LONG',
+        archetype: 'MORNING_CONTINUATION',
+        structStop: Math.min(bar.low, anchorLow) - 3,
+      };
+    }
+    if (!isBull && isBearishCandle(next, 0.28) && next.close < bar.low) {
+      return {
+        bar: next, entry: next.close, direction: 'SHORT',
+        archetype: 'MORNING_CONTINUATION',
+        structStop: Math.max(bar.high, anchorHigh) + 3,
+      };
+    }
+  }
+  return null;
+}
+
 // ── Conviction grading ────────────────────────────────────────────────────────
 const TIER1_SET = new Set(['ORB_FAILED_BREAKOUT', 'LIQUIDITY_SWEEP_REVERSAL', 'OPENING_DRIVE_CONTINUATION']);
-const TIER2_SET = new Set(['FIRST_PULLBACK', 'DISPLACEMENT_CONTINUATION', 'MOMENTUM_EXPANSION', 'ORB_BREAKOUT_CONTINUATION', 'SESSION_TREND_PULLBACK']);
+const TIER2_SET = new Set(['FIRST_PULLBACK', 'DISPLACEMENT_CONTINUATION', 'MOMENTUM_EXPANSION', 'ORB_BREAKOUT_CONTINUATION', 'SESSION_TREND_PULLBACK', 'MORNING_CONTINUATION']);
 
 // Separate thresholds for TIER1 (reversal/high-conviction) and TIER2 (continuation/pattern-based).
 // TIER2 earns Conviction A at confidence >= 60 — eliminates the hidden direction-dependency
@@ -664,6 +720,7 @@ const BASE_CONFIDENCE = {
   ORB_BREAKOUT_CONTINUATION:     63,
   MOMENTUM_EXPANSION:            62,
   SESSION_TREND_PULLBACK:        61,
+  MORNING_CONTINUATION:          60,
   DISPLACEMENT_CONTINUATION:     60,
   FORCED_BIAS_ENTRY:             50,
 };
@@ -777,6 +834,7 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     if (!entryResult && orb) entryResult = detectOrbBreakoutContinuation(bars5m, orb, atr);
     if (!entryResult) entryResult = detectMomentumExpansion(bars5m, atr);
     if (!entryResult) entryResult = detectSessionTrendPullback(bars5m, atr);
+    if (!entryResult) entryResult = detectMorningContinuation(bars5m, atr);
     if (!entryResult) entryResult = detectDisplacementContinuation(bars5m, atr);
   }
 
@@ -798,7 +856,7 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     if (ema1h > 0) {
       const onRange = on ? on.overnightHigh - on.overnightLow : 0;
       const onPos   = onRange > 0 ? (entryResult.entry - on.overnightLow) / onRange : 0.5;
-      if (onPos < 0.80) return null; // reject short in bull 1H unless near overnight high
+      if (onPos < 0.65) return null; // reject short in bull 1H unless in upper overnight range
     }
   }
 
@@ -984,6 +1042,7 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       (orbData ? detectOrbBreakoutContinuation(allBtBars, orbData, atr) : null) ||
       detectMomentumExpansion(allBtBars, atr) ||
       detectSessionTrendPullback(allBtBars, atr) ||
+      detectMorningContinuation(allBtBars, atr) ||
       detectDisplacementContinuation(allBtBars, atr);
 
     if (!entryResult && biasSpread >= 40) {
@@ -1009,7 +1068,7 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       if (ema1h > 0) {
         const onRange = on ? on.overnightHigh - on.overnightLow : 0;
         const onPos   = onRange > 0 ? (entryResult.entry - on.overnightLow) / onRange : 0.5;
-        if (onPos < 0.80) continue;
+        if (onPos < 0.65) continue;
       }
     }
 
