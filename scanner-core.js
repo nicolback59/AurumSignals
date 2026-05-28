@@ -3555,15 +3555,37 @@ class Scanner extends EventEmitter {
 
     this._log(`SCANNER_BOOT_SUCCESS all subsystems armed — scanner is live`, 'signal');
 
-    // Startup ntfy confirmation — in-memory flag so every fresh process start notifies.
-    // The old DB-based throttle persisted across restarts and blocked notifications after
-    // crash loops. In-memory resets on every new process, which is the right behaviour.
+    // Startup ntfy confirmation — DB-throttled to once per 10 minutes (cross-process safe).
+    // Uses dedup_ideas table so crash loops (PM2 auto-restart every 2-5 min) produce
+    // at most one notification per 10-minute window instead of spamming on every restart.
+    // A genuine restart after >10 min offline always sends.
+    const STARTUP_COOLDOWN_MS = 10 * 60_000;
+    const STARTUP_DEDUP_KEY   = 'SYSTEM:SCANNER_ONLINE';
     if (cfg.ntfyTopic) {
       setTimeout(() => {
         if (this._startupNtfySent) {
           this._log('[ntfy] startup notification already sent this process — skipping', 'signal');
           return;
         }
+        // Cross-process throttle check
+        try {
+          const now = Date.now();
+          const existing = this.db.prepare(
+            "SELECT expires_at FROM dedup_ideas WHERE key = ? AND expires_at > ?"
+          ).get(STARTUP_DEDUP_KEY, now);
+          if (existing) {
+            const minsLeft = Math.round((existing.expires_at - now) / 60_000);
+            this._log(`[ntfy] startup notification throttled — crash-loop guard active, ${minsLeft} min remaining`, 'signal');
+            return;
+          }
+          // Claim the slot atomically before sending
+          this.db.prepare(`
+            INSERT OR REPLACE INTO dedup_ideas
+              (key, expires_at, instrument, direction, family, strategy, session, entry, sl)
+            VALUES (?, ?, 'SYSTEM', 'NONE', 'SYSTEM', 'SYSTEM', NULL, 0, 0)
+          `).run(STARTUP_DEDUP_KEY, now + STARTUP_COOLDOWN_MS);
+        } catch (e) { this._log(`[ntfy] startup throttle DB error (proceeding): ${e.message}`, 'signal'); }
+
         this._startupNtfySent = true;
         try {
           const headers = {
