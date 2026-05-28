@@ -3573,45 +3573,38 @@ class Scanner extends EventEmitter {
 
     this._log(`SCANNER_BOOT_SUCCESS all subsystems armed — scanner is live`, 'signal');
 
-    // ── Startup notification — fires on REAL boots only ───────────────────────
-    // Rules:
-    //  1. In-memory flag prevents double-fire within one process lifetime
-    //  2. DB lock (30-min window, atomic INSERT OR IGNORE) prevents crash-loop spam
-    //     - PM2 restart every 2-15 min → at most ONE notification per 30 min
-    //     - Genuine restart after >30 min offline → always notifies
-    //  3. Heartbeat/scan/bar-close cycles never call this — it only runs at boot
+    // ── Startup notification — only on REAL outages ───────────────────────────
+    // Logic: compare last worker_health heartbeat timestamp to now.
+    //   Gap < 5 min  → crash-loop restart, suppress (scanner was just running)
+    //   Gap ≥ 5 min  → genuine outage (deploy, server reboot, long crash) → notify
+    //   No record    → first ever boot → notify
     //
-    // EVENTS THAT DO NOT FIRE NTFY (silent internal only):
-    //   - scan loop ticks       → logged internally only
-    //   - bar close events      → logged internally only
-    //   - reconciliation sweeps → logged internally only
-    //   - heartbeat pings       → logged internally only
-    const STARTUP_COOLDOWN_MS = 30 * 60_000;
-    const STARTUP_DEDUP_KEY   = 'SYSTEM:SCANNER_ONLINE';
+    // This means:
+    //  • PM2 crash-loop (restart every 2 min): NEVER notifies
+    //  • Manual deploy (git pull + pm2 restart): notifies IF deploy took >5 min offline
+    //  • Server reboot / long outage: always notifies
+    //  • Repeated manual restarts in quick succession: only first one notifies
     if (cfg.ntfyTopic) {
       setTimeout(() => {
         if (this._startupNtfySent) return;
         try {
-          const now = Date.now();
-          const existing = this.db.prepare(
-            "SELECT expires_at FROM dedup_ideas WHERE key = ? AND expires_at > ?"
-          ).get(STARTUP_DEDUP_KEY, now);
-          if (existing) {
-            const minsLeft = Math.round((existing.expires_at - now) / 60_000);
-            this._log(`[ntfy] startup notification suppressed — crash-loop guard active (${minsLeft} min remaining)`, 'signal');
-            return;
+          // Read last healthy heartbeat from worker_health
+          const row = this.db.prepare(
+            "SELECT last_heartbeat FROM worker_health WHERE worker_name = 'scanner-worker'"
+          ).get();
+
+          if (row?.last_heartbeat) {
+            const lastMs  = new Date(row.last_heartbeat).getTime();
+            const gapMins = (Date.now() - lastMs) / 60_000;
+            if (gapMins < 5) {
+              this._log(`[ntfy] startup notification suppressed — crash-loop guard (gap=${gapMins.toFixed(1)} min < 5 min threshold)`, 'signal');
+              return;
+            }
+            this._log(`[ntfy] genuine outage detected (gap=${gapMins.toFixed(1)} min) — sending startup notification`, 'signal');
+          } else {
+            this._log('[ntfy] first boot — sending startup notification', 'signal');
           }
-          // Atomic claim — if another process wins the race, changes=0 → we're the duplicate
-          const info = this.db.prepare(`
-            INSERT OR IGNORE INTO dedup_ideas
-              (key, expires_at, instrument, direction, family, strategy, session, entry, sl)
-            VALUES (?, ?, 'SYSTEM', 'NONE', 'SYSTEM', 'SYSTEM', NULL, 0, 0)
-          `).run(STARTUP_DEDUP_KEY, now + STARTUP_COOLDOWN_MS);
-          if (info.changes === 0) {
-            this._log('[ntfy] startup notification suppressed — another process claimed the slot', 'signal');
-            return;
-          }
-        } catch (e) { this._log(`[ntfy] startup throttle DB error (proceeding): ${e.message}`, 'signal'); }
+        } catch (e) { this._log(`[ntfy] startup gap-check error (proceeding): ${e.message}`, 'signal'); }
 
         this._startupNtfySent = true;
         const headers = {
@@ -3621,17 +3614,14 @@ class Scanner extends EventEmitter {
           'Tags':     'white_check_mark',
         };
         if (cfg.ntfyToken) headers['Authorization'] = `Bearer ${cfg.ntfyToken}`;
-        const uptimeMins = Math.round(process.uptime() / 60);
-        const body = `Scanner online\nStrategies: MNQ_INTRADAY, MGC_SCALP\nUptime: ${uptimeMins}m`;
-        fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body })
+        fetch(`${cfg.ntfyUrl}/${cfg.ntfyTopic}`, { method: 'POST', headers, body: 'Scanner back online' })
           .then(r => this._log(`[ntfy] startup notification sent — HTTP ${r.status}`, 'signal'))
           .catch(err => this._log(`[ntfy] startup notification FAILED: ${err.message}`, 'signal'));
       }, 5_000);
     }
 
     // ── Daily operational heartbeat — one quiet summary per day ──────────────
-    // Fires once per day (checked hourly). Replaces startup spam as health signal.
-    // See _maybeSendDailyHeartbeat() below for the window logic.
+    // Fires once per day (checked hourly). See _maybeSendDailyHeartbeat().
     if (cfg.ntfyTopic) {
       setTimeout(() => this._maybeSendDailyHeartbeat().catch(() => {}), 90_000);
       this._intervals.push(setInterval(
