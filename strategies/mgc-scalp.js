@@ -44,7 +44,7 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '5.0';
+const STRATEGY_VERSION = '5.1';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
 const MAX_RISK_PTS = 10;  // hard cap on SL distance — skip any setup requiring >10pt risk
@@ -163,8 +163,11 @@ function getVwapState(bars, vwapArr, lookback = 5) {
   const wasAbove = aboveCnt > prevBars.length / 2;
   const nowAbove = bars[n].close > vwapArr[n];
 
-  if (!wasAbove && nowAbove) return 'RECLAIMING';
-  if (wasAbove  && !nowAbove) return 'REJECTING';
+  // Two consecutive closes on the new side confirm acceptance — a single cross is noise
+  const prevBar      = bars[n - 1];
+  const prevBarAbove = vwapArr[n - 1] != null ? prevBar.close > vwapArr[n - 1] : nowAbove;
+  if (!wasAbove && nowAbove && prevBarAbove)  return 'RECLAIMING';
+  if (wasAbove  && !nowAbove && !prevBarAbove) return 'REJECTING';
   return nowAbove ? 'ABOVE' : 'BELOW';
 }
 
@@ -286,6 +289,13 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   const htf30mBias= bars30m && bars30m.length >= 6  ? calcHtfBias(bars30m, 9, 21) : null;
   const htf45mBias= bars45m && bars45m.length >= 5  ? calcHtfBias(bars45m, 9, 21) : null;
 
+  // 15m EMA21 slope — used to distinguish SOFT_CHOP from healthy pullback in a 15m trend
+  const ema21_15mArr = ema(bars15m.map(b => b.close), 21);
+  const m15nSlope    = ema21_15mArr.length - 1;
+  const htfEmaSlope  = (ema21_15mArr[m15nSlope] != null && ema21_15mArr[m15nSlope - 4] != null)
+    ? ema21_15mArr[m15nSlope] - ema21_15mArr[m15nSlope - 4]
+    : 0;
+
   const priorDay  = getPriorDayLevels(bars1h);
 
   // Chop threshold is tunable via std2 param (std2=2.2 → 0.70 default).
@@ -325,7 +335,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
     ema9, ema21, ema9Arr, ema21Arr, rsi, rsiOB, rsiOS, hist, histPrev,
     regime, chopScore, vwapState, volRegime, htfBias, htf1hBias,
     htf30mBias, htf45mBias, priorDay, isChop, isSoftChop, adxVal, sess,
-    dispStrength,
+    dispStrength, htfEmaSlope,
     maxRiskPts, adxFloor, swingBars, srMinAtr,
   };
 
@@ -470,17 +480,22 @@ function displacementStrength(bars) {
 
 function evalContinuationPullback(ctx) {
   const { exec, n, last, atr, vwap, vwapArr, ema9, ema21,
-          regime, htfBias, rsiOB, rsiOS, hist, histPrev, chopScore,
-          adxVal, sess, dispStrength } = ctx;
+          regime, htfBias, htf1hBias, rsiOB, rsiOS, hist, histPrev, chopScore,
+          adxVal, sess, dispStrength, htfEmaSlope } = ctx;
 
-  if (regime === 'RANGE_CHOP' || regime === 'SOFT_CHOP') return null;
+  if (regime === 'RANGE_CHOP') return null;
 
-  // Require minimum session quality — continuation entries in thin/pre-market sessions
-  // have no reliable follow-through.  London (0.70) and above only.
+  // SOFT_CHOP: a trending market pulling back to EMA registers as SOFT_CHOP because the
+  // 20-bar efficiency sees both the trend leg and the pullback leg. Allow continuation
+  // only when the 15m EMA slope confirms the broader trend is still intact.
+  const softChopOverride = regime === 'SOFT_CHOP';
+  if (softChopOverride) {
+    const htfTrending = Math.abs(htfEmaSlope ?? 0) > 0.25 * atr;
+    if (!htfTrending || adxVal == null || adxVal < 18 || (dispStrength ?? 0) < 1.2) return null;
+  }
+
   if (sess.quality < 0.58) return null;
 
-  // Trend-following entries require ADX confirmation of directional strength.
-  // adxFloor is tunable via stdvLen param (default 12).
   const trendRegime = regime === 'TREND_BULL' || regime === 'TREND_BEAR';
   if (trendRegime && adxVal != null && adxVal < (ctx.adxFloor ?? 16)) return null;
 
@@ -493,6 +508,13 @@ function evalContinuationPullback(ctx) {
     if (isBull && rsiOB) continue;
     if (!isBull && rsiOS) continue;
 
+    // MIDDAY: gold doldrums — only trade when there is real directional conviction
+    if (sess.name === 'MIDDAY' && (adxVal == null || adxVal < 22 || chopScore >= 0.42)) continue;
+    // LONDON: carry the prior session's direction — only trade aligned with 1h bias
+    if (sess.name === 'LONDON' && htf1hBias === 0) continue;
+    if (sess.name === 'LONDON' && isBull  && htf1hBias < 0) continue;
+    if (sess.name === 'LONDON' && !isBull && htf1hBias > 0) continue;
+
     // Forensic finding: 15-bar / 0.80×ATR lookback allowed stale 75-min-old pullbacks
     // as valid entry triggers.  Tightened to 10 bars (50 min on 5m / 30 min on 3m)
     // and 0.65×ATR tolerance for a cleaner, fresher pullback requirement.
@@ -500,7 +522,11 @@ function evalContinuationPullback(ctx) {
     const pull9  = hadPullbackToLevel(exec, ema9,  tol, dir, 10);
     const pull21 = hadPullbackToLevel(exec, ema21, tol, dir, 10);
     const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 10);
-    if (!pull9 && !pull21 && !pullV) continue;
+    // Proximity entry: current bar AT EMA21 right now is the highest-quality pullback signal
+    const atEma21Now = isBull
+      ? last.low  <= ema21 + 0.40 * atr && last.close > ema21 - 0.20 * atr
+      : last.high >= ema21 - 0.40 * atr && last.close < ema21 + 0.20 * atr;
+    if (!pull9 && !pull21 && !pullV && !atEma21Now) continue;
 
     // Retest holds — only check the most recent bar before entry
     const prevBar = exec[exec.length - 2];
@@ -537,6 +563,7 @@ function evalContinuationPullback(ctx) {
       dir, sl, rr, srDist,
       archetype: 'continuation_pullback',
       bonus: trendBonus + adxBonus + dispBonus,
+      ...(softChopOverride && { minMtfAgree: 3 }),
       score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus + adxBonus + dispBonus,
     };
   }
@@ -555,6 +582,11 @@ function evalVwapReclaimReject(ctx) {
   if (!isBull && htfBias > 0) return null;
   if (isBull && rsiOB) return null;
   if (!isBull && rsiOS) return null;
+
+  // VWAP slope must confirm the transition — a falling VWAP while price reclaims = false reclaim
+  const vwapSlope = vwapArr[n] - (vwapArr[n - 3] ?? vwapArr[n]);
+  if (isBull  && vwapSlope < 0) return null;
+  if (!isBull && vwapSlope > 0) return null;
 
   // Confirmation candle
   if (!(isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25))) return null;
@@ -620,7 +652,7 @@ function evalSweepReversal(ctx) {
       dir, sl, rr, srDist,
       archetype: 'sweep_reversal',
       bonus: 7,
-      minMtfAgree: 3,
+      minMtfAgree: 2,
       score: rr * 14 + (srDist ?? 1) * 3,
     };
   }
