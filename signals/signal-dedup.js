@@ -56,10 +56,12 @@ const SESSION_AGNOSTIC = new Set();
 const _registry = new Map();
 
 // ── SQLite persistence ────────────────────────────────────────────────────────
-let _db        = null;
+let _db         = null;
 let _stmtUpsert = null;
-let _stmtDel   = null;
-let _stmtPurge = null;
+let _stmtClaim  = null;   // INSERT OR IGNORE — used for atomic cross-process dedup claim
+let _stmtFetch  = null;   // SELECT by key — cross-process check before registering
+let _stmtDel    = null;
+let _stmtPurge  = null;
 
 function _initDb(db) {
   if (_db) return;
@@ -86,6 +88,15 @@ function _initDb(db) {
     VALUES
       (@key, @expires_at, @instrument, @direction, @family, @strategy, @session, @entry, @sl)
   `);
+  // Atomic claim: INSERT OR IGNORE returns changes=0 if another process already holds the key.
+  // This is the cross-process dedup guard — only one process wins the INSERT race.
+  _stmtClaim = db.prepare(`
+    INSERT OR IGNORE INTO dedup_ideas
+      (key, expires_at, instrument, direction, family, strategy, session, entry, sl)
+    VALUES
+      (@key, @expires_at, @instrument, @direction, @family, @strategy, @session, @entry, @sl)
+  `);
+  _stmtFetch = db.prepare('SELECT * FROM dedup_ideas WHERE key = ? AND expires_at > ?');
   _stmtDel   = db.prepare('DELETE FROM dedup_ideas WHERE key = ?');
   _stmtPurge = db.prepare('DELETE FROM dedup_ideas WHERE expires_at <= ?');
 
@@ -156,6 +167,33 @@ function checkAndRegister(sig) {
     return { isDuplicate: true, key, suppressLog };
   }
 
+  // Not in memory — also check DB before registering (cross-process dedup guard).
+  // Two processes can pass the in-memory check simultaneously; the DB is the
+  // shared source of truth that catches the race.
+  if (_stmtFetch) {
+    try {
+      const dbRow = _stmtFetch.get(key, now);
+      if (dbRow) {
+        // Another process already registered this idea — sync to memory and suppress.
+        _registry.set(key, {
+          expiryMs: dbRow.expires_at, instrument: dbRow.instrument,
+          direction: dbRow.direction, family: dbRow.family,
+          strategy: dbRow.strategy, session: dbRow.session,
+          entry: dbRow.entry, sl: dbRow.sl,
+        });
+        const entryDiff = Math.abs(dbRow.entry - sig.entry).toFixed(1);
+        const minsLeft  = Math.round((dbRow.expires_at - now) / 60_000);
+        return {
+          isDuplicate: true, key,
+          suppressLog: `Suppressed cross-process duplicate ${sig.instrument} ${sig.direction} ` +
+            `[${sig.strategy_name}]: entry ${sig.entry} matched DB idea [${dbRow.strategy}] ` +
+            `within ${entryDiff} pts, session ${sig.session ?? 'unknown'}, ` +
+            `window expires in ${minsLeft} min`,
+        };
+      }
+    } catch { /* non-fatal — fall through to normal registration */ }
+  }
+
   // Not a duplicate — register the new idea
   const ttlMs  = TTL_MS[sig.strategy_name] ?? TTL_DEFAULT;
   const expiry = now + ttlMs;
@@ -172,9 +210,21 @@ function checkAndRegister(sig) {
   };
   _registry.set(key, record);
 
-  if (_stmtUpsert) {
+  if (_stmtClaim) {
     try {
-      _stmtUpsert.run({ key, expires_at: expiry, ...record });
+      // Atomic INSERT OR IGNORE: if another process races and inserts first,
+      // changes=0 means we're the duplicate — abort our signal.
+      const info = _stmtClaim.run({ key, expires_at: expiry, ...record });
+      if (info.changes === 0) {
+        // Lost the race — the other process's signal is already committed.
+        // Remove the in-memory entry we just set so we stay consistent with DB.
+        _registry.delete(key);
+        return {
+          isDuplicate: true, key,
+          suppressLog: `Suppressed race-condition duplicate ${sig.instrument} ${sig.direction} ` +
+            `[${sig.strategy_name}]: another process claimed dedup slot for entry ${sig.entry}`,
+        };
+      }
       _stmtPurge.run(now);
     } catch { /* non-fatal */ }
   }
