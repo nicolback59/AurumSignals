@@ -44,7 +44,7 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '5.2';
+const STRATEGY_VERSION = '5.3';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
 const MAX_RISK_PTS = 10;  // hard cap on SL distance — skip any setup requiring >10pt risk
@@ -266,6 +266,9 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   const ema9    = ema9Arr[n];
   const ema21   = ema21Arr[n];
   if (!ema9 || !ema21 || !vwap) return null;
+  // Exec TF directional bias: direct EMA9 vs EMA21 — no 0.02% buffer, matches dirs exactly.
+  // When ema9 > ema21 (required in continuation dirs), execBias is always 1.
+  const execBias = ema9 > ema21 ? 1 : ema9 < ema21 ? -1 : 0;
 
   const rsiArr  = calcRsi(closes, 14);
   const rsi     = rsiArr[n];
@@ -283,8 +286,6 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   if (volRegime === 'HIGH' && chopScore > 0.70) return null;
 
   // ── HTF biases ──────────────────────────────────────────────────────────────
-  // 5m exec-TF bias — always present, represents real-time momentum direction
-  const htf5mBias = calcHtfBias(bars5m, 9, 21);
   const htfBias   = calcHtfBias(bars15m, 9, 21);
   const htf1hBias = bars1h  && bars1h.length  >= 21 ? calcHtfBias(bars1h,  9, 21) : 0;
   const htf30mBias= bars30m && bars30m.length >= 6  ? calcHtfBias(bars30m, 9, 21) : null;
@@ -367,7 +368,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   // (already required by continuation dirs), the minAgree=2 threshold is met without
   // needing the slower 30m/45m/1h to have caught up — unlocking early trend entries.
   const htfLayers = [
-    { bias: htf5mBias,  present: true },
+    { bias: execBias,   present: true },
     { bias: htfBias,    present: true },
     { bias: htf1hBias,  present: bars1h  && bars1h.length  >= 21 },
     { bias: htf30mBias, present: htf30mBias !== null },
@@ -379,8 +380,8 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   const conflictLayers = presentLayers.filter(l => l.bias !== 0 && l.bias !== expectedBias);
   const minAgree = best.minMtfAgree ?? 2; // per-archetype TF agreement threshold
   if (agreedLayers.length < minAgree) return null;
-  // Also block when all non-neutral layers conflict
-  if (conflictLayers.length >= presentLayers.length) return null;
+  // Block when majority of non-neutral TFs conflict — prevents single-TF counter-trend entries
+  if (conflictLayers.length > agreedLayers.length) return null;
 
   const confluenceBonus = (agreedLayers.length - minAgree) * 4;
 
@@ -557,7 +558,7 @@ function evalContinuationPullback(ctx) {
     if (rr < 0.8) continue;
 
     const srDist = srDistanceAtr(isBull ? last.close + 14 : last.close - 14, exec, atr, 40);
-    if (srDist < (ctx.srMinAtr ?? 0.35)) continue;
+    if (srDist < 0.20) continue;
 
     const trendBonus = trendRegime ? 5 : 0;
     const adxBonus   = adxVal != null && adxVal >= 25 ? 3 : 0;
@@ -568,7 +569,7 @@ function evalContinuationPullback(ctx) {
       dir, sl, rr, srDist,
       archetype: 'continuation_pullback',
       bonus: trendBonus + adxBonus + dispBonus,
-      ...(softChopOverride && { minMtfAgree: 3 }),
+      minMtfAgree: softChopOverride ? 3 : 1,
       score: rr * 10 + (pull9 ? 3 : 0) + (pull21 ? 2 : 0) + trendBonus + adxBonus + dispBonus,
     };
   }
@@ -588,10 +589,11 @@ function evalVwapReclaimReject(ctx) {
   if (isBull && rsiOB) return null;
   if (!isBull && rsiOS) return null;
 
-  // VWAP slope must confirm the transition — a falling VWAP while price reclaims = false reclaim
-  const vwapSlope = vwapArr[n] - (vwapArr[n - 3] ?? vwapArr[n]);
-  if (isBull  && vwapSlope < 0) return null;
-  if (!isBull && vwapSlope > 0) return null;
+  // Price must be meaningfully above/below VWAP — not a marginal tick-above cross
+  // VWAP slope filter removed: VWAP lags price and is still declining at the time of
+  // a genuine reclaim, causing nearly all valid entries to be blocked.
+  if (isBull  && last.close <= vwapArr[n] + 0.10 * atr) return null;
+  if (!isBull && last.close >= vwapArr[n] - 0.10 * atr) return null;
 
   // Confirmation candle
   if (!(isBull ? isBullishCandle(last, 0.25) : isBearishCandle(last, 0.25))) return null;
@@ -669,8 +671,8 @@ function evalCompressionBreakout(ctx) {
 
   if (regime !== 'COMPRESSION' && regime !== 'NORMAL') return null;
 
-  // Breakouts in thin sessions (pre-market / close) fake out without volume support.
-  if (sess.quality < 0.70) return null;
+  // Breakouts in thin sessions fake out without volume support.
+  if (sess.quality < 0.58) return null;
 
   const lookback = 8;
   if (exec.length < lookback + 5) return null;
@@ -721,9 +723,9 @@ function evalCompressionBreakout(ctx) {
 function evalChopMeanRevert(ctx) {
   const { exec, n, last, atr, vwap, rsi, rsiOB, rsiOS } = ctx;
 
-  // Only fade extremes back toward VWAP
-  const isBull = last.close < vwap && rsiOS;
-  const isBear = last.close > vwap && rsiOB;
+  // Fade RSI extremes back toward VWAP — relaxed from 24/76 to 30/70 for more participation
+  const isBull = last.close < vwap && rsi != null && rsi < 30;
+  const isBear = last.close > vwap && rsi != null && rsi > 70;
   if (!isBull && !isBear) return null;
 
   const dir = isBull ? 'LONG' : 'SHORT';
