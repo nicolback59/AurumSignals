@@ -99,6 +99,25 @@ try {
   process.exit(1);
 }
 
+// ── Global error handlers ─────────────────────────────────────────────────────
+// Without these, any unhandled async rejection in the scanner crashes the process.
+// server.js has these too but scanner-worker is a separate process that doesn't
+// inherit them — each process needs its own handlers.
+process.on('unhandledRejection', (reason) => {
+  const msg = reason?.message ?? String(reason);
+  console.error(`[${WORKER_NAME}] Unhandled rejection: ${msg}`);
+  try { logWorkerError(db, WORKER_NAME, { message: msg, stack: reason?.stack }); } catch (_) {}
+  try { heartbeat(db, WORKER_NAME, 'RUNNING', { lastError: msg }); } catch (_) {}
+  // Do NOT exit — log and continue so PM2 doesn't spam restarts
+});
+
+process.on('uncaughtException', (err) => {
+  console.error(`[${WORKER_NAME}] Uncaught exception:`, err.message, err.stack);
+  try { logWorkerError(db, WORKER_NAME, err); } catch (_) {}
+  try { heartbeat(db, WORKER_NAME, 'ERROR', { error: err.message }); } catch (_) {}
+  process.exit(1); // Exit cleanly so PM2 can restart once, not loop
+});
+
 // ── Graceful shutdown ─────────────────────────────────────────────────────────
 for (const sig of ['SIGTERM', 'SIGINT']) {
   process.once(sig, () => {
