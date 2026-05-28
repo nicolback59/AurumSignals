@@ -44,7 +44,7 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '5.1';
+const STRATEGY_VERSION = '5.2';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
 const MAX_RISK_PTS = 10;  // hard cap on SL distance — skip any setup requiring >10pt risk
@@ -163,11 +163,10 @@ function getVwapState(bars, vwapArr, lookback = 5) {
   const wasAbove = aboveCnt > prevBars.length / 2;
   const nowAbove = bars[n].close > vwapArr[n];
 
-  // Two consecutive closes on the new side confirm acceptance — a single cross is noise
-  const prevBar      = bars[n - 1];
-  const prevBarAbove = vwapArr[n - 1] != null ? prevBar.close > vwapArr[n - 1] : nowAbove;
-  if (!wasAbove && nowAbove && prevBarAbove)  return 'RECLAIMING';
-  if (wasAbove  && !nowAbove && !prevBarAbove) return 'REJECTING';
+  // Single close on new side triggers state change; the VWAP slope filter in the
+  // evaluator is the quality gate against false transitions.
+  if (!wasAbove && nowAbove)  return 'RECLAIMING';
+  if (wasAbove  && !nowAbove) return 'REJECTING';
   return nowAbove ? 'ABOVE' : 'BELOW';
 }
 
@@ -251,8 +250,8 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   // ── Session gate — lower threshold to include more sessions ─────────────────
   const sess = getSessionInfoCompat(last.timestamp);
   if (sess.isBlackout || sess.quality < 0.40) return null;
-  // NY Open and Pre-market lack stable structure for scalp entries
-  if (sess.name === 'NY_OPEN' || sess.name === 'NY_PRE') return null;
+  // NY Pre-market lacks the liquidity structure for reliable scalp entries
+  if (sess.name === 'NY_PRE') return null;
 
   // ── Core indicators ─────────────────────────────────────────────────────────
   const closes  = exec.map(b => b.close);
@@ -284,6 +283,8 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   if (volRegime === 'HIGH' && chopScore > 0.70) return null;
 
   // ── HTF biases ──────────────────────────────────────────────────────────────
+  // 5m exec-TF bias — always present, represents real-time momentum direction
+  const htf5mBias = calcHtfBias(bars5m, 9, 21);
   const htfBias   = calcHtfBias(bars15m, 9, 21);
   const htf1hBias = bars1h  && bars1h.length  >= 21 ? calcHtfBias(bars1h,  9, 21) : 0;
   const htf30mBias= bars30m && bars30m.length >= 6  ? calcHtfBias(bars30m, 9, 21) : null;
@@ -361,8 +362,12 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   // Pick highest raw score
   const best = candidates.reduce((a, b) => a.score > b.score ? a : b);
 
-  // ── Multi-TF confluence gate — only block when ALL layers conflict ───────────
+  // ── Multi-TF confluence gate ─────────────────────────────────────────────────
+  // 5m (exec TF) is included as its own layer. When both the exec TF and 15m agree
+  // (already required by continuation dirs), the minAgree=2 threshold is met without
+  // needing the slower 30m/45m/1h to have caught up — unlocking early trend entries.
   const htfLayers = [
+    { bias: htf5mBias,  present: true },
     { bias: htfBias,    present: true },
     { bias: htf1hBias,  present: bars1h  && bars1h.length  >= 21 },
     { bias: htf30mBias, present: htf30mBias !== null },
@@ -500,8 +505,8 @@ function evalContinuationPullback(ctx) {
   if (trendRegime && adxVal != null && adxVal < (ctx.adxFloor ?? 16)) return null;
 
   const dirs = [];
-  if (ema9 > ema21 && htfBias >= 0 && last.close >= vwap * 0.9985) dirs.push('LONG');
-  if (ema9 < ema21 && htfBias <= 0 && last.close <= vwap * 1.0015) dirs.push('SHORT');
+  if (ema9 > ema21 && htfBias >= 0) dirs.push('LONG');
+  if (ema9 < ema21 && htfBias <= 0) dirs.push('SHORT');
 
   for (const dir of dirs) {
     const isBull = dir === 'LONG';
@@ -510,18 +515,18 @@ function evalContinuationPullback(ctx) {
 
     // MIDDAY: gold doldrums — only trade when there is real directional conviction
     if (sess.name === 'MIDDAY' && (adxVal == null || adxVal < 22 || chopScore >= 0.42)) continue;
-    // LONDON: carry the prior session's direction — only trade aligned with 1h bias
-    if (sess.name === 'LONDON' && htf1hBias === 0) continue;
-    if (sess.name === 'LONDON' && isBull  && htf1hBias < 0) continue;
-    if (sess.name === 'LONDON' && !isBull && htf1hBias > 0) continue;
+    // NY_OPEN: high volume but volatile open — require directional clarity
+    if (sess.name === 'NY_OPEN' && (adxVal == null || adxVal < 20 || chopScore >= 0.45)) continue;
+    // LONDON: 0% WR across two consecutive backtest versions — block for continuations
+    if (sess.name === 'LONDON') continue;
 
     // Forensic finding: 15-bar / 0.80×ATR lookback allowed stale 75-min-old pullbacks
     // as valid entry triggers.  Tightened to 10 bars (50 min on 5m / 30 min on 3m)
     // and 0.65×ATR tolerance for a cleaner, fresher pullback requirement.
-    const tol    = 0.65 * atr;
-    const pull9  = hadPullbackToLevel(exec, ema9,  tol, dir, 10);
-    const pull21 = hadPullbackToLevel(exec, ema21, tol, dir, 10);
-    const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 10);
+    const tol    = 0.80 * atr;
+    const pull9  = hadPullbackToLevel(exec, ema9,  tol, dir, 12);
+    const pull21 = hadPullbackToLevel(exec, ema21, tol, dir, 12);
+    const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 12);
     // Proximity entry: current bar AT EMA21 right now is the highest-quality pullback signal
     const atEma21Now = isBull
       ? last.low  <= ema21 + 0.40 * atr && last.close > ema21 - 0.20 * atr
