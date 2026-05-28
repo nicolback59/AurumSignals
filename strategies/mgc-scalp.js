@@ -44,7 +44,7 @@ const {
 const { getSessionInfoCompat } = require('../clock/market-clock');
 const { scoreSignal, deriveGradeAndProbs, THRESHOLDS } = require('./confidence-scorer');
 
-const STRATEGY_VERSION = '4.5';
+const STRATEGY_VERSION = '5.0';
 
 const ATR_MIN_PTS = 2.0;  // raised from 1.5 — require real volatility
 const MAX_RISK_PTS = 10;  // hard cap on SL distance — skip any setup requiring >10pt risk
@@ -191,16 +191,17 @@ function detectLiquiditySweep(bars, atr, dir) {
   if (n < 4) return false;
 
   if (dir === 'LONG') {
-    // Swept below prior swing low, then the current bar closed back above it
+    // Swept meaningfully below prior swing low (≥0.20×ATR), then recovered cleanly above it.
+    // Raised from 0.05 — eliminates trivial 1-tick dips that dominate false sweep_reversal signals.
     const priorLow  = recentSwingLow(bars.slice(0, -2), 10);
     const sweepBar  = bars[n - 1];
     const curClose  = bars[n].close;
-    return sweepBar.low < priorLow - 0.05 * atr && curClose > priorLow;
+    return sweepBar.low < priorLow - 0.20 * atr && curClose > priorLow + 0.08 * atr;
   } else {
     const priorHigh = recentSwingHigh(bars.slice(0, -2), 10);
     const sweepBar  = bars[n - 1];
     const curClose  = bars[n].close;
-    return sweepBar.high > priorHigh + 0.05 * atr && curClose < priorHigh;
+    return sweepBar.high > priorHigh + 0.20 * atr && curClose < priorHigh - 0.08 * atr;
   }
 }
 
@@ -247,6 +248,8 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   // ── Session gate — lower threshold to include more sessions ─────────────────
   const sess = getSessionInfoCompat(last.timestamp);
   if (sess.isBlackout || sess.quality < 0.40) return null;
+  // NY Open and Pre-market lack stable structure for scalp entries
+  if (sess.name === 'NY_OPEN' || sess.name === 'NY_PRE') return null;
 
   // ── Core indicators ─────────────────────────────────────────────────────────
   const closes  = exec.map(b => b.close);
@@ -310,7 +313,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   // chopThresh: higher = stricter chop filter; std2=2.2 ≈ 0.70 default
   const chopThresh  = Math.min(0.88, 0.55 + ((+(p.std2 ?? 2.2)) - 1.5) * 0.20);
   // adxFloor: ADX minimum for trend-regime continuation entries; stdvLen=16 default
-  const adxFloor    = Math.round(+(p.stdvLen ?? 16));
+  const adxFloor    = Math.round(+(p.stdvLen ?? 12));
   // swingBars: lookback for swing high/low in SL placement; swingLook=12 ≈ 10 bars
   const swingBars   = Math.max(4, Math.min(25, Math.round(+(p.swingLook ?? 12))));
   // srMinAtr: minimum ATR distance to nearest S/R; swingL=5 = 0.35 ATR default
@@ -359,7 +362,7 @@ function evaluate(bars3m, bars5m, bars15m, bars1h, bars30m, bars45m, cfg = {}, b
   const presentLayers  = htfLayers.filter(l => l.present);
   const agreedLayers   = presentLayers.filter(l => l.bias === expectedBias);
   const conflictLayers = presentLayers.filter(l => l.bias !== 0 && l.bias !== expectedBias);
-  const minAgree = 2; // require at least 2 TFs in agreement — matches backtest quality gate
+  const minAgree = best.minMtfAgree ?? 2; // per-archetype TF agreement threshold
   if (agreedLayers.length < minAgree) return null;
   // Also block when all non-neutral layers conflict
   if (conflictLayers.length >= presentLayers.length) return null;
@@ -474,10 +477,10 @@ function evalContinuationPullback(ctx) {
 
   // Require minimum session quality — continuation entries in thin/pre-market sessions
   // have no reliable follow-through.  London (0.70) and above only.
-  if (sess.quality < 0.70) return null;
+  if (sess.quality < 0.58) return null;
 
   // Trend-following entries require ADX confirmation of directional strength.
-  // adxFloor is tunable via stdvLen param (default 16).
+  // adxFloor is tunable via stdvLen param (default 12).
   const trendRegime = regime === 'TREND_BULL' || regime === 'TREND_BEAR';
   if (trendRegime && adxVal != null && adxVal < (ctx.adxFloor ?? 16)) return null;
 
@@ -499,10 +502,10 @@ function evalContinuationPullback(ctx) {
     const pullV  = hadPullbackToLevel(exec, vwap,  tol, dir, 10);
     if (!pull9 && !pull21 && !pullV) continue;
 
-    // Retest holds (no close through EMA21)
-    const recent = exec.slice(-3, -1);
-    if (isBull  && recent.some(b => b.close < ema21 - 0.35 * atr)) continue;
-    if (!isBull && recent.some(b => b.close > ema21 + 0.35 * atr)) continue;
+    // Retest holds — only check the most recent bar before entry
+    const prevBar = exec[exec.length - 2];
+    if (isBull  && prevBar.close < ema21 - 0.35 * atr) continue;
+    if (!isBull && prevBar.close > ema21 + 0.35 * atr) continue;
 
     // Confirmation candle
     if (!(isBull ? isBullishCandle(last, 0.30) : isBearishCandle(last, 0.30))) continue;
@@ -581,15 +584,19 @@ function evalVwapReclaimReject(ctx) {
 }
 
 function evalSweepReversal(ctx) {
-  const { exec, n, last, atr, vwap, hist, histPrev } = ctx;
+  const { exec, n, last, atr, vwap, hist, histPrev, regime, chopScore } = ctx;
+
+  // Sweeps in choppy regimes produce whipsaws — require directional structure
+  if (regime === 'RANGE_CHOP' || regime === 'SOFT_CHOP') return null;
+  if (chopScore > 0.58) return null;
 
   for (const dir of ['LONG', 'SHORT']) {
     if (!detectLiquiditySweep(exec, atr, dir)) continue;
 
     const isBull = dir === 'LONG';
 
-    // Strong reversal candle after the sweep
-    if (!(isBull ? isBullishCandle(last, 0.40) : isBearishCandle(last, 0.40))) continue;
+    // Strong reversal candle after the sweep — raised threshold for quality
+    if (!(isBull ? isBullishCandle(last, 0.48) : isBearishCandle(last, 0.48))) continue;
 
     // MACD turning in our direction
     if (hist != null && histPrev != null) {
@@ -613,6 +620,7 @@ function evalSweepReversal(ctx) {
       dir, sl, rr, srDist,
       archetype: 'sweep_reversal',
       bonus: 7,
+      minMtfAgree: 3,
       score: rr * 14 + (srDist ?? 1) * 3,
     };
   }
