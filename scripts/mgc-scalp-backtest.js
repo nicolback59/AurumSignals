@@ -13,6 +13,7 @@
  *   node scripts/mgc-scalp-backtest.js --days 180   # custom lookback
  *   node scripts/mgc-scalp-backtest.js --json       # raw JSON output
  *   node scripts/mgc-scalp-backtest.js --verbose    # per-trade log
+ *   node scripts/mgc-scalp-backtest.js --audit      # rejection reason breakdown
  *   node scripts/mgc-scalp-backtest.js --symbol MGC1!  # override symbol
  */
 
@@ -31,6 +32,7 @@ const {
 const argv    = process.argv.slice(2);
 const AS_JSON = argv.includes('--json');
 const VERBOSE = argv.includes('--verbose');
+const AUDIT   = argv.includes('--audit');
 const daysIdx = argv.indexOf('--days');
 const DAYS    = daysIdx >= 0 ? parseInt(argv[daysIdx + 1], 10) || 90 : 90;
 const symIdx  = argv.indexOf('--symbol');
@@ -231,6 +233,8 @@ if (!AS_JSON) {
 const tradeLog = [];
 let pnlRunning = 0, peak = 0, maxDrawdown = 0;
 let skipUntil = -1;
+let barsSkipped = 0, barsEligible = 0;
+const auditReasons = [];
 
 resetMgc();
 
@@ -240,6 +244,7 @@ let idx15 = 0, idx30 = 0, idx45 = 0, idx1h = 0;
 for (let i = EXEC_WINDOW; i < bars5mRaw.length; i++) {
   // Skip bars consumed by the current open trade
   if (i < skipUntil) {
+    barsSkipped++;
     // Advance HTF pointers anyway to stay in sync
     const ts = bars5mRaw[i].timestamp;
     while (idx15 < bars15m.length - 1 && bars15m[idx15 + 1].timestamp <= ts) idx15++;
@@ -248,6 +253,7 @@ for (let i = EXEC_WINDOW; i < bars5mRaw.length; i++) {
     while (idx1h  < bars1h.length  - 1 && bars1h [idx1h  + 1].timestamp <= ts) idx1h++;
     continue;
   }
+  barsEligible++;
 
   const ts = bars5mRaw[i].timestamp;
 
@@ -264,7 +270,9 @@ for (let i = EXEC_WINDOW; i < bars5mRaw.length; i++) {
   const b45    = bars45m.slice(0, idx45 + 1);
   const b1h    = bars1h.slice(0, idx1h + 1);
 
-  const sig = evaluate([], exec5m, b15, b1h, b30, b45, {}, i);
+  const barAudit = AUDIT ? [] : undefined;
+  const sig = evaluate([], exec5m, b15, b1h, b30, b45, { auditLog: barAudit }, i);
+  if (barAudit?.length) auditReasons.push(...barAudit);
   if (!sig) continue;
 
   // Simulate trade on next MAX_HOLD_BARS bars
@@ -407,6 +415,37 @@ printTable('Monthly P&L Summary', monthlyBreakdown(tradeLog), [
   { label: 'WR%',     key: 'wr',       w: 7  },
   { label: 'P&L pts', key: 'pnl_pts',  w: 10 },
 ]);
+
+// Audit rejection breakdown
+if (AUDIT) {
+  const totalBarsWalked = bars5mRaw.length - EXEC_WINDOW;
+  console.log(`\n${sep()}`);
+  console.log(`  Rejection Audit  (bars walked: ${totalBarsWalked}  |  in-trade skipped: ${barsSkipped}  |  eligible: ${barsEligible})`);
+  console.log(sep());
+  const reasonCounts = {};
+  for (const r of auditReasons) reasonCounts[r] = (reasonCounts[r] || 0) + 1;
+  const sorted = Object.entries(reasonCounts).sort(([, a], [, b]) => b - a);
+  const totalRejected = sorted.reduce((s, [, c]) => s + c, 0);
+  console.log(`  Total eligible bars: ${barsEligible}   Signals fired: ${tradeCount}   Rejected: ${totalRejected}`);
+  console.log(`  Fire rate: ${barsEligible > 0 ? ((tradeCount / barsEligible) * 100).toFixed(2) : '—'}%\n`);
+  const rCols = [
+    { label: 'Rejection Reason',    key: 'reason', w: 30 },
+    { label: 'Count',               key: 'count',  w: 8  },
+    { label: '% of Rejected',       key: 'pctRej', w: 14 },
+    { label: '% of Eligible',       key: 'pctElig',w: 14 },
+  ];
+  console.log(rCols.map(c => pad(c.label, c.w)).join('  '));
+  console.log(sep());
+  for (const [reason, count] of sorted) {
+    const row = {
+      reason,
+      count,
+      pctRej:  totalRejected ? ((count / totalRejected) * 100).toFixed(1) + '%' : '—',
+      pctElig: barsEligible  ? ((count / barsEligible)  * 100).toFixed(1) + '%' : '—',
+    };
+    console.log(rCols.map(c => pad(row[c.key], c.w)).join('  '));
+  }
+}
 
 // Per-trade log
 if (VERBOSE && tradeLog.length) {
