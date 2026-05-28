@@ -250,9 +250,9 @@ function buildNtfyOutcomeBody(eventType, sig, extras = {}) {
     : null;
 
   if (eventType === 'TRADE_WIN') {
-    const exitLabel = exitPrice != null ? `TP Hit: ${exitPrice}` : null;
+    const exitLabel = exitPrice != null ? `TP1 Hit: ${exitPrice}` : null;
     return [
-      'Aurum Signals — WIN',
+      'Aurum Signals — TP1 HIT',
       '',
       `${stratLabel} ${dir}`,
       `Entry: ${sig.entry ?? ''} → ${exitLabel ?? ''}`,
@@ -311,7 +311,7 @@ function buildNtfyOutcomeHeaders(eventType, sig, cfg = {}) {
   let title, priority, tags;
 
   if (eventType === 'TRADE_WIN') {
-    title    = `WIN | ${instr} ${dir}`;
+    title    = `TP1 HIT ✓ | ${instr} ${dir}`;
     priority = 'high';
     tags     = 'trophy,white_check_mark';
   } else if (eventType === 'TRADE_LOSS') {
