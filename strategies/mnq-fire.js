@@ -52,17 +52,21 @@ const {
 const { deriveGradeAndProbs } = require('./confidence-scorer');
 
 const STRATEGY_NAME    = 'MNQ_FIRE';
-const STRATEGY_VERSION = '1.2';
+const STRATEGY_VERSION = '1.3';
 const MAX_STOP_PTS     = 35;
 const EQUAL_TOL        = 3;   // pts — two highs/lows within 3 pts → "equal level" (BSL/SSL)
 
 // ── Variant configuration ─────────────────────────────────────────────────────
+// maxNyTrades/maxPhTrades/maxLondonTrades: signals allowed per session per day
 // strongChochOnly: true  → market entry requires real structure break (not disp-as-CHoCH)
-//                  false → any CHoCH quality is accepted for market entry
+// skipShorts: true       → long-only (shorts currently 14% WR, needs separate model)
 const VARIANT_CFG = {
-  CONSERVATIVE: { minScore: 9, maxStop: 22, atrMin: 14, allowPowerHour: false, marketEntry: false, strongChochOnly: true  },
-  CORE:         { minScore: 7, maxStop: 35, atrMin: 12, allowPowerHour: true,  marketEntry: true,  strongChochOnly: true  },
-  AGGRESSIVE:   { minScore: 6, maxStop: 35, atrMin: 10, allowPowerHour: true,  marketEntry: true,  strongChochOnly: false },
+  CONSERVATIVE:  { minScore: 9, maxStop: 22, atrMin: 14, allowPowerHour: false, allowLondon: false, marketEntry: false, strongChochOnly: true,  skipShorts: false, maxNyTrades: 1, maxPhTrades: 0, maxLondonTrades: 0 },
+  CORE:          { minScore: 7, maxStop: 35, atrMin: 12, allowPowerHour: true,  allowLondon: true,  marketEntry: true,  strongChochOnly: true,  skipShorts: false, maxNyTrades: 2, maxPhTrades: 2, maxLondonTrades: 2 },
+  AGGRESSIVE:    { minScore: 6, maxStop: 35, atrMin: 10, allowPowerHour: true,  allowLondon: true,  marketEntry: true,  strongChochOnly: false, skipShorts: false, maxNyTrades: 3, maxPhTrades: 3, maxLondonTrades: 3 },
+  HIGH_FREQ:     { minScore: 6, maxStop: 35, atrMin: 10, allowPowerHour: true,  allowLondon: true,  marketEntry: true,  strongChochOnly: false, skipShorts: false, maxNyTrades: 4, maxPhTrades: 4, maxLondonTrades: 4 },
+  LONG_ONLY:     { minScore: 7, maxStop: 35, atrMin: 12, allowPowerHour: true,  allowLondon: true,  marketEntry: true,  strongChochOnly: true,  skipShorts: true,  maxNyTrades: 3, maxPhTrades: 3, maxLondonTrades: 3 },
+  INSTITUTIONAL: { minScore: 9, maxStop: 22, atrMin: 14, allowPowerHour: true,  allowLondon: false, marketEntry: false, strongChochOnly: true,  skipShorts: false, maxNyTrades: 1, maxPhTrades: 1, maxLondonTrades: 0 },
 };
 
 // ── Macro blackout ────────────────────────────────────────────────────────────
@@ -74,12 +78,14 @@ function setBlackoutDates(dates) {
 
 // ── Daily state ───────────────────────────────────────────────────────────────
 const _d = {
-  dateKey:     null,
-  nyEmitted:   false,
-  phEmitted:   false,
-  orbHigh:     null,
-  orbLow:      null,
-  orbComputed: false,
+  dateKey:       null,
+  nyCount:       0,   // signals emitted in NY Open this day
+  phCount:       0,   // signals emitted in Power Hour this day
+  londonCount:   0,   // signals emitted in London session this day
+  lastSignalHm:  -1,  // ET hm of last signal (prevent back-to-back within 15 min)
+  orbHigh:       null,
+  orbLow:        null,
+  orbComputed:   false,
 };
 
 // ── ET time helper ────────────────────────────────────────────────────────────
@@ -401,19 +407,30 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
 
   // Daily state reset
   if (et.dateKey !== _d.dateKey) {
-    Object.assign(_d, { dateKey: et.dateKey, nyEmitted: false, phEmitted: false,
-                        orbHigh: null, orbLow: null, orbComputed: false });
+    Object.assign(_d, { dateKey: et.dateKey, nyCount: 0, phCount: 0, londonCount: 0,
+                        lastSignalHm: -1, orbHigh: null, orbLow: null, orbComputed: false });
   }
 
   // Session gating
-  const inNY = et.hm >= 930 && et.hm < 1030;
-  const inPH = et.hm >= 1500 && et.hm < 1615 && variant.allowPowerHour;
-  if (!inNY && !inPH) return null;
-  if (inNY && _d.nyEmitted) return null;
-  if (inPH && _d.phEmitted) return null;
+  const inNY     = et.hm >= 930  && et.hm < 1030;
+  const inPH     = et.hm >= 1500 && et.hm < 1615 && variant.allowPowerHour;
+  const inLondon = et.hm >= 330  && et.hm < 530  && variant.allowLondon;
+  if (!inNY && !inPH && !inLondon) return null;
+  if (inNY     && _d.nyCount     >= (variant.maxNyTrades     ?? 1)) return null;
+  if (inPH     && _d.phCount     >= (variant.maxPhTrades     ?? 1)) return null;
+  if (inLondon && _d.londonCount >= (variant.maxLondonTrades ?? 1)) return null;
 
-  // Entry window: Discovery (9:30-9:44) is observation only
-  const inEntryWindow = (inNY && et.hm >= 944) || (inPH && et.hm >= 1500 && et.hm < 1610);
+  // Minimum 3 bars (15 min) between signals — no back-to-back spam
+  if (_d.lastSignalHm >= 0) {
+    const minGap = 15;
+    const elapsed = et.hm - _d.lastSignalHm;
+    if (elapsed >= 0 && elapsed < minGap) return null;
+  }
+
+  // Entry window: London 3:45+, NY discovery (9:30-9:44) observation only
+  const inEntryWindow = (inNY && et.hm >= 944)
+    || (inPH && et.hm >= 1500 && et.hm < 1610)
+    || (inLondon && et.hm >= 345);
   if (!inEntryWindow) return null;
 
   // ATR gate
@@ -446,7 +463,10 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   // Define valid sweep window per session
   const sweepWindowOk = (b) => {
     const e = getET(b.timestamp);
-    return inNY ? (e.hm >= 930 && e.hm < 1020) : (e.hm >= 1500 && e.hm < 1605);
+    if (inNY)     return e.hm >= 930  && e.hm < 1020;
+    if (inPH)     return e.hm >= 1500 && e.hm < 1605;
+    if (inLondon) return e.hm >= 300  && e.hm < 520;
+    return false;
   };
 
   for (let si = 0; si < scanBars.length - 2; si++) {
@@ -563,14 +583,18 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
 
     // ── SHORT quality gate (NQ structural long bias) ──────────────────────
     if (direction === 'SHORT') {
+      if (variant.skipShorts) continue; // LONG_ONLY mode
+      const ema4h = bars4h?.length >= 5  ? calcHtfBias(bars4h, 9, 21) : 0;
       const ema1h = bars1h?.length >= 21 ? calcHtfBias(bars1h, 9, 21) : 0;
+      // Require 4H to be bearish/flat — never short into a 4H uptrend (killed 14% WR)
+      if (ema4h > 0) continue;
       if (ema1h > 0) {
-        // Only allow shorts when price is in upper 35% of overnight range
+        // When 1H still bullish: only short if price is in upper 35% of overnight range
         const on = computeOvernightLevels(bars5m);
         if (on) {
           const onRange = on.high - on.low;
           const onPos   = onRange > 0 ? (entry - on.low) / onRange : 0.5;
-          if (onPos < 0.65) continue; // not high enough in range — too risky to short
+          if (onPos < 0.65) continue;
         }
       }
     }
@@ -613,7 +637,10 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     const sess = getSessionInfo(lastBar.timestamp);
 
     // Mark daily trade emitted
-    if (inNY) _d.nyEmitted = true; else _d.phEmitted = true;
+    if (inNY)     _d.nyCount++;
+    else if (inPH) _d.phCount++;
+    else           _d.londonCount++;
+    _d.lastSignalHm = et.hm;
 
     return {
       instrument:       'MNQ',
@@ -633,8 +660,8 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
       archetype:        `${sweep.pool}_SWEEP_REVERSAL`,
       strategy_version: STRATEGY_VERSION,
       htf_bias:         b4Bias > 0 ? 'BULL' : b4Bias < 0 ? 'BEAR' : 'MIXED',
-      session:          sess?.name ?? (inNY ? 'NY_OPEN' : 'POWER_HOUR'),
-      be_trail_at_hm:   inNY ? 1015 : 1545,
+      session:          sess?.name ?? (inNY ? 'NY_OPEN' : inPH ? 'POWER_HOUR' : 'LONDON'),
+      be_trail_at_hm:   inNY ? 1015 : inLondon ? 500 : 1545,
       scale_out: [
         { pct: 50, at: 'TP1', rr: 1.5 },
         { pct: 30, at: 'TP2', rr: 2.5 },
@@ -721,13 +748,29 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     const orbHigh = orbBars.length >= 2 ? Math.max(...orbBars.map(b => b.high)) : null;
     const orbLow  = orbBars.length >= 2 ? Math.min(...orbBars.map(b => b.low))  : null;
 
-    let dayEmitted = false;
+    let dayNyCount     = 0;
+    let dayPhCount     = 0;
+    let dayLondonCount = 0;
+    let lastSigHm      = -1;
 
-    // Walk through each bar in the entry window
-    const entryBars = dayBars.filter(b => { const e = getET(b.timestamp); return e.hm >= 944 && e.hm < 1030; });
+    // Walk through all entry window bars across all sessions
+    const entryBars = dayBars.filter(b => {
+      const e = getET(b.timestamp);
+      const inNYw = e.hm >= 944 && e.hm < 1030;
+      const inPHw = e.hm >= 1500 && e.hm < 1610 && variant.allowPowerHour;
+      const inLdw = e.hm >= 345  && e.hm < 530   && variant.allowLondon;
+      return inNYw || inPHw || inLdw;
+    });
 
     for (let bi = 0; bi < entryBars.length; bi++) {
-      if (dayEmitted) break;
+      const barEt   = getET(entryBars[bi].timestamp);
+      const isNYBar = barEt.hm >= 944 && barEt.hm < 1030;
+      const isPHBar = barEt.hm >= 1500 && barEt.hm < 1610;
+      const isLdBar = barEt.hm >= 345  && barEt.hm < 530;
+      if (isNYBar && dayNyCount     >= (variant.maxNyTrades     ?? 1)) continue;
+      if (isPHBar && dayPhCount     >= (variant.maxPhTrades     ?? 1)) continue;
+      if (isLdBar && dayLondonCount >= (variant.maxLondonTrades ?? 1)) continue;
+      if (lastSigHm >= 0 && barEt.hm - lastSigHm >= 0 && barEt.hm - lastSigHm < 15) continue;
 
       const allBars = [...preBars5m, ...dayBars.slice(0, dayBars.indexOf(entryBars[bi]) + 1)];
       if (allBars.length < 30) continue;
@@ -748,7 +791,10 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       for (let si = 0; si < scanBars.length - 2 && !btSignal; si++) {
         const sweepBar = scanBars[si];
         const sweepET  = getET(sweepBar.timestamp);
-        if (sweepET.hm < 930 || sweepET.hm >= 1020) continue;
+        const sweepOk  = (isNYBar && sweepET.hm >= 930 && sweepET.hm < 1020)
+                      || (isPHBar && sweepET.hm >= 1500 && sweepET.hm < 1605)
+                      || (isLdBar && sweepET.hm >= 300  && sweepET.hm < 520);
+        if (!sweepOk) continue;
         if (sweepBar.timestamp >= curBar.timestamp) continue;
 
         const sweep = checkSweep(sweepBar, pools, atr);
@@ -774,7 +820,10 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
 
         // SHORT quality gate
         if (direction === 'SHORT') {
+          if (variant.skipShorts) continue;
+          const ema4h = h4Slice.length >= 5  ? calcHtfBias(h4Slice, 9, 21) : 0;
           const ema1h = h1Slice.length >= 21 ? calcHtfBias(h1Slice, 9, 21) : 0;
+          if (ema4h > 0) continue; // never short into 4H uptrend
           if (ema1h > 0) {
             const on = computeOvernightLevels(allBars);
             if (on) {
@@ -864,17 +913,22 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
         });
         if (checklistScore < (variant.minScore ?? 7)) continue;
 
+        const btSession = isNYBar ? 'NY_OPEN' : isPHBar ? 'POWER_HOUR' : 'LONDON';
         btSignal = { entry, sl, tp1, tp2, tp3, rawRisk, direction, isBull, sweep, checklistScore,
                      entryBar: curBar, fvg, choch, b1Bias, b4Bias, biasAligned, isFvgEntry,
-                     volumeSpike, poolConfluence, biasSpread: Math.abs(b4Bias) * 25 };
+                     volumeSpike, poolConfluence, biasSpread: Math.abs(b4Bias) * 25, btSession };
       }
 
       if (!btSignal) continue;
-      dayEmitted = true;
+      if (isNYBar) dayNyCount++;
+      else if (isPHBar) dayPhCount++;
+      else dayLondonCount++;
+      lastSigHm = barEt.hm;
 
       const { entry, sl, tp1, tp2, tp3, rawRisk, direction, isBull,
               sweep, checklistScore, entryBar, b1Bias, b4Bias, biasAligned, isFvgEntry,
-              volumeSpike: btVolSpike, poolConfluence: btPoolConf, biasSpread: btBiasSpread } = btSignal;
+              volumeSpike: btVolSpike, poolConfluence: btPoolConf, biasSpread: btBiasSpread,
+              btSession } = btSignal;
 
       // Simulate trade (11:00 ET time stop)
       const futureBars = dayBars.filter(b => {
@@ -936,7 +990,7 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
         strategy_name: STRATEGY_NAME,
         variant: variantKey,
         hour_et: getET(entryBar.timestamp).h,
-        session: 'NY_OPEN',
+        session: btSession,
         regime: h4Slice.length >= 5
           ? (calcHtfBias(h4Slice, 9, 21) > 0 ? 'TREND_BULL' : calcHtfBias(h4Slice, 9, 21) < 0 ? 'TREND_BEAR' : 'MIXED')
           : 'UNKNOWN',
@@ -985,8 +1039,8 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
 
 // ─────────────────────────────────────────────────────────────────────────────
 function reset() {
-  Object.assign(_d, { dateKey: null, nyEmitted: false, phEmitted: false,
-                      orbHigh: null, orbLow: null, orbComputed: false });
+  Object.assign(_d, { dateKey: null, nyCount: 0, phCount: 0, londonCount: 0,
+                      lastSignalHm: -1, orbHigh: null, orbLow: null, orbComputed: false });
 }
 
 module.exports = {
