@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * STRATEGY — MNQ FIRE v1.1
+ * STRATEGY — MNQ FIRE v1.2
  * Futures Institutional Reaction Engine
  *
  * ── Philosophy ────────────────────────────────────────────────────────────────
@@ -17,12 +17,12 @@
  *
  * ── Sessions ──────────────────────────────────────────────────────────────────
  *   Primary:   NY Open    9:30–10:30 ET  (entry window 9:44–10:30)
- *   Secondary: Power Hour 15:00–16:15 ET (AGGRESSIVE variant only)
+ *   Secondary: Power Hour 15:00–16:15 ET (CORE + AGGRESSIVE variants)
  *
  * ── Variants ──────────────────────────────────────────────────────────────────
  *   CONSERVATIVE: minScore 9/10, maxStop 22 pts, FVG limit only
- *   CORE:         minScore 7/10, maxStop 35 pts, FVG or market entry
- *   AGGRESSIVE:   minScore 6/10, maxStop 35 pts, +Power Hour session
+ *   CORE:         minScore 7/10, maxStop 35 pts, FVG or strong-CHoCH market entry, +Power Hour
+ *   AGGRESSIVE:   minScore 6/10, maxStop 35 pts, any-CHoCH market entry, +Power Hour
  *
  * ── v1.1 improvements ─────────────────────────────────────────────────────────
  *   • Sweep wick dominance gate (upper/lower wick ≥ 35% of bar range)
@@ -32,6 +32,15 @@
  *   • Volume spike bonus on sweep bar (≥1.4× prior 10-bar avg → +3 confidence pts)
  *   • Multi-pool confluence bonus (2+ Tier 1 pools within 2×ATR → +2 confidence pts)
  *   • FVG entry stop uses FVG boundary (tighter RR) instead of sweep extreme
+ *
+ * ── v1.2 improvements (frequency + accuracy) ─────────────────────────────────
+ *   • Power Hour enabled for CORE (was AGGRESSIVE-only) → +50% sessions
+ *   • Delayed FVG fill: if CHoCH fires on bar X and FVG fills on bar X+1/+2/+3,
+ *     look back up to 3 bars for prior CHoCH when current bar touches FVG zone
+ *   • FVG touch zone widened: 0.10→0.20×ATR (catches near-misses)
+ *   • Market entry gated on CHoCH strength: CORE requires strong CHoCH (not disp-as-CHoCH)
+ *     to market-enter — weak CHoCH must wait for FVG fill (backtest shows 27% WR on
+ *     weak-CHoCH market entries vs 100% WR on FVG_LIMIT entries)
  */
 
 const {
@@ -43,15 +52,17 @@ const {
 const { deriveGradeAndProbs } = require('./confidence-scorer');
 
 const STRATEGY_NAME    = 'MNQ_FIRE';
-const STRATEGY_VERSION = '1.1';
+const STRATEGY_VERSION = '1.2';
 const MAX_STOP_PTS     = 35;
 const EQUAL_TOL        = 3;   // pts — two highs/lows within 3 pts → "equal level" (BSL/SSL)
 
 // ── Variant configuration ─────────────────────────────────────────────────────
+// strongChochOnly: true  → market entry requires real structure break (not disp-as-CHoCH)
+//                  false → any CHoCH quality is accepted for market entry
 const VARIANT_CFG = {
-  CONSERVATIVE: { minScore: 9, maxStop: 22, atrMin: 14, allowPowerHour: false, marketEntry: false },
-  CORE:         { minScore: 7, maxStop: 35, atrMin: 12, allowPowerHour: false, marketEntry: true  },
-  AGGRESSIVE:   { minScore: 6, maxStop: 35, atrMin: 10, allowPowerHour: true,  marketEntry: true  },
+  CONSERVATIVE: { minScore: 9, maxStop: 22, atrMin: 14, allowPowerHour: false, marketEntry: false, strongChochOnly: true  },
+  CORE:         { minScore: 7, maxStop: 35, atrMin: 12, allowPowerHour: true,  marketEntry: true,  strongChochOnly: true  },
+  AGGRESSIVE:   { minScore: 6, maxStop: 35, atrMin: 10, allowPowerHour: true,  marketEntry: true,  strongChochOnly: false },
 };
 
 // ── Macro blackout ────────────────────────────────────────────────────────────
@@ -480,9 +491,29 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     }
     if (!disp) continue;
 
-    // CHoCH: current bar must confirm structure shift
+    // CHoCH: current bar must confirm structure shift (primary check)
     const windowBars = scanBars.slice(si, scanBars.length - 1); // sweep through (not including) current
-    const choch      = detectChoCH(windowBars, curBar, direction, atr);
+    let choch = detectChoCH(windowBars, curBar, direction, atr);
+    let isDelayedFvgFill = false;
+
+    // Delayed FVG fill: if primary CHoCH didn't fire on curBar but curBar is pulling
+    // back into the FVG zone, look back up to 3 bars for a prior CHoCH confirmation.
+    // Catches the common pattern: sweep→disp→CHoCH(bar X)→pullback to FVG(bar X+1/+2).
+    if (!choch && fvg) {
+      const nowInFvg = isBull
+        ? curBar.low  <= fvg.high + 0.20 * atr
+        : curBar.high >= fvg.low  - 0.20 * atr;
+      if (nowInFvg) {
+        for (let back = 1; back <= 3; back++) {
+          const priorIdx    = scanBars.length - 1 - back;
+          if (priorIdx <= si) break;
+          const priorWindow = scanBars.slice(si, priorIdx);
+          if (!priorWindow.length) break;
+          choch = detectChoCH(priorWindow, scanBars[priorIdx], direction, atr);
+          if (choch) { isDelayedFvgFill = true; break; }
+        }
+      }
+    }
     if (!choch) continue;
 
     // ── Entry price ──────────────────────────────────────────────────────────
@@ -490,10 +521,11 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     let isFvgEntry = false;
 
     if (fvg) {
-      // Price is touching/within the FVG zone on the current bar → limit fill at midpoint
-      const inZone = isBull
-        ? curBar.low  <= fvg.high + 0.10 * atr && curBar.close >= fvg.low
-        : curBar.high >= fvg.low  - 0.10 * atr && curBar.close <= fvg.high;
+      // Delayed fill: CHoCH already confirmed, current bar is in FVG zone
+      // Direct fill: current bar touches FVG zone (widened to 0.20×ATR from 0.10×ATR)
+      const inZone = isDelayedFvgFill || (isBull
+        ? curBar.low  <= fvg.high + 0.20 * atr && curBar.close >= fvg.low
+        : curBar.high >= fvg.low  - 0.20 * atr && curBar.close <= fvg.high);
       if (inZone) {
         entry      = +fvg.mid.toFixed(2);
         isFvgEntry = true;
@@ -501,7 +533,10 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     }
 
     if (!entry) {
-      if (!variant.marketEntry) continue; // CONSERVATIVE: FVG limit only — no fill this bar
+      if (!variant.marketEntry) continue; // CONSERVATIVE: FVG limit only
+      // CORE: only market-enter on strong CHoCH — weak CHoCH (disp-as-CHoCH) must
+      // wait for FVG fill. Backtest shows 27% WR on weak-CHoCH market entries.
+      if (variant.strongChochOnly && choch.isDispChoCH) continue;
       entry = +curBar.close.toFixed(2);
     }
 
@@ -607,7 +642,7 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
       ],
       trigger_reason: [
         `${sweep.pool}_SWEEP | ${direction} | score=${checklistScore}/10`,
-        `entry_type=${isFvgEntry ? 'FVG_LIMIT' : 'CHOCH_MARKET'}`,
+        `entry_type=${isFvgEntry ? (isDelayedFvgFill ? 'DELAYED_FVG_LIMIT' : 'FVG_LIMIT') : 'CHOCH_MARKET'}`,
         `sweep_extreme=${sweep.sweepExtreme.toFixed(2)} pool_level=${sweep.poolLevel.toFixed(2)}`,
         fvg ? `fvg=[${fvg.low.toFixed(2)}-${fvg.high.toFixed(2)}]` : null,
         `disp_atr=${(Math.abs(disp.close - disp.open) / atr).toFixed(2)}x`,
@@ -631,7 +666,7 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
         fvg_high:              fvg ? +fvg.high.toFixed(2) : null,
         fvg_low:               fvg ? +fvg.low.toFixed(2)  : null,
         choch_confirmed:       !choch.isDispChoCH,
-        entry_type:            isFvgEntry ? 'FVG_LIMIT' : 'CHOCH_MARKET',
+        entry_type:            isFvgEntry ? (isDelayedFvgFill ? 'DELAYED_FVG_LIMIT' : 'FVG_LIMIT') : 'CHOCH_MARKET',
         checklist_score:       checklistScore,
         volume_spike:          volumeSpike,
         pool_confluence:       poolConfluence,
@@ -761,18 +796,36 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
         if (!disp) continue;
 
         const windowBars = scanBars.slice(si, scanBars.length - 1);
-        const choch      = detectChoCH(windowBars, curBar, direction, atr);
+        let choch = detectChoCH(windowBars, curBar, direction, atr);
+        let isDelayedFvgFill = false;
+
+        if (!choch && fvg) {
+          const nowInFvg = isBull
+            ? curBar.low  <= fvg.high + 0.20 * atr
+            : curBar.high >= fvg.low  - 0.20 * atr;
+          if (nowInFvg) {
+            for (let back = 1; back <= 3; back++) {
+              const priorIdx    = scanBars.length - 1 - back;
+              if (priorIdx <= si) break;
+              const priorWindow = scanBars.slice(si, priorIdx);
+              if (!priorWindow.length) break;
+              choch = detectChoCH(priorWindow, scanBars[priorIdx], direction, atr);
+              if (choch) { isDelayedFvgFill = true; break; }
+            }
+          }
+        }
         if (!choch) continue;
 
         let entry, isFvgEntry = false;
         if (fvg) {
-          const inZone = isBull
-            ? curBar.low  <= fvg.high + 0.10 * atr && curBar.close >= fvg.low
-            : curBar.high >= fvg.low  - 0.10 * atr && curBar.close <= fvg.high;
+          const inZone = isDelayedFvgFill || (isBull
+            ? curBar.low  <= fvg.high + 0.20 * atr && curBar.close >= fvg.low
+            : curBar.high >= fvg.low  - 0.20 * atr && curBar.close <= fvg.high);
           if (inZone) { entry = +fvg.mid.toFixed(2); isFvgEntry = true; }
         }
         if (!entry) {
           if (!variant.marketEntry) continue;
+          if (variant.strongChochOnly && choch.isDispChoCH) continue;
           entry = +curBar.close.toFixed(2);
         }
 
