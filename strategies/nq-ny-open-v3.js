@@ -110,6 +110,20 @@ function computeOvernightLevels(bars5m) {
   return { overnightHigh: oHigh, overnightLow: oLow, overnightMid: (oHigh + oLow) / 2 };
 }
 
+// ── London session box levels ─────────────────────────────────────────────────
+// London trades 03:00–08:30 ET; its high/low are the most precise institutional
+// reference levels for the NY open (many reversals and liquidity sweeps key off them).
+function computeLondonSessionLevels(bars5m) {
+  const london = bars5m.filter(b => {
+    const e = getET(b.timestamp);
+    return e.hm >= 300 && e.hm < 830;
+  });
+  if (london.length < 3) return null;
+  const lHigh = Math.max(...london.map(b => b.high));
+  const lLow  = Math.min(...london.map(b => b.low));
+  return { londonHigh: lHigh, londonLow: lLow, londonMid: (lHigh + lLow) / 2 };
+}
+
 // ── Opening range ─────────────────────────────────────────────────────────────
 function computeOpeningRange(bars5m) {
   const orbBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 940; });
@@ -154,6 +168,20 @@ function isDisplacement(bar, atr, minBodyRatio = 0.45, minBodyAtr = 0.30) {
   const body  = Math.abs(bar.close - bar.open);
   const range = bar.high - bar.low;
   return range > 0 && body >= minBodyRatio * range && body >= minBodyAtr * atr;
+}
+
+// ── Fair Value Gap (3-bar imbalance) scanner ──────────────────────────────────
+// Bearish FVG: bar[i+2].high < bar[i].low  — downward gap; acts as supply when revisited.
+// Bullish FVG: bar[i+2].low  > bar[i].high — upward gap;   acts as demand when revisited.
+function detectFVGs(bars, lookback = 60) {
+  const slice = bars.slice(-Math.min(lookback, bars.length));
+  const fvgs  = [];
+  for (let i = 0; i < slice.length - 2; i++) {
+    const b1 = slice[i], b3 = slice[i + 2];
+    if (b3.high < b1.low)  fvgs.push({ type: 'BEAR', high: b1.low,  low: b3.high, mid: (b1.low + b3.high) / 2 });
+    if (b3.low  > b1.high) fvgs.push({ type: 'BULL', high: b3.low,  low: b1.high, mid: (b3.low + b1.high) / 2 });
+  }
+  return fvgs;
 }
 
 // ── Pre-open scoring (3 clean pillars, non-lagging) ───────────────────────────
@@ -516,6 +544,121 @@ function detectMomentumExpansion(bars5m, atr) {
 // VWAP_BOUNCE removed — 0% WR in backtest. Replaced by OPENING_DRIVE_CONTINUATION and DISPLACEMENT_CONTINUATION.
 
 /**
+ * TIER 1: Session Box Sweep Reversal (bidirectional)
+ * Price spikes through the London session high/low (targeting buy/sell-side liquidity),
+ * then rejects and closes back inside the London box.  This is the most precise
+ * institutional reversal level for the NY open — tighter than the full overnight range.
+ * Direction = opposite of the sweep.
+ * Window: 9:30–10:15 ET
+ */
+function detectSessionBoxSweepReversal(bars5m, london, atr) {
+  if (!london) return null;
+  const openBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930 && e.hm < 1015; });
+  if (openBars.length < 2) return null;
+
+  for (let i = 0; i < openBars.length - 1; i++) {
+    const bar  = openBars[i];
+    const next = openBars[i + 1];
+    if (getET(next.timestamp).hm >= 1015) break;
+
+    // Sweep of London HIGH → SHORT: wick above box, bar closes back below box high
+    if (bar.high > london.londonHigh + 0.15 * atr
+        && bar.close < london.londonHigh - 0.05 * atr) {
+      if (isDisplacement(next, atr, 0.40, 0.28) && isBearishCandle(next, 0.40)) {
+        return {
+          bar: next, entry: next.close, direction: 'SHORT',
+          archetype: 'SESSION_BOX_SWEEP',
+          structStop: bar.high + 2,
+          sweepLevel: london.londonHigh,
+          sweepSide: 'HIGH',
+        };
+      }
+    }
+
+    // Sweep of London LOW → LONG: wick below box, bar closes back above box low
+    if (bar.low < london.londonLow - 0.15 * atr
+        && bar.close > london.londonLow + 0.05 * atr) {
+      if (isDisplacement(next, atr, 0.40, 0.28) && isBullishCandle(next, 0.40)) {
+        return {
+          bar: next, entry: next.close, direction: 'LONG',
+          archetype: 'SESSION_BOX_SWEEP',
+          structStop: bar.low - 2,
+          sweepLevel: london.londonLow,
+          sweepSide: 'LOW',
+        };
+      }
+    }
+  }
+  return null;
+}
+
+/**
+ * TIER 2: Fair Value Gap Rejection
+ * A prior session imbalance (3-bar FVG) acts as a supply/demand zone.  When NY-open
+ * price enters the gap and is immediately rejected by a displacement reversal bar,
+ * it signals institutional participation filling orders at the imbalance level.
+ * Window: 9:35–10:20 ET
+ */
+function detectFvgRejection(bars5m, atr) {
+  const eligBars = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 935 && e.hm < 1020; });
+  if (eligBars.length < 2) return null;
+
+  const fvgs = detectFVGs(bars5m, 60);
+  if (!fvgs.length) return null;
+
+  for (let i = 0; i < eligBars.length - 1; i++) {
+    const bar  = eligBars[i];
+    const next = eligBars[i + 1];
+    if (getET(next.timestamp).hm >= 1020) break;
+
+    // Price enters a bearish FVG from below → SHORT rejection
+    for (const fvg of fvgs.filter(f => f.type === 'BEAR')) {
+      if (bar.high >= fvg.low && bar.high <= fvg.high + 0.20 * atr) {
+        if (isBearishCandle(next, 0.38) && next.close < fvg.low && isDisplacement(next, atr, 0.35, 0.25)) {
+          return {
+            bar: next, entry: next.close, direction: 'SHORT',
+            archetype: 'FVG_REJECTION',
+            structStop: fvg.high + 3,
+            fvgHigh: fvg.high, fvgLow: fvg.low,
+          };
+        }
+      }
+    }
+
+    // Price enters a bullish FVG from above → LONG rejection
+    for (const fvg of fvgs.filter(f => f.type === 'BULL')) {
+      if (bar.low <= fvg.high && bar.low >= fvg.low - 0.20 * atr) {
+        if (isBullishCandle(next, 0.38) && next.close > fvg.high && isDisplacement(next, atr, 0.35, 0.25)) {
+          return {
+            bar: next, entry: next.close, direction: 'LONG',
+            archetype: 'FVG_REJECTION',
+            structStop: fvg.low - 3,
+            fvgHigh: fvg.high, fvgLow: fvg.low,
+          };
+        }
+      }
+    }
+  }
+  return null;
+}
+
+// ── Session Box + FVG Confluence check ───────────────────────────────────────
+// Best combo: SESSION_BOX_SWEEP fires at a price level that also aligns with a
+// bearish/bullish FVG zone within 1.5×ATR.  Both institutional logics agree on the
+// same level → highest-conviction reversal setup in the strategy.
+function checkFvgConfluence(entryResult, bars5m, atr) {
+  if (entryResult.archetype !== 'SESSION_BOX_SWEEP' || entryResult.sweepLevel == null) return false;
+  const fvgs = detectFVGs(bars5m, 60);
+  const sl   = entryResult.sweepLevel;
+  const dir  = entryResult.direction;
+  for (const fvg of fvgs) {
+    if (dir === 'SHORT' && fvg.type === 'BEAR' && Math.abs(fvg.mid - sl) < 1.5 * atr) return true;
+    if (dir === 'LONG'  && fvg.type === 'BULL' && Math.abs(fvg.mid - sl) < 1.5 * atr) return true;
+  }
+  return false;
+}
+
+/**
  * TIER 2: ORB Breakout Continuation
  * Price breaks cleanly above/below the opening range with a displacement bar,
  * then continues with a confirmation bar in the same direction.
@@ -677,8 +820,8 @@ function detectMorningContinuation(bars5m, atr) {
 }
 
 // ── Conviction grading ────────────────────────────────────────────────────────
-const TIER1_SET = new Set(['ORB_FAILED_BREAKOUT', 'LIQUIDITY_SWEEP_REVERSAL', 'OPENING_DRIVE_CONTINUATION']);
-const TIER2_SET = new Set(['FIRST_PULLBACK', 'DISPLACEMENT_CONTINUATION', 'MOMENTUM_EXPANSION', 'ORB_BREAKOUT_CONTINUATION', 'SESSION_TREND_PULLBACK', 'MORNING_CONTINUATION']);
+const TIER1_SET = new Set(['ORB_FAILED_BREAKOUT', 'LIQUIDITY_SWEEP_REVERSAL', 'SESSION_BOX_SWEEP', 'OPENING_DRIVE_CONTINUATION']);
+const TIER2_SET = new Set(['FIRST_PULLBACK', 'FVG_REJECTION', 'DISPLACEMENT_CONTINUATION', 'MOMENTUM_EXPANSION', 'ORB_BREAKOUT_CONTINUATION', 'SESSION_TREND_PULLBACK', 'MORNING_CONTINUATION']);
 
 // Separate thresholds for TIER1 (reversal/high-conviction) and TIER2 (continuation/pattern-based).
 // TIER2 earns Conviction A at confidence >= 60 — eliminates the hidden direction-dependency
@@ -714,10 +857,12 @@ function computeStructureTPs(entry, rawRisk, isBull, on, barsDly) {
 // ── Confidence per archetype ──────────────────────────────────────────────────
 const BASE_CONFIDENCE = {
   ORB_FAILED_BREAKOUT:           72,
-  LIQUIDITY_SWEEP_REVERSAL:      68,
+  SESSION_BOX_SWEEP:             72,   // London box sweep — most precise institutional level
+  LIQUIDITY_SWEEP_REVERSAL:      68,   // overnight range sweep — broader fallback
   OPENING_DRIVE_CONTINUATION:    66,
   FIRST_PULLBACK:                63,
   ORB_BREAKOUT_CONTINUATION:     63,
+  FVG_REJECTION:                 63,   // imbalance fill + rejection
   MOMENTUM_EXPANSION:            62,
   SESSION_TREND_PULLBACK:        61,
   MORNING_CONTINUATION:          60,
@@ -725,10 +870,11 @@ const BASE_CONFIDENCE = {
   FORCED_BIAS_ENTRY:             50,
 };
 
-function calcConfidence(archetype, entryDir, biasDir, biasSpread) {
+function calcConfidence(archetype, entryDir, biasDir, biasSpread, hasFvgConfluence = false) {
   let c = BASE_CONFIDENCE[archetype] ?? 50;
-  if (entryDir === biasDir)    c += 5;  // bias agrees with pattern direction
-  if (biasSpread >= 30)        c += 3;  // strong pre-open conviction
+  if (entryDir === biasDir)    c += 5;   // bias agrees with pattern direction
+  if (biasSpread >= 30)        c += 3;   // strong pre-open conviction
+  if (hasFvgConfluence)        c += 8;   // SESSION_BOX_SWEEP at an FVG level — dual-logic confluence
   return Math.min(93, Math.max(45, c));
 }
 
@@ -811,6 +957,7 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
 
   const isDeadline = et.hm >= 1020; // extended from 10:00 to 10:20
   const on         = computeOvernightLevels(bars5m);
+  const london     = computeLondonSessionLevels(bars5m);
   const biasSpread = Math.abs(_d.longScore - _d.shortScore);
 
   // Cache ORB at 9:40+
@@ -825,13 +972,15 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   let entryResult = null;
 
   if (!isDeadline) {
-    // TIER 1 — reversals and opening drive continuation
-    entryResult = detectLiquiditySweepReversal(bars5m, on, atr);
+    // TIER 1 — SESSION_BOX_SWEEP first (most precise level), then overnight range sweep, then ORB + drive
+    entryResult = detectSessionBoxSweepReversal(bars5m, london, atr);
+    if (!entryResult) entryResult = detectLiquiditySweepReversal(bars5m, on, atr);
     if (!entryResult && orb) entryResult = detectOrbFailedBreakout(bars5m, orb, atr);
     if (!entryResult) entryResult = detectOpeningDriveContinuation(bars5m, atr);
-    // TIER 2 — continuation patterns (ordered by base confidence descending)
+    // TIER 2 — continuation + FVG rejection (ordered by base confidence descending)
     if (!entryResult) entryResult = detectFirstPullback(bars5m, atr);
     if (!entryResult && orb) entryResult = detectOrbBreakoutContinuation(bars5m, orb, atr);
+    if (!entryResult) entryResult = detectFvgRejection(bars5m, atr);
     if (!entryResult) entryResult = detectMomentumExpansion(bars5m, atr);
     if (!entryResult) entryResult = detectSessionTrendPullback(bars5m, atr);
     if (!entryResult) entryResult = detectMorningContinuation(bars5m, atr);
@@ -903,7 +1052,9 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
   if (!hasCleanRoom(entry, tp1, finalDir, keyLevels)) return null; // blocked path — skip
 
   // ── Confidence and conviction ───────────────────────────────────────────────
-  const confidence     = calcConfidence(entryResult.archetype, finalDir, _d.direction, biasSpread);
+  // Check for SESSION_BOX_SWEEP + FVG confluence (best combo — dual institutional logic)
+  const hasFvgConf     = checkFvgConfluence(entryResult, bars5m, atr);
+  const confidence     = calcConfidence(entryResult.archetype, finalDir, _d.direction, biasSpread, hasFvgConf);
   const { conviction, recSize } = gradeConviction(confidence, entryResult.archetype);
 
   // Block Conviction B/C from live signals — only A and A+ fire
@@ -962,6 +1113,9 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
       runningAsSecondary ? 'SECONDARY_ENTRY' : 'PRIMARY_ENTRY',
       `bias=${confidence}% biasSpread=${biasSpread} ${_d.direction}`,
       `1H:${b1 > 0 ? 'BULL' : b1 < 0 ? 'BEAR' : 'NEUT'} struct=${struct}`,
+      hasFvgConf ? 'SESSION_BOX+FVG_CONFLUENCE' : null,
+      entryResult.sweepLevel != null ? `sweepLvl=${entryResult.sweepLevel.toFixed(2)}` : null,
+      entryResult.fvgHigh    != null ? `fvg=[${entryResult.fvgLow?.toFixed(2)}-${entryResult.fvgHigh?.toFixed(2)}]` : null,
       entryResult.archetype === 'FORCED_BIAS_ENTRY' ? 'DEADLINE_10:20' : null,
     ].filter(Boolean).join(' | '),
     indicators: {
@@ -977,6 +1131,9 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
       regime:     b4 > 0 ? 'TREND_BULL' : b4 < 0 ? 'TREND_BEAR' : 'MIXED',
       orbHigh:    orb ? +orb.orbHigh.toFixed(2) : null,
       orbLow:     orb ? +orb.orbLow.toFixed(2)  : null,
+      londonHigh: london ? +london.londonHigh.toFixed(2) : null,
+      londonLow:  london ? +london.londonLow.toFixed(2)  : null,
+      hasFvgConf,
     },
     timestamp:    lastBar.timestamp,
     trade_status: 'PENDING',
@@ -1034,12 +1191,15 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     })();
 
     // Run same cascade as evaluate()
+    const btLondon = computeLondonSessionLevels(allBtBars);
     let entryResult =
+      detectSessionBoxSweepReversal(allBtBars, btLondon, atr) ||
       detectLiquiditySweepReversal(allBtBars, on, atr) ||
       (orbData ? detectOrbFailedBreakout(allBtBars, orbData, atr) : null) ||
       detectOpeningDriveContinuation(allBtBars, atr) ||
       detectFirstPullback(allBtBars, atr) ||
       (orbData ? detectOrbBreakoutContinuation(allBtBars, orbData, atr) : null) ||
+      detectFvgRejection(allBtBars, atr) ||
       detectMomentumExpansion(allBtBars, atr) ||
       detectSessionTrendPullback(allBtBars, atr) ||
       detectMorningContinuation(allBtBars, atr) ||
@@ -1058,7 +1218,8 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     if (!entryResult) continue;
 
     // Mirror live conviction filter: skip B/C grade entries in backtest too
-    const btConf = calcConfidence(entryResult.archetype, entryResult.direction ?? biasDir, biasDir, biasSpread);
+    const btFvgConf = checkFvgConfluence(entryResult, allBtBars, atr);
+    const btConf = calcConfidence(entryResult.archetype, entryResult.direction ?? biasDir, biasDir, biasSpread, btFvgConf);
     const { conviction: btConviction } = gradeConviction(btConf, entryResult.archetype);
     if (btConviction === 'B' || btConviction === 'C') continue;
 
@@ -1159,7 +1320,8 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
     peak        = Math.max(peak, pnlRunning);
     maxDrawdown = Math.max(maxDrawdown, peak - pnlRunning);
 
-    const confidence = calcConfidence(entryResult.archetype, finalDir, biasDir, biasSpread);
+    const btFvgConfFinal = checkFvgConfluence(entryResult, allBtBars, atr);
+    const confidence = calcConfidence(entryResult.archetype, finalDir, biasDir, biasSpread, btFvgConfFinal);
     const { conviction } = gradeConviction(confidence, entryResult.archetype);
 
     signalLog.push({
@@ -1170,6 +1332,7 @@ function backtestNyOpen(bars5m, bars1h, bars4h, barsDly, opts = {}) {
       mfe: +mfe.toFixed(2), mae: +mae.toFixed(2),
       confidence, longScore: bias.longScore, shortScore: bias.shortScore,
       biasAlignment: finalDir === biasDir ? 'ALIGNED' : 'CONTRA',
+      hasFvgConf: btFvgConfFinal,
       strategy_name: STRATEGY_NAME,
       hour_et: getET(entryBar.timestamp).h,
       session: 'NY_OPEN',
