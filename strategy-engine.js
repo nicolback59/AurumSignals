@@ -16,6 +16,7 @@
 const mnqIntraday = require('./strategies/mnq-intraday');
 const mgcScalp    = require('./strategies/mgc-scalp');
 const nqNyOpen    = require('./strategies/nq-ny-open-v3');
+const mnqFire     = require('./strategies/mnq-fire');
 
 const {
   aggregate1mTo5m,
@@ -73,6 +74,16 @@ function evaluateAll(barSets, cfg = {}) {
     }
   }
 
+  // ── MNQ FIRE ─────────────────────────────────────────────────────────────────
+  // Liquidity sweep → displacement → CHoCH institutional reaction engine.
+  // Variant (CONSERVATIVE|CORE|AGGRESSIVE) controlled via cfg.mnqFireVariant.
+  if (instrument === 'MNQ' || instrument == null) {
+    if (bars5m.length >= 30) {
+      const sig = mnqFire.evaluate(bars5m, bars15m, bars1h, bars4h, { ...cfg, barsDly }, barIdx);
+      if (sig) signals.push(sig);
+    }
+  }
+
   // ── MGC SCALP ────────────────────────────────────────────────────────────────
   // bars3mMgc is the execution TF (preferred); falls back to bars5m inside the strategy.
   if (instrument === 'MGC' || instrument == null) {
@@ -114,6 +125,7 @@ function resetAllStrategies() {
   mnqIntraday.reset();
   mgcScalp.reset();
   nqNyOpen.reset();
+  mnqFire.reset();
 }
 
 /**
@@ -127,7 +139,9 @@ function refreshNyOpenBlacklist(db) {
     const rows = db.prepare(
       `SELECT date_key FROM macro_calendar WHERE impact = 'HIGH' AND date_key >= date('now', '-1 day')`
     ).all();
-    nqNyOpen.setBlackoutDates(rows.map(r => r.date_key));
+    const dates = rows.map(r => r.date_key);
+    nqNyOpen.setBlackoutDates(dates);
+    mnqFire.setBlackoutDates(dates);   // FIRE respects the same macro blackout calendar
   } catch {
     // macro_calendar table may not exist yet — safe to ignore
   }
@@ -157,6 +171,14 @@ const STRATEGY_META = {
     trade_style: 'ny_open',
     threshold:   55,
     description: 'One-trade-per-day NY open auction model v3 — self-determining archetypes, hard 35-pt stop cap, WATCHING phase',
+  },
+  MNQ_FIRE: {
+    name:        'MNQ FIRE',
+    instrument:  'MNQ',
+    timeframe:   '5m',
+    trade_style: 'ny_open',
+    threshold:   65,
+    description: 'Futures Institutional Reaction Engine — liquidity sweep → displacement → CHoCH entry. FIRE acronym. Variants: CONSERVATIVE/CORE/AGGRESSIVE.',
   },
 };
 
