@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * STRATEGY — MNQ FIRE v1.0
+ * STRATEGY — MNQ FIRE v1.1
  * Futures Institutional Reaction Engine
  *
  * ── Philosophy ────────────────────────────────────────────────────────────────
@@ -23,6 +23,15 @@
  *   CONSERVATIVE: minScore 9/10, maxStop 22 pts, FVG limit only
  *   CORE:         minScore 7/10, maxStop 35 pts, FVG or market entry
  *   AGGRESSIVE:   minScore 6/10, maxStop 35 pts, +Power Hour session
+ *
+ * ── v1.1 improvements ─────────────────────────────────────────────────────────
+ *   • Sweep wick dominance gate (upper/lower wick ≥ 35% of bar range)
+ *   • Displacement close-strength: must close in bottom/top 30% of range
+ *   • Tightened CHoCH: weak path now requires close beyond all prior swing lows/highs
+ *   • Session-anchored VWAP (9:30 ET anchor, not rolling average)
+ *   • Volume spike bonus on sweep bar (≥1.4× prior 10-bar avg → +3 confidence pts)
+ *   • Multi-pool confluence bonus (2+ Tier 1 pools within 2×ATR → +2 confidence pts)
+ *   • FVG entry stop uses FVG boundary (tighter RR) instead of sweep extreme
  */
 
 const {
@@ -34,7 +43,7 @@ const {
 const { deriveGradeAndProbs } = require('./confidence-scorer');
 
 const STRATEGY_NAME    = 'MNQ_FIRE';
-const STRATEGY_VERSION = '1.0';
+const STRATEGY_VERSION = '1.1';
 const MAX_STOP_PTS     = 35;
 const EQUAL_TOL        = 3;   // pts — two highs/lows within 3 pts → "equal level" (BSL/SSL)
 
@@ -176,11 +185,15 @@ function computeAllPools(bars5m, barsDly, orbHigh, orbLow) {
  */
 function checkSweep(bar, pools, atr) {
   let best = null;
+  const range = bar.high - bar.low;
   for (const p of pools) {
     // BSL sweep → SHORT: wick above level, close below
     if (p.side === 'BSL'
         && bar.high > p.level + 0.08 * atr
         && bar.close < p.level) {
+      // Wick dominance: upper wick must be ≥ 35% of bar range — filters noise wicks
+      const upperWick = bar.high - Math.max(bar.open, bar.close);
+      if (range === 0 || upperWick / range < 0.35) continue;
       if (!best || p.tier < best.poolTier) {
         best = { pool: p.name, poolLevel: p.level, poolTier: p.tier,
                  sweepExtreme: bar.high, direction: 'SHORT' };
@@ -190,6 +203,9 @@ function checkSweep(bar, pools, atr) {
     if (p.side === 'SSL'
         && bar.low < p.level - 0.08 * atr
         && bar.close > p.level) {
+      // Wick dominance: lower wick must be ≥ 35% of bar range
+      const lowerWick = Math.min(bar.open, bar.close) - bar.low;
+      if (range === 0 || lowerWick / range < 0.35) continue;
       if (!best || p.tier < best.poolTier) {
         best = { pool: p.name, poolLevel: p.level, poolTier: p.tier,
                  sweepExtreme: bar.low, direction: 'LONG' };
@@ -224,13 +240,18 @@ function findFVG(bars, direction, lookback = 5) {
 
 /**
  * Check if `bar` is a displacement candle consistent with `direction`.
- * Displacement = strong-body, correct-direction candle (body ≥ 45% range, ≥ 0.35×ATR).
+ * Displacement = strong-body, correct-direction candle that closes in the
+ * bottom/top 30% of its range (institutional conviction close).
  */
 function isDisplacement(bar, atr, direction) {
   const body  = Math.abs(bar.close - bar.open);
   const range = bar.high - bar.low;
   if (range === 0 || body / range < 0.45 || body < 0.35 * atr) return false;
-  return direction === 'SHORT' ? bar.close < bar.open : bar.close > bar.open;
+  // Close-strength: bar must close in the bottom 30% (SHORT) or top 30% (LONG) of its range.
+  // A bearish displacement closing mid-range lacks institutional conviction.
+  const closeRatio = (bar.close - bar.low) / range;
+  if (direction === 'SHORT') return bar.close < bar.open && closeRatio <= 0.30;
+  return bar.close > bar.open && closeRatio >= 0.70;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -257,23 +278,23 @@ function detectChoCH(windowBars, currentBar, direction, atr) {
 
   if (direction === 'SHORT') {
     const priorSwingLow = Math.min(...windowBars.map(b => b.low));
-    // Strong CHoCH: current close clearly below prior window low
+    // Strong CHoCH: close clearly below prior window low (cushioned break)
     if (currentBar.close < priorSwingLow - 0.05 * atr) {
       return { chochLevel: priorSwingLow, isDispChoCH: false };
     }
-    // Weak CHoCH: at least lower than sweep window lowest close (displacement itself broke it)
-    const priorLowClose = Math.min(...windowBars.map(b => b.close));
-    if (currentBar.close < priorLowClose) {
-      return { chochLevel: priorLowClose, isDispChoCH: true };
+    // Tightened weak CHoCH: must close below ALL prior swing lows — a real structural break,
+    // not just lower than some prior close (original path was too permissive).
+    if (currentBar.close < priorSwingLow) {
+      return { chochLevel: priorSwingLow, isDispChoCH: true };
     }
   } else {
     const priorSwingHigh = Math.max(...windowBars.map(b => b.high));
     if (currentBar.close > priorSwingHigh + 0.05 * atr) {
       return { chochLevel: priorSwingHigh, isDispChoCH: false };
     }
-    const priorHighClose = Math.max(...windowBars.map(b => b.close));
-    if (currentBar.close > priorHighClose) {
-      return { chochLevel: priorHighClose, isDispChoCH: true };
+    // Tightened weak CHoCH: must close above ALL prior swing highs
+    if (currentBar.close > priorSwingHigh) {
+      return { chochLevel: priorSwingHigh, isDispChoCH: true };
     }
   }
   return null;
@@ -320,10 +341,12 @@ function scoreChecklist({
 // ─────────────────────────────────────────────────────────────────────────────
 // CONFIDENCE FROM CHECKLIST
 // ─────────────────────────────────────────────────────────────────────────────
-function checklistToConfidence(score, poolTier, biasSpread) {
+function checklistToConfidence(score, poolTier, biasSpread, { volumeSpike = false, poolConfluence = false } = {}) {
   let c = 52 + score * 4;           // 52 base → max raw 92 at score=10
-  if (poolTier === 1)  c += 4;      // Tier 1 pool adds institutional precision
-  if (biasSpread >= 30) c += 2;     // strong pre-open bias agreement
+  if (poolTier === 1)    c += 4;    // Tier 1 pool adds institutional precision
+  if (biasSpread >= 30)  c += 2;    // strong pre-open bias agreement
+  if (volumeSpike)       c += 3;    // institutional volume on sweep bar
+  if (poolConfluence)    c += 2;    // 2+ Tier 1 pools clustered at same zone
   return Math.min(93, Math.max(45, c));
 }
 
@@ -423,6 +446,21 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     const sweep = checkSweep(sweepBar, pools, atr);
     if (!sweep) continue;
 
+    // Volume spike on sweep bar (≥1.4× prior 10-bar average volume)
+    let volumeSpike = false;
+    if (sweepBar.volume != null) {
+      const sweepGlobalIdx = scanStart + si;
+      const priorVolBars = bars5m.slice(Math.max(0, sweepGlobalIdx - 10), sweepGlobalIdx);
+      if (priorVolBars.length >= 5) {
+        const avgVol = priorVolBars.reduce((s, b) => s + (b.volume || 0), 0) / priorVolBars.length;
+        if (avgVol > 0) volumeSpike = sweepBar.volume >= 1.4 * avgVol;
+      }
+    }
+
+    // Multi-pool confluence: 2+ Tier 1 pools clustering within 2×ATR of swept level
+    const tier1Near    = pools.filter(p => p.tier === 1 && Math.abs(p.level - sweep.poolLevel) <= 2 * atr);
+    const poolConfluence = tier1Near.length >= 2;
+
     const direction = sweep.direction;
     const isBull    = direction === 'LONG';
 
@@ -468,12 +506,22 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     }
 
     // ── Stop loss ────────────────────────────────────────────────────────────
-    // Structural: behind the sweep extreme + buffer
-    const structStop  = isBull ? sweep.sweepExtreme - 3 : sweep.sweepExtreme + 3;
-    let rawRisk       = Math.abs(entry - structStop);
-    rawRisk           = Math.min(rawRisk, variant.maxStop ?? MAX_STOP_PTS);
-    rawRisk           = Math.max(rawRisk, 8);
-    const sl          = isBull ? +(entry - rawRisk).toFixed(2) : +(entry + rawRisk).toFixed(2);
+    // FVG entry: stop at FVG far boundary (tighter RR vs structural sweep stop).
+    // Market entry: structural stop behind sweep extreme + buffer.
+    const sweepStop = isBull ? sweep.sweepExtreme - 3 : sweep.sweepExtreme + 3;
+    let stopRef;
+    if (isFvgEntry && fvg) {
+      const fvgBoundaryStop = isBull ? fvg.low - 2 : fvg.high + 2;
+      // Only use FVG boundary if genuinely tighter than structural stop
+      stopRef = Math.abs(entry - fvgBoundaryStop) < Math.abs(entry - sweepStop)
+        ? fvgBoundaryStop : sweepStop;
+    } else {
+      stopRef = sweepStop;
+    }
+    let rawRisk = Math.abs(entry - stopRef);
+    rawRisk     = Math.min(rawRisk, variant.maxStop ?? MAX_STOP_PTS);
+    rawRisk     = Math.max(rawRisk, 8);
+    const sl    = isBull ? +(entry - rawRisk).toFixed(2) : +(entry + rawRisk).toFixed(2);
 
     // ── TPs ──────────────────────────────────────────────────────────────────
     const { tp1, tp2, tp3 } = computeTPs(entry, rawRisk, direction, pools);
@@ -493,7 +541,10 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
     }
 
     // ── Context ──────────────────────────────────────────────────────────────
-    const vwapArr  = calcVwap(bars5m);
+    // Session-anchored VWAP: anchor at 9:30 ET (not rolling) for NY Open precision
+    const sessionBars5m = bars5m.filter(b => { const e = getET(b.timestamp); return e.hm >= 930; });
+    const vwapSrc  = sessionBars5m.length >= 2 ? sessionBars5m : bars5m;
+    const vwapArr  = calcVwap(vwapSrc);
     const vwap     = vwapArr[vwapArr.length - 1];
     const b1Bias   = bars1h?.length >= 21 ? calcHtfBias(bars1h, 9, 21) : 0;
     const b4Bias   = bars4h?.length >= 5  ? calcHtfBias(bars4h, 9, 21) : 0;
@@ -522,7 +573,7 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
 
     if (checklistScore < (variant.minScore ?? 7)) continue;
 
-    const confidence = checklistToConfidence(checklistScore, sweep.poolTier, biasSpread);
+    const confidence = checklistToConfidence(checklistScore, sweep.poolTier, biasSpread, { volumeSpike, poolConfluence });
     const { grade, win_prob_tp1, win_prob_tp2, win_prob_tp3 } = deriveGradeAndProbs(confidence);
     const sess = getSessionInfo(lastBar.timestamp);
 
@@ -561,6 +612,8 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
         fvg ? `fvg=[${fvg.low.toFixed(2)}-${fvg.high.toFixed(2)}]` : null,
         `disp_atr=${(Math.abs(disp.close - disp.open) / atr).toFixed(2)}x`,
         choch.isDispChoCH ? 'DISP_AS_CHOCH' : `choch_level=${choch.chochLevel.toFixed(2)}`,
+        volumeSpike ? 'VOL_SPIKE' : null,
+        poolConfluence ? `POOL_CONFLUENCE(${tier1Near.map(p => p.name).join('+')})` : null,
         `1H:${b1Bias > 0 ? 'BULL' : b1Bias < 0 ? 'BEAR' : 'NEUT'} struct=${struct}`,
         `variant=${variantKey}`,
       ].filter(Boolean).join(' | '),
@@ -580,6 +633,8 @@ function evaluate(bars5m, bars15m, bars1h, bars4h, cfg = {}, barIdx = null) {
         choch_confirmed:       !choch.isDispChoCH,
         entry_type:            isFvgEntry ? 'FVG_LIMIT' : 'CHOCH_MARKET',
         checklist_score:       checklistScore,
+        volume_spike:          volumeSpike,
+        pool_confluence:       poolConfluence,
         variant:               variantKey,
         orbHigh:               _d.orbHigh ? +_d.orbHigh.toFixed(2) : null,
         orbLow:                _d.orbLow  ? +_d.orbLow.toFixed(2)  : null,
@@ -664,6 +719,21 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
         const sweep = checkSweep(sweepBar, pools, atr);
         if (!sweep) continue;
 
+        // Volume spike on sweep bar
+        let volumeSpike = false;
+        if (sweepBar.volume != null) {
+          const sweepGlobalIdx = allBars.length - (scanBars.length - si);
+          const priorVolBars = allBars.slice(Math.max(0, sweepGlobalIdx - 10), sweepGlobalIdx);
+          if (priorVolBars.length >= 5) {
+            const avgVol = priorVolBars.reduce((s, b) => s + (b.volume || 0), 0) / priorVolBars.length;
+            if (avgVol > 0) volumeSpike = sweepBar.volume >= 1.4 * avgVol;
+          }
+        }
+
+        // Multi-pool confluence: 2+ Tier 1 pools within 2×ATR of swept level
+        const tier1Near    = pools.filter(p => p.tier === 1 && Math.abs(p.level - sweep.poolLevel) <= 2 * atr);
+        const poolConfluence = tier1Near.length >= 2;
+
         const direction = sweep.direction;
         const isBull    = direction === 'LONG';
 
@@ -706,8 +776,16 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
           entry = +curBar.close.toFixed(2);
         }
 
-        const structStop = isBull ? sweep.sweepExtreme - 3 : sweep.sweepExtreme + 3;
-        let rawRisk = Math.abs(entry - structStop);
+        const btSweepStop = isBull ? sweep.sweepExtreme - 3 : sweep.sweepExtreme + 3;
+        let btStopRef;
+        if (isFvgEntry && fvg) {
+          const fvgBoundaryStop = isBull ? fvg.low - 2 : fvg.high + 2;
+          btStopRef = Math.abs(entry - fvgBoundaryStop) < Math.abs(entry - btSweepStop)
+            ? fvgBoundaryStop : btSweepStop;
+        } else {
+          btStopRef = btSweepStop;
+        }
+        let rawRisk = Math.abs(entry - btStopRef);
         rawRisk = Math.min(rawRisk, variant.maxStop ?? MAX_STOP_PTS);
         rawRisk = Math.max(rawRisk, 8);
         const sl = isBull ? entry - rawRisk : entry + rawRisk;
@@ -715,7 +793,9 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
         const { tp1, tp2, tp3 } = computeTPs(entry, rawRisk, direction, pools);
         if (!hasCleanRoom(entry, tp1, direction, pools)) continue;
 
-        const vwapArr = calcVwap(allBars);
+        const btSessionBars = allBars.filter(b => { const e = getET(b.timestamp); return e.hm >= 930; });
+        const vwapSrcBt = btSessionBars.length >= 2 ? btSessionBars : allBars;
+        const vwapArr = calcVwap(vwapSrcBt);
         const vwap    = vwapArr[vwapArr.length - 1];
         const b1Bias  = h1Slice.length >= 21 ? calcHtfBias(h1Slice, 9, 21) : 0;
         const b4Bias  = h4Slice.length >= 5  ? calcHtfBias(h4Slice, 9, 21) : 0;
@@ -732,14 +812,16 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
         if (checklistScore < (variant.minScore ?? 7)) continue;
 
         btSignal = { entry, sl, tp1, tp2, tp3, rawRisk, direction, isBull, sweep, checklistScore,
-                     entryBar: curBar, fvg, choch, b1Bias, b4Bias, biasAligned, isFvgEntry };
+                     entryBar: curBar, fvg, choch, b1Bias, b4Bias, biasAligned, isFvgEntry,
+                     volumeSpike, poolConfluence, biasSpread: Math.abs(b4Bias) * 25 };
       }
 
       if (!btSignal) continue;
       dayEmitted = true;
 
       const { entry, sl, tp1, tp2, tp3, rawRisk, direction, isBull,
-              sweep, checklistScore, entryBar, b1Bias, b4Bias, biasAligned, isFvgEntry } = btSignal;
+              sweep, checklistScore, entryBar, b1Bias, b4Bias, biasAligned, isFvgEntry,
+              volumeSpike: btVolSpike, poolConfluence: btPoolConf, biasSpread: btBiasSpread } = btSignal;
 
       // Simulate trade (11:00 ET time stop)
       const futureBars = dayBars.filter(b => {
@@ -795,7 +877,7 @@ function backtestMnqFire(bars5m, bars1h, bars4h, barsDly, opts = {}) {
         entry: +entry.toFixed(2), sl: +sl.toFixed(2), tp1, rawRisk: +rawRisk.toFixed(2),
         outcome, pnl_pts: pnlPts, t1Hit: t1Done, t2Hit: t2Done, t3Hit: t3Done,
         mfe: +mfe.toFixed(2), mae: +mae.toFixed(2),
-        checklistScore, isFvgEntry,
+        checklistScore, isFvgEntry, volumeSpike: btVolSpike, poolConfluence: btPoolConf,
         biasAlignment: biasAligned ? 'ALIGNED' : 'CONTRA',
         htf1Bias: b1Bias, htf4Bias: b4Bias,
         strategy_name: STRATEGY_NAME,
