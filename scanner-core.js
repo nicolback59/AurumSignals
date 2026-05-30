@@ -824,7 +824,8 @@ class Scanner extends EventEmitter {
       return;
     }
     const STRAT_LABELS = {
-      MNQ_INTRADAY: 'MNQ Intraday', MGC_SCALP: 'MGC Scalp', NQ_NY_OPEN: 'NQ NY Open',
+      MNQ_INTRADAY: 'MNQ Intraday', MGC_SCALP: 'MGC Scalp',
+      NQ_NY_OPEN: 'NQ NY Open', MNQ_FIRE: 'MNQ FIRE',
     };
     const stratLabel = STRAT_LABELS[sig.strategy_name] || sig.strategy_name || sig.instrument;
     const pnlStr     = pnlPts != null ? ` (+${pnlPts} pts)` : '';

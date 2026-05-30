@@ -28,6 +28,7 @@ const FAMILY = {
   MNQ_INTRADAY: 'MNQ_MOMENTUM',
   MGC_SCALP:    'MGC',
   NQ_NY_OPEN:   'NQ_NY_OPEN',   // own family — never suppressed by MNQ_INTRADAY
+  MNQ_FIRE:     'MNQ_FIRE',     // own family — sweep/reversal logic independent of momentum
 };
 
 // Entry zone bucket sizes.  Half-bucket = the effective ±tolerance per side.
@@ -43,9 +44,10 @@ const SL_BUCKET = { MNQ: 30, MGC: 8 }; // retained for reference
 // Per-strategy suppression window (ms).  A second signal matching the same
 // fingerprint within this window is silently suppressed.
 const TTL_MS = {
-  MNQ_INTRADAY: 30 * 60_000,     // 30 min
-  MGC_SCALP:    15 * 60_000,     // 15 min
+  MNQ_INTRADAY: 30 * 60_000,      // 30 min
+  MGC_SCALP:    15 * 60_000,      // 15 min
   NQ_NY_OPEN:   24 * 60 * 60_000, // one per day — suppress any re-fire for 24h
+  MNQ_FIRE:     24 * 60 * 60_000, // one per day — NY Open sweep idea suppressed for full day
 };
 const TTL_DEFAULT = 30 * 60_000;
 

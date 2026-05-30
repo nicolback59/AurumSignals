@@ -11,6 +11,7 @@ const RESEARCH_THRESHOLDS = {
   MNQ_INTRADAY: 70,  // raised from 65 — v3.0 quality-focused filter
   MGC_SCALP:    55,
   NQ_NY_OPEN:   40,  // always-trade strategy — low floor so no signal is suppressed
+  MNQ_FIRE:     65,  // minimum score=7/10 checklist produces ~73 confidence; floor here
 };
 
 // LIVE_THRESHOLDS — minimum raw confidence to fire a live ntfy alert.
@@ -21,6 +22,7 @@ const LIVE_THRESHOLDS = {
   MNQ_INTRADAY: 72,  // 2 pts above research min (70) — quant scorer handles quality
   MGC_SCALP:    60,  // 5 pts above research min (55) — quant scorer handles quality
   NQ_NY_OPEN:   40,  // always live — every NY open trade fires a notification
+  MNQ_FIRE:     70,  // 5 pts above research min — only high-conviction FIRE setups alert
 };
 
 // Back-compat alias used by strategies as their internal filter gate
