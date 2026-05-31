@@ -221,6 +221,61 @@ function applyMigrations() {
     CREATE INDEX IF NOT EXISTS idx_loss_forensics_category ON loss_forensics(failure_category);
     CREATE INDEX IF NOT EXISTS idx_loss_forensics_signal   ON loss_forensics(signal_id);
   `);
+
+  // Phase 2: win column + win_forensics table
+  if (hasOutcomes) {
+    const outCols2 = db.prepare("PRAGMA table_info(outcomes)").all().map(r => r.name);
+    if (!outCols2.includes('win')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN win INTEGER");
+      db.exec(`
+        UPDATE outcomes SET win =
+          CASE WHEN result = 'WIN' THEN 1
+               WHEN result IN ('LOSS','BE','EXPIRED') THEN 0
+               ELSE NULL END
+        WHERE result IS NOT NULL
+      `);
+      console.log('[migration] Added win column to outcomes and backfilled');
+    }
+    if (!outCols2.includes('resolved_at')) {
+      // resolved_at is an alias for exit_at — add it so Phase 1 workers also work
+      db.exec("ALTER TABLE outcomes ADD COLUMN resolved_at TEXT");
+      db.exec("UPDATE outcomes SET resolved_at = exit_at WHERE exit_at IS NOT NULL");
+      console.log('[migration] Added resolved_at to outcomes (mirrors exit_at)');
+    }
+  }
+
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS win_forensics (
+      id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+      signal_id            INTEGER NOT NULL,
+      strategy_name        TEXT    NOT NULL,
+      instrument           TEXT    NOT NULL,
+      direction            TEXT,
+      result               TEXT    NOT NULL,
+      win_category         TEXT    NOT NULL,
+      win_subcategory      TEXT,
+      classifier_version   TEXT    DEFAULT '1.0',
+      session              TEXT,
+      day_of_week          INTEGER,
+      regime               TEXT,
+      htf_bias             TEXT,
+      confidence           INTEGER,
+      archetype            TEXT,
+      htf_alignment        INTEGER,
+      tp_reached           INTEGER,
+      hold_time_min        REAL,
+      mfe_pts              REAL,
+      pnl_pts              REAL,
+      rr_achieved          REAL,
+      entry                REAL,
+      data_quality         TEXT,
+      created_at           TEXT    NOT NULL DEFAULT (datetime('now'))
+    )
+  `);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_win_forensics_strategy ON win_forensics(strategy_name, created_at DESC)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_win_forensics_category ON win_forensics(win_category)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_win_forensics_signal   ON win_forensics(signal_id)`);
+
   const hasBtTrades = db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='backtest_trades'").get();
   if (hasBtTrades) {
     const btCols = db.prepare("PRAGMA table_info(backtest_trades)").all().map(r => r.name);

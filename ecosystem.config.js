@@ -139,14 +139,49 @@ module.exports = {
       merge_logs:      true,
     },
 
-    // {
-    //   name:         'loss-forensics',
-    //   script:       'workers/loss-forensics-worker.js',
-    //   cron_restart: '0 */2 * * *',
-    //   autorestart:  false,
-    //   max_memory_restart: '150M',
-    //   env_production: { NODE_ENV: 'production' },
-    // },
+    // ── LOSS FORENSICS WORKER ─────────────────────────────────────────────────
+    // Every 2h: classifies unclassified losses into failure_category buckets.
+    // Posts systemic alerts to agent_messages when one category > 45% of losses.
+    {
+      name:         'loss-forensics',
+      script:       'workers/loss-forensics-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */2 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/loss-forensics-error.log',
+      out_file:        '/root/AurumSignals/logs/loss-forensics-out.log',
+      merge_logs:      true,
+    },
+
+    // ── WIN FORENSICS WORKER ──────────────────────────────────────────────────
+    // Every 4h: classifies wins into win_category archetypes.
+    // Posts dominant pattern alerts to agent_messages.
+    {
+      name:         'win-forensics',
+      script:       'workers/win-forensics-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */4 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/win-forensics-error.log',
+      out_file:        '/root/AurumSignals/logs/win-forensics-out.log',
+      merge_logs:      true,
+    },
 
     {
       name:         'optimizer',
