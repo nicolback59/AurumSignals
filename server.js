@@ -521,6 +521,35 @@ applyMigrations();
   }
 })();
 
+// Phase 4 migration: edge_health_log table
+(function applyPhase4Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS edge_health_log (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name       TEXT    NOT NULL,
+        instrument          TEXT    NOT NULL,
+        checked_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+        decay_score         INTEGER NOT NULL,
+        edge_status         TEXT    NOT NULL,
+        wr_last5            REAL,
+        wr_last10           REAL,
+        wr_last20           REAL,
+        baseline_wr         REAL,
+        consecutive_losses  INTEGER DEFAULT 0,
+        trades_available    INTEGER DEFAULT 0,
+        veto_posted         INTEGER DEFAULT 0,
+        notes               TEXT
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ehl_strategy ON edge_health_log(strategy_name, checked_at DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_ehl_status   ON edge_health_log(edge_status, checked_at DESC)`);
+    for (const agent of ['edge-health', 'intelligence-report']) {
+      db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+    }
+  } catch (err) { console.error('[phase4-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -1966,6 +1995,20 @@ try {
   `);
 } catch (_err) { /* table not yet created */ }
 
+let _stmtEdgeHealth = null;
+try {
+  _stmtEdgeHealth = db.prepare(`
+    SELECT strategy_name, decay_score, edge_status, wr_last5, wr_last10,
+           baseline_wr, consecutive_losses, notes, checked_at
+    FROM edge_health_log
+    WHERE checked_at = (
+      SELECT MAX(e2.checked_at) FROM edge_health_log e2
+      WHERE e2.strategy_name = edge_health_log.strategy_name
+    )
+    ORDER BY decay_score DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
 app.get('/api/health', (req, res) => {
   try {
     const dbOk = !!_stmtHealthPing.get();
@@ -2090,6 +2133,26 @@ app.get('/api/health', (req, res) => {
               top_failure:   r.top_failure,
               top_failure_pct: r.top_failure_pct,
               as_of:         r.snapshot_date,
+            };
+          }
+          return out;
+        } catch { return null; }
+      })(),
+      edge_health: (() => {
+        if (!_stmtEdgeHealth) return null;
+        try {
+          const rows = _stmtEdgeHealth.all();
+          const out  = {};
+          for (const r of rows) {
+            out[r.strategy_name] = {
+              decay_score:        r.decay_score,
+              status:             r.edge_status,
+              wr_last5:           r.wr_last5,
+              wr_last10:          r.wr_last10,
+              baseline_wr:        r.baseline_wr,
+              consecutive_losses: r.consecutive_losses,
+              notes:              r.notes,
+              as_of:              r.checked_at,
             };
           }
           return out;

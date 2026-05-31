@@ -325,6 +325,50 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── EDGE HEALTH WORKER ────────────────────────────────────────────────────
+    // Every 2h: rolling WR decay detector across last 5/10/20 resolved trades.
+    // Posts veto to agent_messages + ntfy alert on CRITICAL/COLLAPSE status.
+    {
+      name:         'edge-health',
+      script:       'workers/edge-health-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */2 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/edge-health-error.log',
+      out_file:        '/root/AurumSignals/logs/edge-health-out.log',
+      merge_logs:      true,
+    },
+
+    // ── INTELLIGENCE REPORT WORKER ────────────────────────────────────────────
+    // Weekly Monday 07:00 UTC: full intelligence digest across all phases.
+    // Writes to reports table (report_type = INTELLIGENCE_WEEKLY), sends ntfy.
+    {
+      name:         'intelligence-report',
+      script:       'workers/intelligence-report-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 7 * * 1',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/intelligence-report-error.log',
+      out_file:        '/root/AurumSignals/logs/intelligence-report-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
