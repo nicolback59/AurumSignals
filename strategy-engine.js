@@ -13,7 +13,7 @@
  * to the existing 15m and 1h HTF layers.
  */
 
-const mnqIntraday = require('./strategies/mnq-intraday');
+const mnqIntraday = require('./strategies/mnq-intraday-v2'); // v4.0 — see mnq-intraday.js for v3.0
 const mgcScalp    = require('./strategies/mgc-scalp');
 const nqNyOpen    = require('./strategies/nq-ny-open-v3');
 const mnqFire     = require('./strategies/mnq-fire');
