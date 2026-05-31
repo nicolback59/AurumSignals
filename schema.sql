@@ -683,3 +683,29 @@ CREATE TABLE IF NOT EXISTS edge_health_log (
 );
 CREATE INDEX IF NOT EXISTS idx_ehl_strategy ON edge_health_log(strategy_name, checked_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ehl_status   ON edge_health_log(edge_status, checked_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- INTELLIGENCE ENGINE — Phase 5: Adaptive Signal Gate
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Per-strategy gate state computed every 30 min by workers/signal-gate-worker.js.
+-- Synthesizes edge health, strategy health, calibration, vetoes, and feature
+-- correlations into a single gating decision fed back into the live scanner
+-- via the adaptive overrides blob (strategy_params table).
+CREATE TABLE IF NOT EXISTS signal_gates (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name        TEXT    NOT NULL,
+  evaluated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  gate_status          TEXT    NOT NULL,         -- OPEN | CAUTIOUS | RESTRICTED | GATED
+  adjusted_min_conf    INTEGER NOT NULL,         -- effective minimum confidence for live signals
+  base_min_conf        INTEGER NOT NULL,         -- baseline before adjustments
+  conf_adjustment      INTEGER NOT NULL,         -- delta applied to base (0 / +5 / +10 / +20)
+  edge_contribution    INTEGER DEFAULT 0,        -- points from edge health (Phase 4)
+  health_contribution  INTEGER DEFAULT 0,        -- points from strategy health (Phase 1)
+  calibration_factor   REAL    DEFAULT 1.0,      -- multiplier from calibration overconfidence
+  active_vetoes        INTEGER DEFAULT 0,        -- count of active vetoes considered
+  rationale            TEXT,                     -- JSON array of trigger strings
+  applied_count        INTEGER DEFAULT 0         -- signals blocked since last gate change
+);
+CREATE INDEX IF NOT EXISTS idx_sg_strategy ON signal_gates(strategy_name, evaluated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_sg_status   ON signal_gates(gate_status, evaluated_at DESC);

@@ -550,6 +550,32 @@ applyMigrations();
   } catch (err) { console.error('[phase4-migration]', err.message); }
 })();
 
+// Phase 5 migration: signal_gates table (adaptive signal gate)
+(function applyPhase5Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS signal_gates (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name        TEXT    NOT NULL,
+        evaluated_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+        gate_status          TEXT    NOT NULL,
+        adjusted_min_conf    INTEGER NOT NULL,
+        base_min_conf        INTEGER NOT NULL,
+        conf_adjustment      INTEGER NOT NULL,
+        edge_contribution    INTEGER DEFAULT 0,
+        health_contribution  INTEGER DEFAULT 0,
+        calibration_factor   REAL    DEFAULT 1.0,
+        active_vetoes        INTEGER DEFAULT 0,
+        rationale            TEXT,
+        applied_count        INTEGER DEFAULT 0
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_sg_strategy ON signal_gates(strategy_name, evaluated_at DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_sg_status   ON signal_gates(gate_status, evaluated_at DESC)`);
+    db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run('signal-gate');
+  } catch (err) { console.error('[phase5-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -2158,6 +2184,34 @@ app.get('/api/health', (req, res) => {
           return out;
         } catch { return null; }
       })(),
+      signal_gates: (() => {
+        try {
+          const rows = db.prepare(`
+            SELECT strategy_name, gate_status, adjusted_min_conf, conf_adjustment,
+                   edge_contribution, health_contribution, active_vetoes, rationale, evaluated_at
+            FROM signal_gates
+            WHERE evaluated_at = (
+              SELECT MAX(g2.evaluated_at) FROM signal_gates g2
+              WHERE g2.strategy_name = signal_gates.strategy_name
+            )
+            ORDER BY conf_adjustment DESC
+          `).all();
+          const out = {};
+          for (const r of rows) {
+            out[r.strategy_name] = {
+              status:            r.gate_status,
+              adjusted_min_conf: r.adjusted_min_conf,
+              conf_adjustment:   r.conf_adjustment,
+              edge_pts:          r.edge_contribution,
+              health_pts:        r.health_contribution,
+              active_vetoes:     r.active_vetoes,
+              rationale:         r.rationale ? JSON.parse(r.rationale) : [],
+              as_of:             r.evaluated_at,
+            };
+          }
+          return out;
+        } catch { return null; }
+      })(),
     });
   } catch (err) {
     res.status(500).json({ status: 'error', error: err.message });
@@ -2241,6 +2295,50 @@ app.get('/api/intelligence', (req, res) => {
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
+});
+
+// Current signal gate state — live view of per-strategy gating decisions (Phase 5)
+app.get('/api/signal-gates', (req, res) => {
+  try {
+    const rows = db.prepare(`
+      SELECT strategy_name, gate_status, adjusted_min_conf, base_min_conf, conf_adjustment,
+             edge_contribution, health_contribution, calibration_factor,
+             active_vetoes, rationale, evaluated_at
+      FROM signal_gates
+      WHERE evaluated_at = (
+        SELECT MAX(g2.evaluated_at) FROM signal_gates g2
+        WHERE g2.strategy_name = signal_gates.strategy_name
+      )
+      ORDER BY conf_adjustment DESC, strategy_name
+    `).all();
+
+    const gates = {};
+    for (const r of rows) {
+      gates[r.strategy_name] = {
+        status:             r.gate_status,
+        adjusted_min_conf:  r.adjusted_min_conf,
+        base_min_conf:      r.base_min_conf,
+        conf_adjustment:    r.conf_adjustment,
+        edge_pts:           r.edge_contribution,
+        health_pts:         r.health_contribution,
+        calibration_factor: r.calibration_factor,
+        active_vetoes:      r.active_vetoes,
+        rationale:          r.rationale ? JSON.parse(r.rationale) : [],
+        as_of:              r.evaluated_at,
+      };
+    }
+
+    let adaptiveOverrides = {};
+    try {
+      const ovRow = db.prepare(
+        "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+      ).get();
+      adaptiveOverrides = ovRow?.params_json ? JSON.parse(ovRow.params_json) : {};
+    } catch (_) {}
+
+    res.set('Cache-Control', 'no-store');
+    res.json({ gates, adaptive_overrides: adaptiveOverrides, generated_at: new Date().toISOString() });
+  } catch (err) { res.status(500).json({ error: err.message }); }
 });
 
 // ── WEEKLY LEARNING SUMMARIES ─────────────────────────────────────────────────────────
