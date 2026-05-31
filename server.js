@@ -277,6 +277,116 @@ function applyMigrations() {
   if (hasBtRuns) {
     db.exec(`CREATE INDEX IF NOT EXISTS idx_bt_runs_dedup ON backtest_runs(instrument, win_rate, trades_found)`);
   }
+
+  // ── Intelligence Engine Phase 1 — new columns on existing tables ───────────
+  // signals: strategy_version + entry_type
+  if (hasSignals) {
+    const cols = db.prepare("PRAGMA table_info(signals)").all().map(r => r.name);
+    if (!cols.includes('strategy_version')) {
+      db.exec("ALTER TABLE signals ADD COLUMN strategy_version TEXT");
+      console.log('[migration] Added strategy_version to signals');
+    }
+    if (!cols.includes('entry_type')) {
+      db.exec("ALTER TABLE signals ADD COLUMN entry_type TEXT");
+      console.log('[migration] Added entry_type to signals');
+    }
+  }
+  // outcomes: exit_type + tp1_bars + max_extension_pts
+  if (hasOutcomes) {
+    const outCols = db.prepare("PRAGMA table_info(outcomes)").all().map(r => r.name);
+    if (!outCols.includes('exit_type')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN exit_type TEXT");
+      console.log('[migration] Added exit_type to outcomes');
+    }
+    if (!outCols.includes('tp1_bars')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN tp1_bars INTEGER");
+      console.log('[migration] Added tp1_bars to outcomes');
+    }
+    if (!outCols.includes('max_extension_pts')) {
+      db.exec("ALTER TABLE outcomes ADD COLUMN max_extension_pts REAL");
+      console.log('[migration] Added max_extension_pts to outcomes');
+    }
+  }
+  // Intelligence Engine tables — schema.sql has CREATE TABLE IF NOT EXISTS for all of these.
+  // Explicit checks here ensure the index creation in schema.sql never runs against pre-existing
+  // tables on old Droplet DBs where schema.sql has already been applied without these tables.
+  db.exec(`CREATE TABLE IF NOT EXISTS signal_features (
+    signal_id INTEGER PRIMARY KEY REFERENCES signals(id) ON DELETE CASCADE,
+    atr REAL, atr_percentile REAL, vwap_dist_atr REAL,
+    rsi REAL, adx REAL, macd_hist REAL, ema9_vs_ema21 REAL,
+    htf_15m_bias INTEGER, htf_1h_bias INTEGER, htf_4h_bias INTEGER,
+    chop_score REAL, disp_strength REAL, mtf_agreed INTEGER,
+    session TEXT, time_in_session REAL, prior_signal_gap_m INTEGER,
+    regime TEXT, vol_regime TEXT, vwap_state TEXT,
+    archetype TEXT, entry_type TEXT, confluence_bonus INTEGER,
+    raw_json TEXT, recorded_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_sf_recorded ON signal_features(recorded_at DESC)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS strategy_health_snapshots (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_name TEXT NOT NULL,
+    snapshot_date TEXT NOT NULL,
+    wr_7d REAL, wr_14d REAL, wr_30d REAL, wr_90d REAL,
+    exp_7d REAL, exp_14d REAL, exp_30d REAL,
+    pf_7d REAL, pf_30d REAL,
+    freq_7d REAL, freq_30d REAL,
+    trades_7d INTEGER, trades_14d INTEGER, trades_30d INTEGER,
+    wr_trend TEXT, exp_trend TEXT, freq_trend TEXT,
+    failure_breakdown TEXT, top_failure TEXT, top_failure_pct REAL,
+    health_score REAL, health_status TEXT,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(strategy_name, snapshot_date)
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_shs_strategy ON strategy_health_snapshots(strategy_name, snapshot_date DESC)`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_shs_unique ON strategy_health_snapshots(strategy_name, snapshot_date)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS calibration_audit (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, strategy_name TEXT NOT NULL,
+    conf_bucket TEXT NOT NULL, period_days INTEGER NOT NULL,
+    total_signals INTEGER, wins INTEGER, actual_wr REAL,
+    avg_predicted REAL, calibration_err REAL,
+    computed_at TEXT NOT NULL DEFAULT (datetime('now'))
+  )`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ca_unique ON calibration_audit(strategy_name, conf_bucket, period_days)`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_ca_strategy ON calibration_audit(strategy_name, computed_at DESC)`);
+  db.exec(`CREATE TABLE IF NOT EXISTS intervention_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    applied_at TEXT NOT NULL DEFAULT (datetime('now')),
+    strategy_name TEXT, agent_source TEXT NOT NULL,
+    description TEXT NOT NULL, param_before TEXT, param_after TEXT,
+    eval_at TEXT, wr_before REAL, wr_after REAL, wr_delta REAL,
+    failure_before TEXT, failure_after TEXT, net_effect REAL,
+    eval_status TEXT DEFAULT 'pending'
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS agent_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    from_agent TEXT NOT NULL, to_agent TEXT NOT NULL DEFAULT 'consensus',
+    msg_type TEXT NOT NULL, strategy TEXT, payload TEXT NOT NULL,
+    priority INTEGER NOT NULL DEFAULT 3,
+    status TEXT NOT NULL DEFAULT 'pending',
+    created_at TEXT NOT NULL DEFAULT (datetime('now')), consumed_at TEXT
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS agent_trust_scores (
+    agent_name TEXT PRIMARY KEY,
+    recommendations INTEGER NOT NULL DEFAULT 0,
+    correct_calls INTEGER NOT NULL DEFAULT 0,
+    incorrect_calls INTEGER NOT NULL DEFAULT 0,
+    trust_weight REAL NOT NULL DEFAULT 1.0,
+    last_calibrated TEXT
+  )`);
+  db.exec(`CREATE TABLE IF NOT EXISTS regime_transitions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT, instrument TEXT NOT NULL,
+    from_regime TEXT NOT NULL, to_regime TEXT NOT NULL,
+    transitioned_at TEXT NOT NULL DEFAULT (datetime('now')),
+    duration_bars INTEGER, duration_min INTEGER,
+    signals_fired_in_prior INTEGER, wr_in_prior REAL, atr_at_transition REAL
+  )`);
+  db.exec(`CREATE INDEX IF NOT EXISTS idx_rt_instrument ON regime_transitions(instrument, transitioned_at DESC)`);
+
+  // Seed agent trust scores for known agents
+  for (const agent of ['strategy-health-worker','calibration-audit-worker',
+                       'loss-forensics','learning-agent','regime-agent',
+                       'feature-intelligence','optimizer']) {
+    db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+  }
 }
 
 // Backtest dedup runs asynchronously after startup to avoid blocking boot.
@@ -1754,6 +1864,18 @@ const _stmtStuckSigs   = db.prepare(
 );
 let   _stmtJrnCount    = null;
 try { _stmtJrnCount = db.prepare('SELECT COUNT(*) n FROM journal_entries'); } catch (_err) { /* table may not exist */ }
+let   _stmtStratHealth = null;
+try {
+  _stmtStratHealth = db.prepare(`
+    SELECT strategy_name, health_score, health_status, wr_7d, wr_30d, exp_30d, pf_30d,
+           trades_30d, top_failure, top_failure_pct, wr_trend, snapshot_date
+    FROM strategy_health_snapshots
+    WHERE snapshot_date = (
+      SELECT MAX(snapshot_date) FROM strategy_health_snapshots AS s2
+      WHERE s2.strategy_name = strategy_health_snapshots.strategy_name
+    )
+  `);
+} catch (_err) { /* table not yet created */ }
 
 app.get('/api/health', (req, res) => {
   try {
@@ -1845,6 +1967,29 @@ app.get('/api/health', (req, res) => {
       db_size_mb:     dbSizeMb,
       uptime_s:       Math.floor(process.uptime()),
       workers,
+      strategy_health: (() => {
+        if (!_stmtStratHealth) return null;
+        try {
+          const rows = _stmtStratHealth.all();
+          const out  = {};
+          for (const r of rows) {
+            out[r.strategy_name] = {
+              score:         r.health_score,
+              status:        r.health_status,
+              wr_7d:         r.wr_7d,
+              wr_30d:        r.wr_30d,
+              exp_30d:       r.exp_30d,
+              pf_30d:        r.pf_30d,
+              trades_30d:    r.trades_30d,
+              wr_trend:      r.wr_trend,
+              top_failure:   r.top_failure,
+              top_failure_pct: r.top_failure_pct,
+              as_of:         r.snapshot_date,
+            };
+          }
+          return out;
+        } catch { return null; }
+      })(),
     });
   } catch (err) {
     res.status(500).json({ status: 'error', error: err.message });

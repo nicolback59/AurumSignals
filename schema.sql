@@ -428,6 +428,173 @@ CREATE TABLE IF NOT EXISTS report_schedule (
   tz              TEXT    NOT NULL DEFAULT 'America/Los_Angeles'
 );
 
+-- ════════════════════════════════════════════════════════════════════════════
+-- INTELLIGENCE ENGINE — Phase 1 Foundation (Tier 1 Master Prompt #4)
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Full indicator snapshot captured at signal emit time.
+-- Enables feature importance analysis, calibration audits, and ML regression.
+CREATE TABLE IF NOT EXISTS signal_features (
+  signal_id          INTEGER PRIMARY KEY REFERENCES signals(id) ON DELETE CASCADE,
+  -- price / volatility
+  atr                REAL,
+  atr_percentile     REAL,    -- where current ATR sits in 90-day distribution (0–1)
+  vwap_dist_atr      REAL,    -- (close - VWAP) / ATR  (negative = below VWAP)
+  -- momentum / trend
+  rsi                REAL,
+  adx                REAL,
+  macd_hist          REAL,    -- MACD histogram value (positive = bullish momentum)
+  ema9_vs_ema21      REAL,    -- ema9 - ema21 in points (sign = direction)
+  htf_15m_bias       INTEGER, -- -1/0/1
+  htf_1h_bias        INTEGER,
+  htf_4h_bias        INTEGER,
+  -- structure
+  chop_score         REAL,    -- 0–1 choppiness score
+  disp_strength      REAL,    -- current bar body / avg prior 10 bar bodies
+  mtf_agreed         INTEGER, -- count of TF layers agreeing with trade direction
+  -- session / timing
+  session            TEXT,
+  time_in_session    REAL,    -- 0=session open, 1=session close
+  prior_signal_gap_m INTEGER, -- minutes since last signal in same direction
+  -- regime
+  regime             TEXT,
+  vol_regime         TEXT,    -- LOW / NORMAL / HIGH
+  vwap_state         TEXT,    -- ABOVE / BELOW / RECLAIMING / REJECTING / CHOPPING
+  -- setup quality
+  archetype          TEXT,    -- continuation_pullback / sweep_reversal / etc.
+  entry_type         TEXT,    -- reclaim / sweep / continuation / breakout / fade
+  confluence_bonus   INTEGER,
+  -- raw dump for future fields
+  raw_json           TEXT,    -- full signal.indicators JSON
+  recorded_at        TEXT     NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_sf_recorded ON signal_features(recorded_at DESC);
+
+-- Daily rolling health snapshot per strategy.
+-- The time-series backbone of edge degradation detection.
+CREATE TABLE IF NOT EXISTS strategy_health_snapshots (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name  TEXT    NOT NULL,
+  snapshot_date  TEXT    NOT NULL,  -- YYYY-MM-DD
+  -- rolling win rates
+  wr_7d          REAL,
+  wr_14d         REAL,
+  wr_30d         REAL,
+  wr_90d         REAL,             -- baseline reference
+  -- rolling expectancy (avg pts/trade)
+  exp_7d         REAL,
+  exp_14d        REAL,
+  exp_30d        REAL,
+  -- rolling profit factor
+  pf_7d          REAL,
+  pf_30d         REAL,
+  -- signal frequency (signals per trading day)
+  freq_7d        REAL,
+  freq_30d       REAL,
+  -- sample sizes
+  trades_7d      INTEGER,
+  trades_14d     INTEGER,
+  trades_30d     INTEGER,
+  -- trend direction: UP / DOWN / FLAT
+  wr_trend       TEXT,
+  exp_trend      TEXT,
+  freq_trend     TEXT,
+  -- failure category breakdown (JSON: {chop_fakeout: 0.34, ...})
+  failure_breakdown TEXT,
+  top_failure    TEXT,            -- name of top failure category
+  top_failure_pct REAL,
+  -- composite health score (0–100) and status
+  health_score   REAL,
+  health_status  TEXT,            -- HEALTHY / CAUTION / DEGRADED / CRITICAL
+  computed_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, snapshot_date)
+);
+CREATE INDEX IF NOT EXISTS idx_shs_strategy ON strategy_health_snapshots(strategy_name, snapshot_date DESC);
+
+-- Confidence calibration audit: does confidence=75 actually predict 65% WR?
+CREATE TABLE IF NOT EXISTS calibration_audit (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name   TEXT    NOT NULL,
+  conf_bucket     TEXT    NOT NULL,  -- '55-60', '60-65', '65-70', '70-75', '75-80', '80+'
+  period_days     INTEGER NOT NULL,  -- 30 or 90
+  total_signals   INTEGER,
+  wins            INTEGER,
+  actual_wr       REAL,              -- observed win rate
+  avg_predicted   REAL,              -- avg win_prob_tp1 in this bucket
+  calibration_err REAL,              -- actual_wr - avg_predicted (negative = overconfident)
+  computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, conf_bucket, period_days)
+);
+CREATE INDEX IF NOT EXISTS idx_ca_strategy ON calibration_audit(strategy_name, computed_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_ca_unique ON calibration_audit(strategy_name, conf_bucket, period_days);
+
+-- Every corrective action applied plus its measured effect 2 weeks later.
+-- Closes the forensics loop: intervention → measure → learn.
+CREATE TABLE IF NOT EXISTS intervention_log (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  applied_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  strategy_name  TEXT,
+  agent_source   TEXT    NOT NULL,  -- loss_forensics / learning_agent / optimizer / manual
+  description    TEXT    NOT NULL,
+  param_before   TEXT,              -- JSON snapshot of params before change
+  param_after    TEXT,              -- JSON snapshot of params after change
+  -- filled by evaluation job ~14 days after application
+  eval_at        TEXT,
+  wr_before      REAL,
+  wr_after       REAL,
+  wr_delta       REAL,              -- positive = improvement
+  failure_before TEXT,              -- JSON {category: pct, ...}
+  failure_after  TEXT,
+  net_effect     REAL,              -- composite: positive = helped
+  eval_status    TEXT    DEFAULT 'pending'  -- pending / evaluated / insufficient_data
+);
+CREATE INDEX IF NOT EXISTS idx_il_strategy ON intervention_log(strategy_name, applied_at DESC);
+CREATE INDEX IF NOT EXISTS idx_il_eval     ON intervention_log(eval_status, applied_at);
+
+-- Agent-to-agent message bus (SQLite as shared IPC).
+-- Agents publish observations and recommendations; consensus-coordinator reads.
+CREATE TABLE IF NOT EXISTS agent_messages (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  from_agent  TEXT    NOT NULL,
+  to_agent    TEXT    NOT NULL DEFAULT 'consensus',  -- 'consensus' | specific worker name
+  msg_type    TEXT    NOT NULL,  -- observation / recommendation / vote / veto
+  strategy    TEXT,
+  payload     TEXT    NOT NULL,  -- JSON
+  priority    INTEGER NOT NULL DEFAULT 3,  -- 1 (critical) to 5 (low)
+  status      TEXT    NOT NULL DEFAULT 'pending',  -- pending / consumed / rejected
+  created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+  consumed_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_am_status   ON agent_messages(status, priority, created_at);
+CREATE INDEX IF NOT EXISTS idx_am_toagent  ON agent_messages(to_agent, status);
+
+-- Track accuracy of each agent's recommendations over time.
+-- High-accuracy agents earn more weight in consensus decisions.
+CREATE TABLE IF NOT EXISTS agent_trust_scores (
+  agent_name      TEXT    PRIMARY KEY,
+  recommendations INTEGER NOT NULL DEFAULT 0,
+  correct_calls   INTEGER NOT NULL DEFAULT 0,
+  incorrect_calls INTEGER NOT NULL DEFAULT 0,
+  trust_weight    REAL    NOT NULL DEFAULT 1.0,  -- 0.5–2.0
+  last_calibrated TEXT
+);
+
+-- Regime change event log: tracks transitions between regime states.
+-- Enables: transition probability matrix, WR by regime phase, regime stability.
+CREATE TABLE IF NOT EXISTS regime_transitions (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  instrument           TEXT    NOT NULL,
+  from_regime          TEXT    NOT NULL,
+  to_regime            TEXT    NOT NULL,
+  transitioned_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+  duration_bars        INTEGER,   -- how many 15-min snapshots prior regime lasted
+  duration_min         INTEGER,   -- minutes the prior regime persisted
+  signals_fired_in_prior INTEGER,
+  wr_in_prior          REAL,      -- WR of signals fired during prior regime
+  atr_at_transition    REAL
+);
+CREATE INDEX IF NOT EXISTS idx_rt_instrument ON regime_transitions(instrument, transitioned_at DESC);
+
 -- ── Quant-engine migration block (safe no-ops if columns already exist) ───────
 -- These run in server.js applyMigrations() via ALTER TABLE ... IF NOT EXISTS logic.
 -- Listed here as documentation; actual migration is handled by the migration runner.
