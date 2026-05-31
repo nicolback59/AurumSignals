@@ -35,14 +35,27 @@ const db = openDb();
 heartbeat(db, WORKER_NAME, 'RUNNING', { pid: process.pid, startedAt: new Date().toISOString() });
 
 // ── PT time helpers ───────────────────────────────────────────────────────────
-function ptNow() {
-  const now   = new Date();
-  const ptStr = now.toLocaleString('en-US', { timeZone: 'America/Los_Angeles' });
-  return new Date(ptStr);
-}
-
-function ptDateStr(pt) {
-  return `${pt.getFullYear()}-${String(pt.getMonth() + 1).padStart(2, '0')}-${String(pt.getDate()).padStart(2, '0')}`;
+// Uses Intl.DateTimeFormat.formatToParts() — spec-defined, works correctly on any
+// server timezone (including UTC Droplets). Does NOT use new Date(localeString)
+// which is implementation-defined and can return wrong values near midnight.
+function getPtParts(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/Los_Angeles',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', weekday: 'short',
+    hour12: false,
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
+  const hours   = parseInt(parts.hour,   10) % 24; // formatToParts may return '24' for midnight
+  const minutes = parseInt(parts.minute, 10);
+  const DOW     = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
+  return {
+    hours,
+    minutes,
+    hm:      hours * 60 + minutes,
+    dow:     DOW[parts.weekday] ?? 0,
+    dateStr: `${parts.year}-${parts.month}-${parts.day}`,
+  };
 }
 
 // ── Prepared statements ───────────────────────────────────────────────────────
@@ -63,18 +76,16 @@ const _setOutReason    = db.prepare(`UPDATE outcomes SET expiration_reason = ? W
 
 // ── Core sweep ────────────────────────────────────────────────────────────────
 function runSweep() {
-  const now       = new Date();
-  const nowMs     = now.getTime();
-  const nowIso    = now.toISOString();
-  const pt        = ptNow();
-  const ptHm      = pt.getHours() * 60 + pt.getMinutes();
-  const ptDow     = pt.getDay();
-  const todayStr  = ptDateStr(pt);
+  const now    = new Date();
+  const nowMs  = now.getTime();
+  const nowIso = now.toISOString();
+  const pt     = getPtParts();
 
-  const isFriClose    = ptDow === 5 && ptHm >= 13 * 60;
-  const isWeekend     = ptDow === 6 || (ptDow === 0 && ptHm < 14 * 60);
+  const isFriClose     = pt.dow === 5 && pt.hm >= 13 * 60;
+  const isWeekend      = pt.dow === 6 || (pt.dow === 0 && pt.hm < 14 * 60);
   const isWeekendClose = isFriClose || isWeekend;
-  const pastDailyClose = ptDow >= 1 && ptDow <= 5 && ptHm >= 13 * 60;
+  const pastDailyClose = pt.dow >= 1 && pt.dow <= 5 && pt.hm >= 13 * 60;
+  const todayStr       = pt.dateStr;
 
   const pending = _getPending.all();
   if (!pending.length) return 0;
@@ -105,10 +116,8 @@ function runSweep() {
 
     // RULE C: Weekday market close at 13:00 PT
     if (pastDailyClose && !stratCfg.allowHoldOvernight) {
-      const sigPt      = new Date(new Date(sig.received_at).toLocaleString('en-US', { timeZone: 'America/Los_Angeles' }));
-      const sigDateStr = ptDateStr(sigPt);
-      const sigHm      = sigPt.getHours() * 60 + sigPt.getMinutes();
-      if (sigDateStr < todayStr || (sigDateStr === todayStr && sigHm < 13 * 60)) {
+      const sigPt     = getPtParts(new Date(sig.received_at));
+      if (sigPt.dateStr < todayStr || (sigPt.dateStr === todayStr && sigPt.hm < 13 * 60)) {
         expireSignal(sig, 'EXPIRED_MARKET_CLOSE');
         continue;
       }

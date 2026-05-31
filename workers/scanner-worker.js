@@ -111,10 +111,33 @@ process.on('unhandledRejection', (reason) => {
   // Do NOT exit — log and continue so PM2 doesn't spam restarts
 });
 
-process.on('uncaughtException', (err) => {
+process.on('uncaughtException', async (err) => {
   console.error(`[${WORKER_NAME}] Uncaught exception:`, err.message, err.stack);
   try { logWorkerError(db, WORKER_NAME, err); } catch (_) {}
   try { heartbeat(db, WORKER_NAME, 'ERROR', { error: err.message }); } catch (_) {}
+
+  // Send CRITICAL ntfy before exiting so the crash is immediately visible.
+  // 3-second timeout — if ntfy is unreachable we still exit promptly.
+  const ntfyUrl   = (process.env.NTFY_URL   || 'https://ntfy.sh').replace(/\/$/, '');
+  const ntfyTopic = process.env.NTFY_TOPIC  || '';
+  const ntfyToken = process.env.NTFY_TOKEN  || '';
+  if (ntfyTopic) {
+    try {
+      const headers = {
+        'Content-Type': 'text/plain',
+        'Title':    '[CRITICAL] Scanner crashed — restarting',
+        'Priority': 'urgent',
+        'Tags':     'rotating_light,x',
+      };
+      if (ntfyToken) headers['Authorization'] = `Bearer ${ntfyToken}`;
+      await fetch(`${ntfyUrl}/${ntfyTopic}`, {
+        method: 'POST', headers,
+        body: `Scanner process crashed.\nError: ${err.message}\n${err.stack?.slice(0, 400) ?? ''}\nPM2 will restart automatically.`,
+        signal: AbortSignal.timeout(3_000),
+      });
+    } catch (_) { /* never block exit on ntfy failure */ }
+  }
+
   process.exit(1); // Exit cleanly so PM2 can restart once, not loop
 });
 
