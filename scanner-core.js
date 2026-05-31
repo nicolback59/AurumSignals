@@ -709,6 +709,40 @@ class Scanner extends EventEmitter {
 
   // ── ntfy push ────────────────────────────────────────────────────────────────
 
+  // ── ntfy with retry ────────────────────────────────────────────────────────
+  // Retries a single ntfy push up to 3 times (2 s → 4 s → 8 s).
+  // Called only AFTER the idempotency guard fires, so retries are safe —
+  // the DB record is already written; duplicate HTTP calls are idempotent on ntfy.sh.
+  async _ntfyWithRetry(url, opts, label) {
+    const DELAYS = [2_000, 4_000, 8_000];
+    let lastErr;
+    for (let attempt = 0; attempt <= DELAYS.length; attempt++) {
+      if (attempt > 0) {
+        await new Promise(r => setTimeout(r, DELAYS[attempt - 1]));
+        this._log(`[ntfy] retry ${attempt}/${DELAYS.length} ${label}`, 'signal');
+      }
+      try {
+        const r = await fetch(url, opts);
+        this._lastNtfyStatus = r.status;
+        if (r.ok) {
+          this._lastNtfySuccessAt = Date.now();
+          this._lastNtfyError     = null;
+          this._log(`NOTIFICATION_SEND_SUCCESS HTTP ${r.status} ${label}`, 'signal');
+          return;
+        }
+        const msg = `HTTP ${r.status}`;
+        this._log(`NOTIFICATION_SEND_FAILED ${msg} ${label}`, 'signal');
+        if (r.status === 401 || r.status === 403) return; // auth error — retrying won't help
+        lastErr = new Error(msg);
+      } catch (err) {
+        lastErr = err;
+        this._log(`NOTIFICATION_SEND_FAILED network: ${err.message} ${label}`, 'signal');
+      }
+    }
+    this._lastNtfyError = lastErr?.message ?? 'unknown';
+    this._log(`NOTIFICATION_SEND_FAILED all_retries_exhausted ${label}`, 'signal');
+  }
+
   _sendNtfyPayload(payload) {
     if (!this.cfg.ntfyTopic) {
       this._log('NOTIFICATION_SEND_FAILED reason=NTFY_TOPIC_not_set', 'signal');
@@ -728,23 +762,8 @@ class Scanner extends EventEmitter {
     this._log(`ENTRY_NOTIFICATION_SENT id=${payload.id ?? '?'} instr=${payload.instrument ?? ''} dir=${payload.direction ?? ''}`, 'signal');
     this._log(`NOTIFICATION_EVENT_CREATED event=TRADE_ENTRY instr=${payload.instrument ?? ''} dir=${payload.direction ?? ''}`, 'signal');
     this._log(`NOTIFICATION_SEND_START → ${url}`, 'signal');
-    fetch(url, { method: 'POST', headers, body })
-      .then(r => {
-        this._lastNtfyStatus = r.status;
-        if (r.ok) {
-          this._lastNtfySuccessAt = Date.now();
-          this._lastNtfyError = null;
-          this._log(`NOTIFICATION_SEND_SUCCESS HTTP ${r.status}`, 'signal');
-        } else {
-          this._lastNtfyError = `HTTP ${r.status}`;
-          this._log(`NOTIFICATION_SEND_FAILED HTTP ${r.status} (check NTFY_TOPIC / NTFY_TOKEN)`, 'signal');
-        }
-      })
-      .catch(err => {
-        this._lastNtfyError = err.message;
-        this._log(`NOTIFICATION_SEND_FAILED network error: ${err.message}`, 'signal');
-        this._err('[ntfy] send failed', err);
-      });
+    this._ntfyWithRetry(url, { method: 'POST', headers, body }, `TRADE_ENTRY id=${payload.id ?? '?'}`)
+      .catch(err => this._err('[ntfy] entry retry failed', err));
   }
 
   // ── Outcome ntfy push ─────────────────────────────────────────────────────────
@@ -769,15 +788,8 @@ class Scanner extends EventEmitter {
     const url     = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
 
     this._log(`NOTIFICATION_SEND_START event=${eventType} → ${url}`, 'signal');
-    fetch(url, { method: 'POST', headers, body })
-      .then(r => {
-        if (r.ok) {
-          this._log(`NOTIFICATION_SEND_SUCCESS HTTP ${r.status} event=${eventType}`, 'signal');
-        } else {
-          this._log(`NOTIFICATION_SEND_FAILED HTTP ${r.status} event=${eventType}`, 'signal');
-        }
-      })
-      .catch(err => this._err(`[ntfy-outcome] ${eventType} send failed`, err));
+    this._ntfyWithRetry(url, { method: 'POST', headers, body }, `${eventType} id=${sig.id}`)
+      .catch(err => this._err(`[ntfy-outcome] ${eventType} retry failed`, err));
   }
 
   // ── Expired ntfy push ─────────────────────────────────────────────────────────
@@ -802,15 +814,8 @@ class Scanner extends EventEmitter {
     const url     = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
 
     this._log(`NOTIFICATION_SEND_START event=${eventType} → ${url}`, 'signal');
-    fetch(url, { method: 'POST', headers, body })
-      .then(r => {
-        if (r.ok) {
-          this._log(`NOTIFICATION_SEND_SUCCESS HTTP ${r.status} event=${eventType}`, 'signal');
-        } else {
-          this._log(`NOTIFICATION_SEND_FAILED HTTP ${r.status} event=${eventType}`, 'signal');
-        }
-      })
-      .catch(err => this._err(`[ntfy-expired] send failed`, err));
+    this._ntfyWithRetry(url, { method: 'POST', headers, body }, `${eventType} id=${sig.id}`)
+      .catch(err => this._err(`[ntfy-expired] ${eventType} retry failed`, err));
   }
 
   // ── TP2 / TP3 push notification ───────────────────────────────────────────────
@@ -844,8 +849,9 @@ class Scanner extends EventEmitter {
       sig.session       ? `Session: ${sig.session}` : null,
       `Signal #${sig.id}`,
     ].filter(Boolean).join('\n');
-    fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, { method: 'POST', headers, body })
-      .catch(err => this._err('[ntfy-tp] send failed', err));
+    const tpUrl = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
+    this._ntfyWithRetry(tpUrl, { method: 'POST', headers, body }, `${tpEventType} id=${sig.id}`)
+      .catch(err => this._err(`[ntfy-tp] ${tpEventType} retry failed`, err));
   }
 
   // ── Track TP2 / TP3 hits on already-won signals ───────────────────────────────
@@ -1500,6 +1506,52 @@ class Scanner extends EventEmitter {
       this._err('_fixStuckTrades error', err);
     }
   }
+
+  // ── Reconciliation worker staleness guard ─────────────────────────────────────
+  // Fires a CRITICAL ntfy alert (once per hour) if the reconcile-worker heartbeat
+  // is > 10 min old. Indicates the cron worker crashed and trades are no longer
+  // expiring at market close.
+  _checkReconciliationHealth() {
+    if (!this.cfg.ntfyTopic) return;
+    try {
+      const row = this.db.prepare(
+        "SELECT last_heartbeat FROM worker_health WHERE worker_name = 'reconcile-worker'"
+      ).get();
+      if (!row?.last_heartbeat) return; // worker hasn't started yet — not a fault
+      const ageMin = (Date.now() - new Date(row.last_heartbeat).getTime()) / 60_000;
+      if (ageMin < 10) return; // healthy
+
+      // Dedup: send at most one CRITICAL alert per hour
+      const DEDUP_KEY = 'SYSTEM:RECONCILE_STALE';
+      const now = Date.now();
+      const existing = this.db.prepare(
+        "SELECT expires_at FROM dedup_ideas WHERE key = ? AND expires_at > ?"
+      ).get(DEDUP_KEY, now);
+      if (existing) return;
+
+      this.db.prepare(`
+        INSERT OR REPLACE INTO dedup_ideas
+          (key, expires_at, instrument, direction, family, strategy, session, entry, sl)
+        VALUES (?, ?, 'SYSTEM', 'NONE', 'SYSTEM', 'SYSTEM', NULL, 0, 0)
+      `).run(DEDUP_KEY, now + 60 * 60_000);
+
+      const headers = {
+        'Content-Type': 'text/plain',
+        'Title':    `[CRITICAL] Reconciliation stale (${Math.round(ageMin)} min)`,
+        'Priority': 'urgent',
+        'Tags':     'warning,x',
+      };
+      if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+      fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
+        method: 'POST', headers,
+        body: `Reconcile-worker last heartbeat: ${Math.round(ageMin)} min ago.\nActive signals may not expire at market close.\nFix: pm2 restart reconcile-worker`,
+      }).catch(() => {});
+      this._log(`[CRITICAL] reconcile-worker stale ${Math.round(ageMin)} min — ntfy sent`, 'signal');
+    } catch (err) {
+      this._log(`[reconcile-health] check error: ${err.message}`, 'signal');
+    }
+  }
+
 
   // ── Per-instrument scan ───────────────────────────────────────────────────────
 
@@ -3500,8 +3552,11 @@ class Scanner extends EventEmitter {
       this._fixStuckTrades();
       this._sweepExpiredSignals();
       this._intervals.push(setInterval(() => this._sweepExpiredSignals(), 60_000));
-      this._intervals.push(setInterval(() => this._fixStuckTrades(), 5 * 60_000));
-      this._log('RECONCILIATION_LOOP_STARTED expirySweep=60s fixStuck=5min', 'signal');
+      this._intervals.push(setInterval(() => {
+        this._fixStuckTrades();
+        this._checkReconciliationHealth();
+      }, 5 * 60_000));
+      this._log('RECONCILIATION_LOOP_STARTED expirySweep=60s fixStuck=5min reconHealth=5min', 'signal');
     });
 
     // Deep historical backtest (60-day 5m bars from Yahoo Finance).

@@ -680,15 +680,17 @@ app.post('/webhook', (req, res) => {
 // ── API ───────────────────────────────────────────────────────────────────────────────
 app.get('/api/signals', (req, res) => {
   res.set('Cache-Control', 'no-store');
-  const limit = Math.min(Number(req.query.limit) || 50, 200);
+  const limit    = Math.min(Number(req.query.limit) || 50, 200);
+  const strategy = req.query.strategy; // optional ?strategy=MNQ_FIRE filter
   const rows = db.prepare(`
     SELECT s.*, o.result, o.exit_price, o.exit_at, o.pnl_pts, o.pnl_usd, o.expiration_reason AS outcome_expiration_reason
     FROM   signals s
     LEFT   JOIN outcomes o ON o.signal_id = s.id
-    WHERE  s.strategy_name IN ('MNQ_INTRADAY', 'MGC_SCALP')
+    WHERE  (s.live_gated = 0 OR s.live_gated IS NULL)
+      ${strategy ? "AND s.strategy_name = ?" : ''}
     ORDER  BY s.received_at DESC
     LIMIT  ?
-  `).all(limit);
+  `).all(...(strategy ? [strategy, limit] : [limit]));
   res.json(rows);
 });
 
@@ -696,6 +698,7 @@ app.get('/api/signals', (req, res) => {
 // Server-side filtered — the frontend OPEN tab should prefer this endpoint.
 app.get('/api/signals/open', (req, res) => {
   res.set('Cache-Control', 'no-store');
+  const strategy = req.query.strategy;
   const rows = db.prepare(`
     SELECT s.*
     FROM   signals s
@@ -703,9 +706,10 @@ app.get('/api/signals/open', (req, res) => {
     WHERE  o.id IS NULL
       AND  s.entry IS NOT NULL
       AND  (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
-      AND  s.strategy_name IN ('MNQ_INTRADAY', 'MGC_SCALP')
+      AND  (s.live_gated = 0 OR s.live_gated IS NULL)
+      ${strategy ? "AND s.strategy_name = ?" : ''}
     ORDER  BY s.received_at DESC
-  `).all();
+  `).all(...(strategy ? [strategy] : []));
   res.json(rows);
 });
 
