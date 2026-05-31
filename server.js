@@ -1826,12 +1826,28 @@ app.get('/api/health', (req, res) => {
         bar_age_s:   barAgeS,
         scan_count:  scannerMeta.scan_count ?? null,
       },
-      notification: {
-        configured:      !!NTFY_TOPIC,
-        last_success:    scannerMeta.last_ntfy ?? null,
-        last_status:     scannerMeta.last_ntfy_status ?? null,
-        last_error:      scannerMeta.last_ntfy_error ?? null,
-      },
+      notification: (() => {
+        let avgEntryLatencyS = null;
+        try {
+          const row = db.prepare(`
+            SELECT ROUND(AVG((julianday(n.sent_at) - julianday(s.received_at)) * 86400), 1) AS avg_s
+            FROM   notification_log n
+            JOIN   signals s ON s.id = n.signal_id
+            WHERE  n.event_type = 'TRADE_ENTRY'
+              AND  s.received_at IS NOT NULL
+              AND  n.sent_at IS NOT NULL
+              AND  julianday(n.sent_at) > julianday(s.received_at)
+          `).get();
+          avgEntryLatencyS = row?.avg_s ?? null;
+        } catch (_) {}
+        return {
+          configured:           !!NTFY_TOPIC,
+          last_success:         scannerMeta.last_ntfy ?? null,
+          last_status:          scannerMeta.last_ntfy_status ?? null,
+          last_error:           scannerMeta.last_ntfy_error ?? null,
+          avg_entry_latency_s:  avgEntryLatencyS,
+        };
+      })(),
       reconciliation: {
         healthy:        reconHealthy,
         last_run_age_min: reconAgeMin,
