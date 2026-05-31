@@ -709,3 +709,87 @@ CREATE TABLE IF NOT EXISTS signal_gates (
 );
 CREATE INDEX IF NOT EXISTS idx_sg_strategy ON signal_gates(strategy_name, evaluated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sg_status   ON signal_gates(gate_status, evaluated_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- INTELLIGENCE ENGINE — Phase 6: Entry / Stop / TP / Frequency Agents
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Entry type performance analysis — workers/entry-agent-worker.js (daily 7 AM UTC).
+-- Cross-dimensional: entry_type, entry_type × session, entry_type × regime, time_in_session.
+CREATE TABLE IF NOT EXISTS entry_analysis (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name   TEXT    NOT NULL,
+  dimension       TEXT    NOT NULL,
+  dimension_value TEXT    NOT NULL,
+  period_days     INTEGER NOT NULL DEFAULT 30,
+  sample_size     INTEGER NOT NULL DEFAULT 0,
+  win_rate        REAL,
+  baseline_wr     REAL,
+  wr_delta        REAL,
+  significance    TEXT,
+  computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, dimension, dimension_value, period_days)
+);
+CREATE INDEX IF NOT EXISTS idx_enta_strategy ON entry_analysis(strategy_name, computed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_enta_sig      ON entry_analysis(significance, wr_delta DESC);
+
+-- Stop-loss quality analysis — workers/stop-agent-worker.js (every 6h).
+-- Tracks stop distance vs MAE; detects stops that are too tight.
+CREATE TABLE IF NOT EXISTS stop_analysis (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name        TEXT    NOT NULL,
+  dimension            TEXT    NOT NULL,
+  dimension_value      TEXT    NOT NULL,
+  period_days          INTEGER NOT NULL DEFAULT 90,
+  sample_size          INTEGER NOT NULL DEFAULT 0,
+  avg_sl_pts           REAL,
+  avg_mae_pts          REAL,
+  mae_sl_ratio         REAL,
+  stop_too_tight_pct   REAL,   -- % wins where MAE > stop distance
+  avg_sl_atr_ratio     REAL,   -- avg stop / ATR
+  optimal_sl_atr       REAL,   -- empirical p80 MAE/ATR (floor for stop sizing)
+  win_rate             REAL,
+  computed_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, dimension, dimension_value, period_days)
+);
+CREATE INDEX IF NOT EXISTS idx_stpa_strategy ON stop_analysis(strategy_name, computed_at DESC);
+
+-- Take-profit efficiency analysis — workers/tp-agent-worker.js (every 6h).
+-- Computes TP hit rates using MFE vs TP level distance.
+CREATE TABLE IF NOT EXISTS tp_analysis (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name   TEXT    NOT NULL,
+  dimension       TEXT    NOT NULL,
+  dimension_value TEXT    NOT NULL,
+  period_days     INTEGER NOT NULL DEFAULT 90,
+  sample_size     INTEGER NOT NULL DEFAULT 0,
+  tp1_hit_rate    REAL,   -- % of resolved trades where mfe_pts >= tp1 distance
+  tp2_hit_rate    REAL,
+  tp3_hit_rate    REAL,
+  avg_mfe_pts     REAL,
+  avg_tp1_pts     REAL,
+  avg_tp2_pts     REAL,
+  avg_rr          REAL,
+  win_rate        REAL,
+  computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, dimension, dimension_value, period_days)
+);
+CREATE INDEX IF NOT EXISTS idx_tpa_strategy ON tp_analysis(strategy_name, computed_at DESC);
+
+-- Signal rejection frequency analysis — workers/frequency-agent-worker.js (every 4h).
+-- Analyzes near-miss rejections from signal_rejections to find over-filtered setups.
+CREATE TABLE IF NOT EXISTS frequency_analysis (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name    TEXT    NOT NULL,
+  instrument       TEXT    NOT NULL DEFAULT 'ALL',
+  dimension        TEXT    NOT NULL,
+  dimension_value  TEXT    NOT NULL,
+  period_days      INTEGER NOT NULL DEFAULT 30,
+  rejection_count  INTEGER NOT NULL DEFAULT 0,
+  avg_score_gap    REAL,
+  pct_of_total     REAL,
+  computed_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, instrument, dimension, dimension_value, period_days)
+);
+CREATE INDEX IF NOT EXISTS idx_frqa_strategy ON frequency_analysis(strategy_name, computed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_frqa_pct      ON frequency_analysis(pct_of_total DESC, computed_at DESC);

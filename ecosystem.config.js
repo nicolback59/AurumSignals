@@ -392,6 +392,96 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── ENTRY AGENT ───────────────────────────────────────────────────────────
+    // Daily 7:00 AM UTC: analyzes entry_type + cross-dimensional combos
+    // (entry × session, entry × regime, time_in_session buckets).
+    // Writes STRONG/MODERATE findings to entry_analysis + agent_messages.
+    {
+      name:         'entry-agent',
+      script:       'workers/entry-agent-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 7 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/entry-agent-error.log',
+      out_file:        '/root/AurumSignals/logs/entry-agent-out.log',
+      merge_logs:      true,
+    },
+
+    // ── STOP LOSS AGENT ───────────────────────────────────────────────────────
+    // Every 6h: analyzes stop distance vs MAE (maximum adverse excursion).
+    // Detects when stops are too tight. Recommends optimal stop in ATR multiples.
+    {
+      name:         'stop-agent',
+      script:       'workers/stop-agent-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */6 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/stop-agent-error.log',
+      out_file:        '/root/AurumSignals/logs/stop-agent-out.log',
+      merge_logs:      true,
+    },
+
+    // ── TAKE PROFIT AGENT ─────────────────────────────────────────────────────
+    // Every 6h: analyzes TP hit rates using MFE vs TP distances.
+    // Detects over/under-extended TP targets. Posts alerts to agent_messages.
+    {
+      name:         'tp-agent',
+      script:       'workers/tp-agent-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */6 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/tp-agent-error.log',
+      out_file:        '/root/AurumSignals/logs/tp-agent-out.log',
+      merge_logs:      true,
+    },
+
+    // ── FREQUENCY AGENT ───────────────────────────────────────────────────────
+    // Every 4h: analyzes signal_rejections to find valid setups being blocked.
+    // Groups near-miss rejections by reason category, hour, and instrument.
+    // Alerts when one filter reason is blocking > 60% of near-misses.
+    {
+      name:         'frequency-agent',
+      script:       'workers/frequency-agent-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */4 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/frequency-agent-error.log',
+      out_file:        '/root/AurumSignals/logs/frequency-agent-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
