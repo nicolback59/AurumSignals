@@ -639,3 +639,22 @@ CREATE TABLE IF NOT EXISTS win_forensics (
 CREATE INDEX IF NOT EXISTS idx_win_forensics_strategy ON win_forensics(strategy_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_win_forensics_category ON win_forensics(win_category);
 CREATE INDEX IF NOT EXISTS idx_win_forensics_signal   ON win_forensics(signal_id);
+
+-- ── Feature correlations — which indicator dimensions predict wins ────────────
+-- Populated by workers/feature-intelligence-worker.js daily.
+CREATE TABLE IF NOT EXISTS feature_correlations (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name TEXT    NOT NULL,
+  feature_key   TEXT    NOT NULL,
+  feature_value TEXT    NOT NULL,
+  period_days   INTEGER NOT NULL,
+  sample_size   INTEGER NOT NULL,
+  win_rate      REAL    NOT NULL,
+  baseline_wr   REAL    NOT NULL,
+  wr_delta      REAL    NOT NULL,
+  significance  TEXT,
+  computed_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, feature_key, feature_value, period_days)
+);
+CREATE INDEX IF NOT EXISTS idx_fc_strategy ON feature_correlations(strategy_name, computed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fc_delta    ON feature_correlations(wr_delta DESC);

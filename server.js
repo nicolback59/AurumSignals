@@ -487,6 +487,40 @@ function _deferredBtDedup() {
   }
 }
 applyMigrations();
+
+// Phase 3 migration: feature_correlations + agent trust columns
+(function applyPhase3Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS feature_correlations (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name TEXT    NOT NULL,
+        feature_key   TEXT    NOT NULL,
+        feature_value TEXT    NOT NULL,
+        period_days   INTEGER NOT NULL,
+        sample_size   INTEGER NOT NULL,
+        win_rate      REAL    NOT NULL,
+        baseline_wr   REAL    NOT NULL,
+        wr_delta      REAL    NOT NULL,
+        significance  TEXT,
+        computed_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(strategy_name, feature_key, feature_value, period_days)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_fc_strategy ON feature_correlations(strategy_name, computed_at DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_fc_delta    ON feature_correlations(wr_delta DESC)`);
+    const atCols = db.prepare("PRAGMA table_info(agent_trust_scores)").all().map(r => r.name);
+    if (!atCols.includes('recommendations')) db.exec("ALTER TABLE agent_trust_scores ADD COLUMN recommendations INTEGER DEFAULT 0");
+    if (!atCols.includes('correct_calls'))   db.exec("ALTER TABLE agent_trust_scores ADD COLUMN correct_calls INTEGER DEFAULT 0");
+    if (!atCols.includes('incorrect_calls')) db.exec("ALTER TABLE agent_trust_scores ADD COLUMN incorrect_calls INTEGER DEFAULT 0");
+    for (const agent of ['feature-intelligence', 'consensus-coordinator']) {
+      db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+    }
+  } catch (err) {
+    console.error('[phase3-migration]', err.message);
+  }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -2064,6 +2098,85 @@ app.get('/api/health', (req, res) => {
     });
   } catch (err) {
     res.status(500).json({ status: 'error', error: err.message });
+  }
+});
+
+// ── INTELLIGENCE ENGINE API ───────────────────────────────────────────────────────────
+
+app.get('/api/intelligence', (req, res) => {
+  try {
+    let interventions = [];
+    try {
+      interventions = db.prepare(`
+        SELECT id, strategy_name, agent_source, description, wr_before, wr_after,
+               wr_delta, eval_status, applied_at, net_effect
+        FROM intervention_log ORDER BY applied_at DESC LIMIT 10
+      `).all();
+    } catch (_) {}
+
+    let pendingByAgent = {};
+    try {
+      const rows = db.prepare(`
+        SELECT from_agent, msg_type, COUNT(*) n FROM agent_messages
+        WHERE status = 'pending' GROUP BY from_agent, msg_type ORDER BY n DESC
+      `).all();
+      for (const r of rows) {
+        if (!pendingByAgent[r.from_agent]) pendingByAgent[r.from_agent] = {};
+        pendingByAgent[r.from_agent][r.msg_type] = r.n;
+      }
+    } catch (_) {}
+
+    let trustScores = {};
+    try {
+      const rows = db.prepare(`
+        SELECT agent_name, trust_weight, recommendations, correct_calls, incorrect_calls
+        FROM agent_trust_scores ORDER BY trust_weight DESC
+      `).all();
+      for (const r of rows) trustScores[r.agent_name] = r;
+    } catch (_) {}
+
+    let topEdges = [], bottomEdges = [];
+    try {
+      topEdges = db.prepare(`
+        SELECT strategy_name, feature_key, feature_value, win_rate, baseline_wr,
+               wr_delta, sample_size, significance, computed_at
+        FROM feature_correlations WHERE period_days = 30 AND significance IN ('STRONG','MODERATE')
+        ORDER BY wr_delta DESC LIMIT 5
+      `).all();
+      bottomEdges = db.prepare(`
+        SELECT strategy_name, feature_key, feature_value, win_rate, baseline_wr,
+               wr_delta, sample_size, significance, computed_at
+        FROM feature_correlations WHERE period_days = 30 AND significance IN ('STRONG','MODERATE')
+        ORDER BY wr_delta ASC LIMIT 5
+      `).all();
+    } catch (_) {}
+
+    let strategyHealth = {};
+    try {
+      const rows = db.prepare(`
+        SELECT strategy_name, health_score, health_status, wr_30d, trades_30d,
+               top_failure, top_failure_pct, snapshot_date
+        FROM strategy_health_snapshots
+        WHERE snapshot_date = (
+          SELECT MAX(snapshot_date) FROM strategy_health_snapshots s2
+          WHERE s2.strategy_name = strategy_health_snapshots.strategy_name
+        )
+      `).all();
+      for (const r of rows) strategyHealth[r.strategy_name] = r;
+    } catch (_) {}
+
+    res.set('Cache-Control', 'no-store');
+    res.json({
+      interventions,
+      pending_messages: pendingByAgent,
+      agent_trust:      trustScores,
+      top_edges:        topEdges,
+      bottom_edges:     bottomEdges,
+      strategy_health:  strategyHealth,
+      generated_at:     new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
