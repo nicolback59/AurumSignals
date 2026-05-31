@@ -13,8 +13,8 @@
  * to the existing 15m and 1h HTF layers.
  */
 
-const mnqIntraday = require('./strategies/mnq-intraday');
-const mgcScalp    = require('./strategies/mgc-scalp');
+const mnqIntraday = require('./strategies/mnq-intraday-v2'); // v4.0 — see mnq-intraday.js for v3.0
+const mgcScalp    = require('./strategies/mgc-scalp-v2'); // v6.0 — see mgc-scalp.js for v5.4
 const nqNyOpen    = require('./strategies/nq-ny-open-v3');
 const mnqFire     = require('./strategies/mnq-fire');
 
@@ -162,7 +162,7 @@ const STRATEGY_META = {
     timeframe:   '5m',
     trade_style: 'scalp',
     threshold:   THRESHOLDS.MGC_SCALP,
-    description: '5m VWAP/EMA scalp with 15m/30m/45m/1h multi-timeframe confluence',
+    description: '5m VWAP/EMA scalp with 15m/30m/45m/1h multi-TF confluence; ATR-scaled TPs; London + NY_PRE enabled; fade_extreme archetype',
   },
   NQ_NY_OPEN: {
     name:        'NQ NY Open',
