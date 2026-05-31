@@ -239,6 +239,23 @@ class Scanner extends EventEmitter {
            @trade_style, @instrument, @rr, @trade_status, @raw_payload)
       `),
 
+      insertSignalFeatures: db.prepare(`
+        INSERT OR IGNORE INTO signal_features
+          (signal_id, atr, atr_percentile, vwap_dist_atr, rsi, adx, macd_hist,
+           ema9_vs_ema21, htf_15m_bias, htf_1h_bias, htf_4h_bias,
+           chop_score, disp_strength, mtf_agreed,
+           session, time_in_session, prior_signal_gap_m,
+           regime, vol_regime, vwap_state,
+           archetype, entry_type, confluence_bonus, raw_json)
+        VALUES
+          (@signal_id, @atr, @atr_percentile, @vwap_dist_atr, @rsi, @adx, @macd_hist,
+           @ema9_vs_ema21, @htf_15m_bias, @htf_1h_bias, @htf_4h_bias,
+           @chop_score, @disp_strength, @mtf_agreed,
+           @session, @time_in_session, @prior_signal_gap_m,
+           @regime, @vol_regime, @vwap_state,
+           @archetype, @entry_type, @confluence_bonus, @raw_json)
+      `),
+
       upsertPrice: db.prepare(`
         INSERT INTO market_snapshots (symbol, price, open_price, change_pct, high_24h, low_24h, snapped_at)
         VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
@@ -997,6 +1014,96 @@ class Scanner extends EventEmitter {
     if (signal._agentScores) {
       setImmediate(() => gatekeeper.persistAgentScores(this.db, id, signal._agentScores));
     }
+
+    // ── Intelligence Engine: capture full feature vector at signal emit time ──
+    // This is the foundational data collection for calibration audits, feature
+    // importance analysis, and future ML regression. Non-blocking — never delays signal.
+    setImmediate(() => {
+      try {
+        const ind  = signal.indicators ?? {};
+        const atr  = ind.atr ?? null;
+        const vwap = ind.vwap ?? null;
+        const ema9 = ind.ema9 ?? null;
+        const ema21= ind.ema21 ?? null;
+
+        // ATR percentile: where current ATR sits in the last 90 days of signal ATRs
+        // (approximated from recent signals — no bar data available here)
+        let atrPct = null;
+        try {
+          const recentAtrs = this.db.prepare(
+            `SELECT sf.atr FROM signal_features sf
+             JOIN signals s ON s.id = sf.signal_id
+             WHERE s.instrument = ? AND sf.atr IS NOT NULL AND sf.recorded_at >= datetime('now','-90 days')
+             ORDER BY sf.recorded_at DESC LIMIT 200`
+          ).all(signal.instrument).map(r => r.atr);
+          if (recentAtrs.length >= 20 && atr != null) {
+            const below = recentAtrs.filter(v => v <= atr).length;
+            atrPct = +(below / recentAtrs.length).toFixed(3);
+          }
+        } catch (_) {}
+
+        // Minutes since last signal in same direction on same instrument
+        let priorGapMin = null;
+        try {
+          const lastSig = this.db.prepare(
+            `SELECT received_at FROM signals
+             WHERE instrument = ? AND direction = ?
+               AND id != ? AND received_at IS NOT NULL
+             ORDER BY received_at DESC LIMIT 1`
+          ).get(signal.instrument, signal.direction, id);
+          if (lastSig?.received_at) {
+            priorGapMin = Math.round((Date.now() - new Date(lastSig.received_at).getTime()) / 60000);
+          }
+        } catch (_) {}
+
+        // Time in session (0 = session open, 1 = session close) — approximated
+        // from market-clock session window boundaries
+        let timeInSession = null;
+        try {
+          const { getSessionInfoCompat } = require('./clock/market-clock');
+          const sess = getSessionInfoCompat(signal.timestamp ?? new Date().toISOString());
+          if (sess.sessionMeta?.startH != null) {
+            const m = sess.sessionMeta;
+            const nowPt = new Date(signal.timestamp ?? Date.now());
+            const nowMin = nowPt.getHours() * 60 + nowPt.getMinutes();
+            const startMin = m.startH * 60 + (m.startM ?? 0);
+            const endMin   = m.endH   * 60 + (m.endM   ?? 59);
+            const span = (endMin - startMin + 1440) % 1440 || 1;
+            timeInSession = +Math.max(0, Math.min(1, ((nowMin - startMin + 1440) % 1440) / span)).toFixed(3);
+          }
+        } catch (_) {}
+
+        this._stmts.insertSignalFeatures.run({
+          signal_id:        id,
+          atr:              atr,
+          atr_percentile:   atrPct,
+          vwap_dist_atr:    (atr && vwap && signal.entry != null)
+                              ? +((signal.entry - vwap) / atr).toFixed(3) : null,
+          rsi:              ind.rsi              ?? null,
+          adx:              ind.adx              ?? null,
+          macd_hist:        ind.macd_hist        ?? null,
+          ema9_vs_ema21:    (ema9 != null && ema21 != null) ? +(ema9 - ema21).toFixed(3) : null,
+          htf_15m_bias:     ind.htfBias          ?? null,
+          htf_1h_bias:      ind.htf1hBias        ?? ind.htf2Bias ?? null,
+          htf_4h_bias:      ind.htf4hBias        ?? null,
+          chop_score:       ind.chopScore        ?? null,
+          disp_strength:    ind.dispStrength     ?? null,
+          mtf_agreed:       ind.mtfAgreed        ?? null,
+          session:          signal.session       ?? null,
+          time_in_session:  timeInSession,
+          prior_signal_gap_m: priorGapMin,
+          regime:           ind.regime           ?? null,
+          vol_regime:       ind.volRegime        ?? null,
+          vwap_state:       ind.vwapState        ?? null,
+          archetype:        ind.archetype        ?? null,
+          entry_type:       signal.entry_type    ?? ind.archetype ?? null,
+          confluence_bonus: ind.confluenceBonus  ?? null,
+          raw_json:         JSON.stringify(ind),
+        });
+      } catch (err) {
+        this._log(`signal_features capture error: ${err.message}`, 'signal');
+      }
+    });
 
     const stratLabel = signal.strategy_name ?? signal.setup ?? 'unknown';
     const gateStr    = signal._gateVerdict ? ` gate=${signal._gateVerdict}(${signal._gateScore})` : '';

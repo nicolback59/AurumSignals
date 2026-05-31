@@ -200,6 +200,50 @@ module.exports = {
     //   env_production: { NODE_ENV: 'production' },
     // },
 
+    // ── STRATEGY HEALTH WORKER ───────────────────────────────────────────────
+    // Daily rolling metrics snapshot: WR, expectancy, PF, health score (0-100).
+    // Sends ntfy if any strategy hits DEGRADED or CRITICAL.
+    {
+      name:         'strategy-health-worker',
+      script:       'workers/strategy-health-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 5 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/strategy-health-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/strategy-health-worker-out.log',
+      merge_logs:      true,
+    },
+
+    // ── CALIBRATION AUDIT WORKER ──────────────────────────────────────────────
+    // Weekly: groups signals by confidence bucket, computes actual vs predicted WR.
+    // Results written to calibration_audit table for the learning agent to consume.
+    {
+      name:         'calibration-audit-worker',
+      script:       'workers/calibration-audit-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 6 * * 1',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/calibration-audit-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/calibration-audit-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
