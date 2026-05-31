@@ -639,3 +639,28 @@ CREATE TABLE IF NOT EXISTS win_forensics (
 CREATE INDEX IF NOT EXISTS idx_win_forensics_strategy ON win_forensics(strategy_name, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_win_forensics_category ON win_forensics(win_category);
 CREATE INDEX IF NOT EXISTS idx_win_forensics_signal   ON win_forensics(signal_id);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- INTELLIGENCE ENGINE — Phase 4: Edge Health + Intelligence Report
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Rolling edge-decay log written by workers/edge-health-worker.js every 2h.
+-- Tracks short-window WR decay across last 5/10/20 resolved trades per strategy.
+CREATE TABLE IF NOT EXISTS edge_health_log (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name       TEXT    NOT NULL,
+  instrument          TEXT    NOT NULL,
+  checked_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  decay_score         INTEGER NOT NULL,         -- 0-100+ composite decay score
+  edge_status         TEXT    NOT NULL,         -- HEALTHY | WATCH | WARNING | CRITICAL | COLLAPSE
+  wr_last5            REAL,                     -- WR over last 5 resolved trades (0.0–1.0)
+  wr_last10           REAL,                     -- WR over last 10 resolved trades
+  wr_last20           REAL,                     -- WR over last 20 resolved trades
+  baseline_wr         REAL,                     -- 90-day baseline WR
+  consecutive_losses  INTEGER DEFAULT 0,
+  trades_available    INTEGER DEFAULT 0,        -- resolved trades available for rolling calc
+  veto_posted         INTEGER DEFAULT 0,        -- 1 if a veto was posted to agent_messages
+  notes               TEXT                      -- comma-separated list of triggered factors
+);
+CREATE INDEX IF NOT EXISTS idx_ehl_strategy ON edge_health_log(strategy_name, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ehl_status   ON edge_health_log(edge_status, checked_at DESC);
