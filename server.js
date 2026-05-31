@@ -576,6 +576,95 @@ applyMigrations();
   } catch (err) { console.error('[phase5-migration]', err.message); }
 })();
 
+// Phase 6 migration: entry/stop/tp/frequency analysis tables
+(function applyPhase6Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS entry_analysis (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name   TEXT    NOT NULL,
+        dimension       TEXT    NOT NULL,
+        dimension_value TEXT    NOT NULL,
+        period_days     INTEGER NOT NULL DEFAULT 30,
+        sample_size     INTEGER NOT NULL DEFAULT 0,
+        win_rate        REAL,
+        baseline_wr     REAL,
+        wr_delta        REAL,
+        significance    TEXT,
+        computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(strategy_name, dimension, dimension_value, period_days)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_enta_strategy ON entry_analysis(strategy_name, computed_at DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_enta_sig ON entry_analysis(significance, wr_delta DESC)`);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS stop_analysis (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name        TEXT    NOT NULL,
+        dimension            TEXT    NOT NULL,
+        dimension_value      TEXT    NOT NULL,
+        period_days          INTEGER NOT NULL DEFAULT 90,
+        sample_size          INTEGER NOT NULL DEFAULT 0,
+        avg_sl_pts           REAL,
+        avg_mae_pts          REAL,
+        mae_sl_ratio         REAL,
+        stop_too_tight_pct   REAL,
+        avg_sl_atr_ratio     REAL,
+        optimal_sl_atr       REAL,
+        win_rate             REAL,
+        computed_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(strategy_name, dimension, dimension_value, period_days)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_stpa_strategy ON stop_analysis(strategy_name, computed_at DESC)`);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS tp_analysis (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name   TEXT    NOT NULL,
+        dimension       TEXT    NOT NULL,
+        dimension_value TEXT    NOT NULL,
+        period_days     INTEGER NOT NULL DEFAULT 90,
+        sample_size     INTEGER NOT NULL DEFAULT 0,
+        tp1_hit_rate    REAL,
+        tp2_hit_rate    REAL,
+        tp3_hit_rate    REAL,
+        avg_mfe_pts     REAL,
+        avg_tp1_pts     REAL,
+        avg_tp2_pts     REAL,
+        avg_rr          REAL,
+        win_rate        REAL,
+        computed_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(strategy_name, dimension, dimension_value, period_days)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_tpa_strategy ON tp_analysis(strategy_name, computed_at DESC)`);
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS frequency_analysis (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name    TEXT    NOT NULL,
+        instrument       TEXT    NOT NULL DEFAULT 'ALL',
+        dimension        TEXT    NOT NULL,
+        dimension_value  TEXT    NOT NULL,
+        period_days      INTEGER NOT NULL DEFAULT 30,
+        rejection_count  INTEGER NOT NULL DEFAULT 0,
+        avg_score_gap    REAL,
+        pct_of_total     REAL,
+        computed_at      TEXT    NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(strategy_name, instrument, dimension, dimension_value, period_days)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_frqa_strategy ON frequency_analysis(strategy_name, computed_at DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_frqa_pct ON frequency_analysis(pct_of_total DESC, computed_at DESC)`);
+
+    for (const agent of ['entry-agent', 'stop-agent', 'tp-agent', 'frequency-agent']) {
+      db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+    }
+  } catch (err) { console.error('[phase6-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
