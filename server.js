@@ -1799,6 +1799,21 @@ app.get('/api/health', (req, res) => {
       dbSizeMb = +(stat.size / 1_048_576).toFixed(1);
     } catch (_) {}
 
+    // ── Signal entry latency (received_at → ntfy sent_at, TRADE_ENTRY only) ──
+    let avgEntryLatencyS = null;
+    try {
+      const latRow = db.prepare(`
+        SELECT ROUND(AVG((julianday(n.sent_at) - julianday(s.received_at)) * 86400), 1) AS avg_s
+        FROM   notification_log n
+        JOIN   signals s ON s.id = n.signal_id
+        WHERE  n.event_type = 'TRADE_ENTRY'
+          AND  s.received_at IS NOT NULL
+          AND  n.sent_at IS NOT NULL
+          AND  julianday(n.sent_at) > julianday(s.received_at)
+      `).get();
+      avgEntryLatencyS = latRow?.avg_s ?? null;
+    } catch (_) {}
+
     // ── Signal counts ───────────────────────────────────────────────────────
     const activeTrades = _stmtActiveSigs.get().n;
     const stuckTrades  = _stmtStuckSigs.get().n;
@@ -1827,10 +1842,11 @@ app.get('/api/health', (req, res) => {
         scan_count:  scannerMeta.scan_count ?? null,
       },
       notification: {
-        configured:      !!NTFY_TOPIC,
-        last_success:    scannerMeta.last_ntfy ?? null,
-        last_status:     scannerMeta.last_ntfy_status ?? null,
-        last_error:      scannerMeta.last_ntfy_error ?? null,
+        configured:             !!NTFY_TOPIC,
+        last_success:           scannerMeta.last_ntfy ?? null,
+        last_status:            scannerMeta.last_ntfy_status ?? null,
+        last_error:             scannerMeta.last_ntfy_error ?? null,
+        avg_entry_latency_s:    avgEntryLatencyS,
       },
       reconciliation: {
         healthy:        reconHealthy,

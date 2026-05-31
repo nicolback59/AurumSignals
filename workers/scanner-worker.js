@@ -17,7 +17,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, bumpCycle, logWorkerError } = require('./worker-utils');
+const { openDb, heartbeat, bumpCycle, logWorkerError, getWorkerMeta } = require('./worker-utils');
 const { Scanner } = require('../scanner-core');
 
 const WORKER_NAME = 'scanner-worker';
@@ -25,7 +25,13 @@ const BAR_CACHE_LIMIT = 200;
 
 // ── DB connection ─────────────────────────────────────────────────────────────
 const db = openDb();
-heartbeat(db, WORKER_NAME, 'STARTING', { pid: process.pid });
+
+// ── PM2 restart counter ───────────────────────────────────────────────────────
+// Incremented on every process start so /api/health can surface crash frequency.
+const _prevMeta    = getWorkerMeta(db, WORKER_NAME);
+const _pm2Restarts = (_prevMeta.pm2Restarts ?? 0) + 1;
+
+heartbeat(db, WORKER_NAME, 'STARTING', { pid: process.pid, pm2Restarts: _pm2Restarts });
 
 // ── Prepared statements ───────────────────────────────────────────────────────
 const _insertSse = db.prepare(`
@@ -64,6 +70,7 @@ function updateBarCache(scanner) {
 function syncState(scanner) {
   heartbeat(db, WORKER_NAME, 'RUNNING', {
     pid:               process.pid,
+    pm2Restarts:       _pm2Restarts,
     running:           !!scanner._running,
     feedConnected:     scanner._feed?.isConnected() ?? false,
     feedType:          scanner.feedType ?? 'unknown',
