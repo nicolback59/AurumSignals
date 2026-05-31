@@ -428,6 +428,27 @@ CREATE TABLE IF NOT EXISTS report_schedule (
   tz              TEXT    NOT NULL DEFAULT 'America/Los_Angeles'
 );
 
+-- ── Feature correlations — which indicator dimensions predict wins ────────────
+-- Populated by workers/feature-intelligence-worker.js daily.
+-- One row per (strategy, feature_key, feature_value, period_days).
+-- feature_key examples: 'regime', 'session', 'archetype', 'htf_alignment', 'rsi_zone'
+CREATE TABLE IF NOT EXISTS feature_correlations (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name TEXT    NOT NULL,
+  feature_key   TEXT    NOT NULL,   -- dimension being analyzed
+  feature_value TEXT    NOT NULL,   -- the specific value (e.g. 'TREND_BULL', 'NY_OPEN')
+  period_days   INTEGER NOT NULL,
+  sample_size   INTEGER NOT NULL,
+  win_rate      REAL    NOT NULL,
+  baseline_wr   REAL    NOT NULL,   -- overall strategy WR for this period
+  wr_delta      REAL    NOT NULL,   -- win_rate - baseline_wr (positive = edge)
+  significance  TEXT,               -- 'STRONG' | 'MODERATE' | 'WEAK'
+  computed_at   TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, feature_key, feature_value, period_days)
+);
+CREATE INDEX IF NOT EXISTS idx_fc_strategy ON feature_correlations(strategy_name, computed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_fc_delta    ON feature_correlations(wr_delta DESC);
+
 -- ── Quant-engine migration block (safe no-ops if columns already exist) ───────
 -- These run in server.js applyMigrations() via ALTER TABLE ... IF NOT EXISTS logic.
 -- Listed here as documentation; actual migration is handled by the migration runner.

@@ -200,6 +200,52 @@ module.exports = {
     //   env_production: { NODE_ENV: 'production' },
     // },
 
+    // ── FEATURE INTELLIGENCE WORKER ──────────────────────────────────────────
+    // Daily 6:30 AM UTC: analyzes signal_features + outcomes to find which
+    // indicator dimensions (regime/session/archetype/HTF/RSI) have significant
+    // WR delta vs baseline. Writes to feature_correlations + agent_messages.
+    {
+      name:         'feature-intelligence',
+      script:       'workers/feature-intelligence-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 6 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/feature-intelligence-error.log',
+      out_file:        '/root/AurumSignals/logs/feature-intelligence-out.log',
+      merge_logs:      true,
+    },
+
+    // ── CONSENSUS COORDINATOR ─────────────────────────────────────────────────
+    // Every 4h: reads pending agent_messages, computes trust-weighted consensus,
+    // logs actionable recommendations to intervention_log. Also evaluates past
+    // interventions (14d lookback) and updates agent trust scores.
+    {
+      name:         'consensus-coordinator',
+      script:       'workers/consensus-coordinator.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */4 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/consensus-coordinator-error.log',
+      out_file:        '/root/AurumSignals/logs/consensus-coordinator-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
