@@ -78,6 +78,49 @@ function loadBars(db, interval, daysBack, symbolOverride) {
   return [];
 }
 
+// ── Bar derivation (aggregate smaller TF into larger TF) ──────────────────────
+// Used when 15m/4h/1d are not stored directly in historical_bars.
+// 15m = aggregate5mTo15m (factor 3), 4h = aggregate1hTo4h (factor 4).
+function deriveBars(bars, factor) {
+  const out = [];
+  const start = bars.length % factor;
+  for (let i = start; i + factor - 1 < bars.length; i += factor) {
+    const s = bars.slice(i, i + factor);
+    out.push({
+      timestamp: s[0].timestamp,
+      open:      s[0].open,
+      high:      Math.max(...s.map(b => b.high)),
+      low:       Math.min(...s.map(b => b.low)),
+      close:     s[s.length - 1].close,
+      volume:    s.reduce((sum, b) => sum + (b.volume || 0), 0),
+    });
+  }
+  return out;
+}
+
+function deriveDaily(bars1h) {
+  const byDate = {};
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  for (const b of bars1h) {
+    const date = fmt.format(new Date(b.timestamp));
+    if (!byDate[date]) byDate[date] = [];
+    byDate[date].push(b);
+  }
+  return Object.values(byDate)
+    .map(dayBars => ({
+      timestamp: dayBars[0].timestamp,
+      open:      dayBars[0].open,
+      high:      Math.max(...dayBars.map(b => b.high)),
+      low:       Math.min(...dayBars.map(b => b.low)),
+      close:     dayBars[dayBars.length - 1].close,
+      volume:    dayBars.reduce((sum, b) => sum + (b.volume || 0), 0),
+    }))
+    .sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
+}
+
 // ── Formatting helpers ────────────────────────────────────────────────────────
 function pct(n, total) {
   if (!total) return '—';
@@ -437,12 +480,28 @@ if (!AS_JSON) {
 }
 
 const db = new Database(dbPath, { readonly: true });
-const bars5m  = loadBars(db, '5m',  DAYS,      SYMBOL);
-const bars15m = loadBars(db, '15m', DAYS + 7,  SYMBOL);
-const bars1h  = loadBars(db, '1h',  DAYS + 7,  SYMBOL);
-const bars4h  = loadBars(db, '4h',  DAYS + 14, SYMBOL);
-const barsDly = loadBars(db, '1d',  DAYS + 7,  SYMBOL);
+const bars5m      = loadBars(db, '5m',  DAYS,      SYMBOL);
+const bars1h      = loadBars(db, '1h',  DAYS + 7,  SYMBOL);
+let   bars15m     = loadBars(db, '15m', DAYS + 7,  SYMBOL);
+let   bars4h      = loadBars(db, '4h',  DAYS + 14, SYMBOL);
+let   barsDly     = loadBars(db, '1d',  DAYS + 7,  SYMBOL);
 db.close();
+
+// Derive missing higher TFs from stored base bars.
+// The live scanner builds these from 1m aggregation and never writes them to DB;
+// the backtest must reconstruct them the same way.
+if (!bars15m.length && bars5m.length >= 3) {
+  bars15m = deriveBars(bars5m, 3);
+  if (!AS_JSON) console.log(`  [15m] derived ${bars15m.length} bars from 5m`);
+}
+if (!bars4h.length && bars1h.length >= 4) {
+  bars4h = deriveBars(bars1h, 4);
+  if (!AS_JSON) console.log(`  [4h]  derived ${bars4h.length} bars from 1h`);
+}
+if (!barsDly.length && bars1h.length >= 6) {
+  barsDly = deriveDaily(bars1h);
+  if (!AS_JSON) console.log(`  [1d]  derived ${barsDly.length} bars from 1h`);
+}
 
 if (bars5m.length < 10) {
   if (AS_JSON) process.stdout.write(JSON.stringify({ error: 'insufficient_bars' }) + '\n');
@@ -453,7 +512,7 @@ if (bars5m.length < 10) {
 if (!AS_JSON) console.log('\n[backtest] Running simulation...');
 
 if (ALL_VAR) {
-  const variants = ['CONSERVATIVE', 'CORE', 'AGGRESSIVE'];
+  const variants = ['CONSERVATIVE', 'CORE', 'AGGRESSIVE', 'HIGH_FREQ', 'LONG_ONLY', 'INSTITUTIONAL'];
   const results  = [];
   for (const v of variants) {
     if (!AS_JSON) console.log(`  → ${v}...`);

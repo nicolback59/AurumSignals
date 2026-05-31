@@ -60,6 +60,47 @@ function loadBars(db, interval, daysBack) {
   console.log(`  [${interval}] no bars found`); return [];
 }
 
+// ── Bar derivation (aggregate smaller TF into larger TF) ──────────────────────
+function deriveBars(bars, factor) {
+  const out = [];
+  const start = bars.length % factor;
+  for (let i = start; i + factor - 1 < bars.length; i += factor) {
+    const s = bars.slice(i, i + factor);
+    out.push({
+      timestamp: s[0].timestamp,
+      open:      s[0].open,
+      high:      Math.max(...s.map(b => b.high)),
+      low:       Math.min(...s.map(b => b.low)),
+      close:     s[s.length - 1].close,
+      volume:    s.reduce((sum, b) => sum + (b.volume || 0), 0),
+    });
+  }
+  return out;
+}
+
+function deriveDaily(bars1h) {
+  const byDate = {};
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  for (const b of bars1h) {
+    const date = fmt.format(new Date(b.timestamp));
+    if (!byDate[date]) byDate[date] = [];
+    byDate[date].push(b);
+  }
+  return Object.values(byDate)
+    .map(dayBars => ({
+      timestamp: dayBars[0].timestamp,
+      open:      dayBars[0].open,
+      high:      Math.max(...dayBars.map(b => b.high)),
+      low:       Math.min(...dayBars.map(b => b.low)),
+      close:     dayBars[dayBars.length - 1].close,
+      volume:    dayBars.reduce((sum, b) => sum + (b.volume || 0), 0),
+    }))
+    .sort((a, b) => (a.timestamp < b.timestamp ? -1 : 1));
+}
+
 // ── ET helper ─────────────────────────────────────────────────────────────────
 function getET(ts) {
   const d = new Date(ts);
@@ -426,9 +467,19 @@ console.log('[forensic] Loading bars...');
 const db = new Database(dbPath, { readonly: true });
 const bars5m  = loadBars(db, '5m',  DAYS);
 const bars1h  = loadBars(db, '1h',  DAYS + 7);
-const bars4h  = loadBars(db, '4h',  DAYS + 14);
-const barsDly = loadBars(db, '1d',  DAYS + 7);
+let   bars4h  = loadBars(db, '4h',  DAYS + 14);
+let   barsDly = loadBars(db, '1d',  DAYS + 7);
 db.close();
+
+// Derive missing higher TFs from stored base bars.
+if (!bars4h.length && bars1h.length >= 4) {
+  bars4h = deriveBars(bars1h, 4);
+  console.log(`  [4h]  derived ${bars4h.length} bars from 1h`);
+}
+if (!barsDly.length && bars1h.length >= 6) {
+  barsDly = deriveDaily(bars1h);
+  console.log(`  [1d]  derived ${barsDly.length} bars from 1h`);
+}
 
 if (bars5m.length < 10) { console.error('[forensic] ERROR: insufficient 5m bars'); process.exit(1); }
 
