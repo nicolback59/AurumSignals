@@ -325,6 +325,29 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── SIGNAL GATE WORKER ───────────────────────────────────────────────────
+    // Every 30 min: synthesizes Phase 1-4 intelligence into per-strategy gates.
+    // Writes to signal_gates table + injects GATED pauses into adaptive overrides
+    // so the scanner respects them on the next scan cycle.
+    {
+      name:         'signal-gate',
+      script:       'workers/signal-gate-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '*/30 * * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/signal-gate-error.log',
+      out_file:        '/root/AurumSignals/logs/signal-gate-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
