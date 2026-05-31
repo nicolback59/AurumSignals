@@ -439,3 +439,36 @@ CREATE TABLE IF NOT EXISTS report_schedule (
 -- ALTER TABLE outcomes ADD COLUMN failure_reason   TEXT;
 -- ALTER TABLE outcomes ADD COLUMN quant_score      INTEGER;
 -- ALTER TABLE outcomes ADD COLUMN quant_grade      TEXT;
+
+-- ── Win forensics — one row per WIN outcome ──────────────────────────────────
+-- Mirrors loss_forensics but captures what made trades succeed.
+-- Populated by workers/win-forensics-worker.js every 4h.
+CREATE TABLE IF NOT EXISTS win_forensics (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  signal_id            INTEGER NOT NULL,
+  strategy_name        TEXT    NOT NULL,
+  instrument           TEXT    NOT NULL,
+  direction            TEXT,
+  result               TEXT    NOT NULL,         -- WIN | BE
+  win_category         TEXT    NOT NULL,         -- primary win archetype
+  win_subcategory      TEXT,                     -- secondary detail
+  classifier_version   TEXT    DEFAULT '1.0',
+  session              TEXT,
+  day_of_week          INTEGER,
+  regime               TEXT,
+  htf_bias             TEXT,
+  confidence           INTEGER,
+  archetype            TEXT,                     -- signal archetype from signal_features
+  htf_alignment        INTEGER,                  -- count of HTF biases aligned (0-3)
+  tp_reached           INTEGER,                  -- highest TP hit (1-4, or 0 = BE)
+  hold_time_min        REAL,
+  mfe_pts              REAL,
+  pnl_pts              REAL,
+  rr_achieved          REAL,                     -- actual RR at exit vs planned
+  entry                REAL,
+  data_quality         TEXT,
+  created_at           TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_win_forensics_strategy ON win_forensics(strategy_name, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_win_forensics_category ON win_forensics(win_category);
+CREATE INDEX IF NOT EXISTS idx_win_forensics_signal   ON win_forensics(signal_id);
