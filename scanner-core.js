@@ -163,6 +163,7 @@ class Scanner extends EventEmitter {
     this._startupNtfySent   = false; // in-memory flag: reset on every new process, never persisted
     this._lastFetchAt       = 0;   // epoch ms of last successful bar fetch
     this._lastDataStatus    = 'INIT'; // DATA_OK | DATA_STALE | DATA_MISSING | DATA_BACKOFF
+    this._feedStaleAlertedAt = 0;   // epoch ms of last feed-staleness ntfy (30-min dedup)
     this._lastNtfyAttemptAt = 0;   // epoch ms of last ntfy send attempt
     this._lastNtfySuccessAt = 0;   // epoch ms of last ntfy HTTP 2xx response
     this._lastNtfyStatus    = null; // last HTTP status code from ntfy
@@ -1507,6 +1508,29 @@ class Scanner extends EventEmitter {
     }
   }
 
+  // ── Feed staleness alarm ──────────────────────────────────────────────────────
+  // Fires a CRITICAL ntfy when market data is > 5 min stale during RTH.
+  // Deduplicated to once per 30 min so a prolonged outage doesn't spam.
+  _maybeSendFeedStalenessAlert(ageMin) {
+    if (!this.cfg.ntfyTopic) return;
+    const now = Date.now();
+    if (now - this._feedStaleAlertedAt < 30 * 60_000) return; // already alerted recently
+    this._feedStaleAlertedAt = now;
+
+    const headers = {
+      'Content-Type': 'text/plain',
+      'Title':    `[CRITICAL] Feed stale — MNQ ${ageMin} min old`,
+      'Priority': 'urgent',
+      'Tags':     'warning,satellite_antenna',
+    };
+    if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+    fetch(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`, {
+      method: 'POST', headers,
+      body: `Market data is ${ageMin} min old during RTH.\nSignal evaluation is running on stale bars.\nCheck Yahoo Finance connectivity or switch to Tradovate feed.`,
+    }).catch(() => {});
+    this._log(`[CRITICAL] feed stale ${ageMin} min during RTH — ntfy sent`, 'signal');
+  }
+
   // ── Reconciliation worker staleness guard ─────────────────────────────────────
   // Fires a CRITICAL ntfy alert (once per hour) if the reconcile-worker heartbeat
   // is > 10 min old. Indicates the cron worker crashed and trades are no longer
@@ -2084,13 +2108,19 @@ class Scanner extends EventEmitter {
           const _ageMin = _latestMnq
             ? Math.round((Date.now() - new Date(_latestMnq.timestamp).getTime()) / 60000)
             : 999;
-          if (_ageMin > 15) {
+          if (_ageMin > 5 && marketIsOpen) {
             this._lastDataStatus = 'DATA_STALE';
             if (this._scanCount % 5 === 0) {
               this._log(`DATA_STALE MNQ latest bar ${_ageMin}min old (${_latestMnq?.timestamp})`, 'signal');
             }
+            // Alert once per 30 min so a feed outage doesn't spam
+            this._maybeSendFeedStalenessAlert(_ageMin);
+          } else if (_ageMin > 15) {
+            // Market closed but data is very old — still mark stale, no ntfy
+            this._lastDataStatus = 'DATA_STALE';
           } else {
             this._lastDataStatus = 'DATA_OK';
+            this._feedStaleAlertedAt = 0; // reset when feed recovers
             if (this._scanCount % 20 === 0) {
               this._log(`DATA_OK MNQ 5m=${mnq5mRaw.length} bars age=${_ageMin}min | MGC 5m=${mgc5mRaw.length} bars`, 'signal');
             }

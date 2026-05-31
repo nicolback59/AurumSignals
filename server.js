@@ -1748,27 +1748,106 @@ app.post('/api/debug/test-signal-alert', async (req, res) => {
 const _stmtHealthPing  = db.prepare('SELECT 1 n');
 const _stmtSigCount    = db.prepare('SELECT COUNT(*) n FROM signals');
 const _stmtOutCount    = db.prepare('SELECT COUNT(*) n FROM outcomes');
+const _stmtActiveSigs  = db.prepare("SELECT COUNT(*) n FROM signals WHERE trade_status='ACTIVE'");
+const _stmtStuckSigs   = db.prepare(
+  "SELECT COUNT(*) n FROM signals WHERE trade_status='ACTIVE' AND received_at < datetime('now','-2 hours')"
+);
 let   _stmtJrnCount    = null;
 try { _stmtJrnCount = db.prepare('SELECT COUNT(*) n FROM journal_entries'); } catch (_err) { /* table may not exist */ }
 
 app.get('/api/health', (req, res) => {
   try {
-    const ok       = !!_stmtHealthPing.get();
-    const sigCount = _stmtSigCount.get().n;
-    const outCount = _stmtOutCount.get().n;
-    const entCount = _stmtJrnCount ? _stmtJrnCount.get().n : 0;
-    res.json({
-      service:            'ok',
-      database:           ok ? 'ok' : 'error',
-      signals_count:      sigCount,
-      outcomes_count:     outCount,
-      journal_entries:    entCount,
-      ntfy_configured:    !!NTFY_TOPIC,
-      webhook_secret_set: !!WEBHOOK_SECRET,
-      uptime_s:           Math.floor(process.uptime()),
+    const dbOk = !!_stmtHealthPing.get();
+
+    // ── Worker health ──────────────────────────────────────────────────────
+    const workerRows = db.prepare(
+      'SELECT worker_name, status, last_heartbeat, metadata FROM worker_health'
+    ).all();
+    const workers = {};
+    for (const w of workerRows) {
+      const ageMs = w.last_heartbeat
+        ? Date.now() - new Date(w.last_heartbeat).getTime()
+        : null;
+      let meta = {};
+      try { meta = w.metadata ? JSON.parse(w.metadata) : {}; } catch (_) {}
+      workers[w.worker_name] = {
+        status:      w.status,
+        heartbeat:   w.last_heartbeat,
+        age_s:       ageMs != null ? Math.round(ageMs / 1000) : null,
+        healthy:     ageMs != null && ageMs < 10 * 60_000,
+        scan_count:  meta.scanCount ?? null,
+        data_status: meta.dataStatus ?? null,
+        last_bar_ts: meta.lastBarTimestamp ?? null,
+        last_ntfy:   meta.lastNtfySuccessAt
+          ? new Date(meta.lastNtfySuccessAt).toISOString() : null,
+        last_ntfy_status: meta.lastNtfyStatus ?? null,
+        last_ntfy_error:  meta.lastNtfyError  ?? null,
+        pm2_restarts: meta.pm2Restarts ?? null,
+      };
+    }
+
+    // ── Data freshness ──────────────────────────────────────────────────────
+    const scannerMeta  = workers['scanner-worker'] ?? {};
+    const lastBarTs    = scannerMeta.last_bar_ts;
+    const barAgeS      = lastBarTs
+      ? Math.round((Date.now() - new Date(lastBarTs).getTime()) / 1000) : null;
+
+    // ── DB size ─────────────────────────────────────────────────────────────
+    let dbSizeMb = null;
+    try {
+      const stat = require('fs').statSync(DB_PATH);
+      dbSizeMb = +(stat.size / 1_048_576).toFixed(1);
+    } catch (_) {}
+
+    // ── Signal counts ───────────────────────────────────────────────────────
+    const activeTrades = _stmtActiveSigs.get().n;
+    const stuckTrades  = _stmtStuckSigs.get().n;
+
+    // ── Reconcile health ────────────────────────────────────────────────────
+    const reconcileW   = workers['reconcile-worker'] ?? {};
+    const reconAgeMin  = reconcileW.age_s != null
+      ? Math.round(reconcileW.age_s / 60) : null;
+    const reconHealthy = reconAgeMin != null && reconAgeMin < 10;
+
+    // ── Overall status ──────────────────────────────────────────────────────
+    const scannerHealthy  = (workers['scanner-worker']?.healthy) ?? false;
+    const overallHealthy  = dbOk && scannerHealthy && reconHealthy;
+
+    res.set('Cache-Control', 'no-store');
+    res.status(overallHealthy ? 200 : 503).json({
+      status:   overallHealthy ? 'healthy' : 'degraded',
+      database: dbOk ? 'ok' : 'error',
+      scanner: {
+        healthy:     scannerHealthy,
+        status:      workers['scanner-worker']?.status ?? 'unknown',
+        heartbeat_age_s: workers['scanner-worker']?.age_s ?? null,
+        data_status: scannerMeta.data_status ?? 'unknown',
+        last_bar_ts: lastBarTs ?? null,
+        bar_age_s:   barAgeS,
+        scan_count:  scannerMeta.scan_count ?? null,
+      },
+      notification: {
+        configured:      !!NTFY_TOPIC,
+        last_success:    scannerMeta.last_ntfy ?? null,
+        last_status:     scannerMeta.last_ntfy_status ?? null,
+        last_error:      scannerMeta.last_ntfy_error ?? null,
+      },
+      reconciliation: {
+        healthy:        reconHealthy,
+        last_run_age_min: reconAgeMin,
+      },
+      trades: {
+        active:  activeTrades,
+        stuck_2h: stuckTrades,
+      },
+      signals_total:  _stmtSigCount.get().n,
+      outcomes_total: _stmtOutCount.get().n,
+      db_size_mb:     dbSizeMb,
+      uptime_s:       Math.floor(process.uptime()),
+      workers,
     });
   } catch (err) {
-    res.status(500).json({ service: 'ok', database: 'error', error: err.message });
+    res.status(500).json({ status: 'error', error: err.message });
   }
 });
 

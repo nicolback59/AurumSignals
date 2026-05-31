@@ -200,5 +200,29 @@ module.exports = {
     //   env_production: { NODE_ENV: 'production' },
     // },
 
+    // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
+    // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
+    // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
+    // Backup destination: /root/AurumSignals/backups/signals-YYYY-MM-DD.db
+    // Override destination with BACKUP_DIR env var.
+    {
+      name:         'backup-worker',
+      script:       'workers/backup-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 4 * * *',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/backup-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/backup-worker-out.log',
+      merge_logs:      true,
+    },
+
   ],
 };
