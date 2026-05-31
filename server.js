@@ -1753,15 +1753,42 @@ app.get('/api/health', (req, res) => {
     const sigCount = _stmtSigCount.get().n;
     const outCount = _stmtOutCount.get().n;
     const entCount = _stmtJrnCount ? _stmtJrnCount.get().n : 0;
+
+    // Average seconds from signal received_at to ntfy sent_at (TRADE_ENTRY events only).
+    let avgEntryLatencyS = null;
+    try {
+      const row = db.prepare(`
+        SELECT ROUND(AVG((julianday(n.sent_at) - julianday(s.received_at)) * 86400), 1) AS avg_s
+        FROM   notification_log n
+        JOIN   signals s ON s.id = n.signal_id
+        WHERE  n.event_type = 'TRADE_ENTRY'
+          AND  s.received_at IS NOT NULL
+          AND  n.sent_at IS NOT NULL
+          AND  julianday(n.sent_at) > julianday(s.received_at)
+      `).get();
+      avgEntryLatencyS = row?.avg_s ?? null;
+    } catch (_) {}
+
+    // PM2 restart count for scanner-worker — stored in worker_health.metadata on each start.
+    let scannerRestarts = null;
+    try {
+      const wRow = db.prepare(
+        "SELECT metadata FROM worker_health WHERE worker_name = 'scanner-worker'"
+      ).get();
+      if (wRow?.metadata) scannerRestarts = JSON.parse(wRow.metadata).pm2Restarts ?? null;
+    } catch (_) {}
+
     res.json({
-      service:            'ok',
-      database:           ok ? 'ok' : 'error',
-      signals_count:      sigCount,
-      outcomes_count:     outCount,
-      journal_entries:    entCount,
-      ntfy_configured:    !!NTFY_TOPIC,
-      webhook_secret_set: !!WEBHOOK_SECRET,
-      uptime_s:           Math.floor(process.uptime()),
+      service:                  'ok',
+      database:                 ok ? 'ok' : 'error',
+      signals_count:            sigCount,
+      outcomes_count:           outCount,
+      journal_entries:          entCount,
+      ntfy_configured:          !!NTFY_TOPIC,
+      webhook_secret_set:       !!WEBHOOK_SECRET,
+      avg_entry_latency_s:      avgEntryLatencyS,
+      scanner_pm2_restarts:     scannerRestarts,
+      uptime_s:                 Math.floor(process.uptime()),
     });
   } catch (err) {
     res.status(500).json({ service: 'ok', database: 'error', error: err.message });
