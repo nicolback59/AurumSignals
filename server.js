@@ -875,6 +875,31 @@ applyMigrations();
   } catch (err) { console.error('[edge-audit-part2-migration]', err.message); }
 })();
 
+(function applyEdgeAuditPart5Migrations() {
+  try {
+    db.exec(`ALTER TABLE signals ADD COLUMN recommended_size_pct INTEGER`);
+  } catch (_) { /* column already exists */ }
+})();
+
+(function applyEdgeAuditPart6Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS circuit_breaker_log (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name        TEXT    NOT NULL,
+        checked_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+        triggered            INTEGER NOT NULL DEFAULT 0,
+        trigger_reason       TEXT,
+        streak               INTEGER,
+        rolling_4h_trades    INTEGER,
+        rolling_4h_loss_rate REAL,
+        action_taken         TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_cbl_strategy ON circuit_breaker_log(strategy_name, checked_at DESC);
+    `);
+  } catch (err) { console.error('[edge-audit-part6-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
