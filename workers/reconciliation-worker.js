@@ -133,15 +133,59 @@ function runSweep() {
   return swept;
 }
 
+// ── Data retention — prune high-growth tables on a rolling window ─────────────
+// Runs after every sweep. Deletes are cheap on small row counts and safe
+// because all these tables are diagnostic/operational, not source-of-truth.
+function runRetention() {
+  const counts = {};
+  const prune = (label, sql) => {
+    try {
+      const info = db.prepare(sql).run();
+      if (info.changes > 0) {
+        counts[label] = info.changes;
+        console.log(`[${WORKER_NAME}] retention: pruned ${info.changes} row(s) from ${label}`);
+      }
+    } catch (err) {
+      console.warn(`[${WORKER_NAME}] retention ${label} error: ${err.message}`);
+    }
+  };
+
+  // scan_diagnostics: keep 90 days — enough for all rolling analysis windows
+  prune('scan_diagnostics',
+    "DELETE FROM scan_diagnostics WHERE scanned_at < datetime('now', '-90 days')");
+
+  // signal_rejections: keep 30 days — frequency-agent only needs recent near-misses
+  prune('signal_rejections',
+    "DELETE FROM signal_rejections WHERE rejected_at < datetime('now', '-30 days')");
+
+  // regime_states: keep 90 days — regime_transitions preserves events permanently
+  prune('regime_states',
+    "DELETE FROM regime_states WHERE classified_at < datetime('now', '-90 days')");
+
+  // agent_messages: consumed/rejected messages older than 7 days serve no purpose
+  prune('agent_messages',
+    "DELETE FROM agent_messages WHERE status IN ('consumed','rejected') AND created_at < datetime('now', '-7 days')");
+
+  // sse_queue: belt-and-suspenders — server polls + deletes on 1s loop, but
+  // catch anything that slipped through during downtime
+  prune('sse_queue',
+    "DELETE FROM sse_queue WHERE expires_at < datetime('now', '-5 minutes')");
+
+  return counts;
+}
+
 // ── Main ──────────────────────────────────────────────────────────────────────
-let swept = 0;
+let swept    = 0;
+let retained = {};
 try {
-  swept = runSweep();
+  swept    = runSweep();
+  retained = runRetention();
   bumpCycle(db, WORKER_NAME);
   heartbeat(db, WORKER_NAME, 'IDLE', {
     pid:         process.pid,
     lastRun:     new Date().toISOString(),
     sweptCount:  swept,
+    retained,
   });
   console.log(`[${WORKER_NAME}] Sweep complete — ${swept} signal(s) expired`);
 } catch (err) {
