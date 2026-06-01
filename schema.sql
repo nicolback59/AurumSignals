@@ -1318,3 +1318,48 @@ CREATE TABLE IF NOT EXISTS session_calendar (
 );
 CREATE INDEX IF NOT EXISTS idx_sc_strategy ON session_calendar(strategy_name, run_date DESC);
 CREATE INDEX IF NOT EXISTS idx_sc_pattern  ON session_calendar(pattern, wr_delta DESC);
+
+-- ── PROMPT 14 — Performance Multiplier Engine ─────────────────────────────────
+-- Research-to-trading feedback loop: synthesised multipliers applied live in
+-- scanner-core, plus weekly P&L attribution to identify profit centres.
+
+CREATE TABLE IF NOT EXISTS performance_multipliers (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name   TEXT NOT NULL,
+  condition_type  TEXT NOT NULL,
+  condition_key   TEXT NOT NULL,
+  score_adj       REAL NOT NULL DEFAULT 0,
+  size_mult       REAL NOT NULL DEFAULT 1.0,
+  should_block    INTEGER DEFAULT 0,
+  confidence      TEXT DEFAULT 'MEDIUM',
+  source          TEXT,
+  n_samples       INTEGER,
+  wr_delta        REAL,
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(strategy_name, condition_type, condition_key)
+);
+CREATE INDEX IF NOT EXISTS idx_pm_strategy ON performance_multipliers(strategy_name, condition_type);
+CREATE INDEX IF NOT EXISTS idx_pm_block    ON performance_multipliers(should_block, confidence);
+
+CREATE TABLE IF NOT EXISTS pnl_decomposition (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date         TEXT NOT NULL,
+  strategy_name    TEXT NOT NULL,
+  dimension        TEXT NOT NULL,
+  dimension_value  TEXT NOT NULL,
+  trade_count      INTEGER,
+  win_count        INTEGER,
+  loss_count       INTEGER,
+  win_rate         REAL,
+  avg_pnl_pts      REAL,
+  total_pnl_pts    REAL,
+  avg_win_pts      REAL,
+  avg_loss_pts     REAL,
+  expectancy_score REAL,
+  profit_share_pct REAL,
+  role             TEXT,
+  computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, dimension, dimension_value)
+);
+CREATE INDEX IF NOT EXISTS idx_pd_strategy ON pnl_decomposition(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_pd_role     ON pnl_decomposition(role, expectancy_score DESC);

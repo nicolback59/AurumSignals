@@ -1085,6 +1085,10 @@ class Scanner extends EventEmitter {
     if      (gateVerdict === 'CAUTIOUS')   qualityPts -= 5;
     else if (gateVerdict === 'RESTRICTED') qualityPts -= 10;
 
+    // Phase 2b: Performance multiplier score adjustment (research synthesis)
+    // score_adj from performance-multiplier-worker (confirmed edge_discoveries + experiments)
+    qualityPts = Math.max(0, Math.min(100, qualityPts + (signal._pmScoreAdj ?? 0)));
+
     // Phase 3: Map quality to base allocation (A+ 100%, A 80%, B+ 60%, B 40%, C 25%)
     let qualityGrade, baseAlloc;
     if      (qualityPts >= 80) { qualityGrade = 'A+'; baseAlloc = 100; }
@@ -1106,6 +1110,12 @@ class Scanner extends EventEmitter {
     };
     const sessionMult = SESSION_ALLOC_MULT[sess] ?? 1.00;
 
+    // Phase 6: Session calendar EDGE/AVOID multiplier (session-calendar-worker → session_calendar)
+    const calMult = Math.max(0.50, Math.min(1.30, signal._calendarSizeMult ?? 1.0));
+
+    // Phase 7: Performance multiplier size factor (performance-multiplier-worker → research synthesis)
+    const pmSizeMult = Math.max(0.30, Math.min(1.50, signal._pmSizeMult ?? 1.0));
+
     // Portfolio weight from strategy-ranking-worker (via ADAPTIVE_OVERRIDES)
     const portfolioMult = Math.min(1.50, Math.max(0.50, signal._portfolioWeight ?? 1.0));
 
@@ -1125,7 +1135,7 @@ class Scanner extends EventEmitter {
     } catch (_) {}
 
     let recommendedSizePct = Math.round(
-      baseAlloc * regimeMult * sessionMult * portfolioMult * drawdownMult * atrPenalty
+      baseAlloc * regimeMult * sessionMult * calMult * pmSizeMult * portfolioMult * drawdownMult * atrPenalty
     );
     recommendedSizePct = Math.max(10, Math.min(100, recommendedSizePct));
 
@@ -1933,6 +1943,39 @@ class Scanner extends EventEmitter {
     let adaptiveOverrides = {};
     try { adaptiveOverrides = loadAdaptiveOverrides(this.db); } catch (err) { this._log(`load-adaptive-overrides error: ${err.message}`, 'signal'); }
 
+    // Load performance multipliers — research synthesis (performance-multiplier-worker, daily)
+    // { strategy: { 'condition_type|condition_key': { scoreAdj, sizeMult, block } } }
+    let performanceMultipliers = {};
+    try {
+      const pmRows = this.db.prepare(
+        `SELECT strategy_name, condition_type, condition_key, score_adj, size_mult, should_block
+         FROM performance_multipliers`
+      ).all();
+      for (const r of pmRows) {
+        if (!performanceMultipliers[r.strategy_name]) performanceMultipliers[r.strategy_name] = {};
+        performanceMultipliers[r.strategy_name][`${r.condition_type}|${r.condition_key}`] = {
+          scoreAdj: r.score_adj ?? 0, sizeMult: r.size_mult ?? 1.0, block: !!r.should_block,
+        };
+      }
+    } catch (_) {}
+
+    // Load session calendar multipliers — EDGE/AVOID patterns (session-calendar-worker, weekly)
+    // { strategy: { 'dimension|key': { pattern, wr_delta } } }
+    let calendarMults = {};
+    try {
+      const calRows = this.db.prepare(`
+        SELECT strategy_name, dimension, dimension_key, pattern, wr_delta
+        FROM session_calendar
+        WHERE run_date = (SELECT MAX(run_date) FROM session_calendar)
+      `).all();
+      for (const r of calRows) {
+        if (!calendarMults[r.strategy_name]) calendarMults[r.strategy_name] = {};
+        calendarMults[r.strategy_name][`${r.dimension}|${r.dimension_key}`] = {
+          pattern: r.pattern, wr_delta: r.wr_delta,
+        };
+      }
+    } catch (_) {}
+
     // Regime is needed by the adaptive cooldown engine — fetch once per scan cycle
     let currentRegime = 'unknown';
     try { currentRegime = getMarketRegime(this.db); } catch (err) { this._log(`get-market-regime error: ${err.message}`, 'signal'); }
@@ -2206,6 +2249,47 @@ class Scanner extends EventEmitter {
       sig._drawdownSizeMult = _ov.drawdownSizeMult   ?? 1.0;
       sig._behaviorMode     = _ov.behaviorMode       ?? 'NORMAL';
       sig._activeRegime     = dbRegime ?? currentRegime;
+
+      // Attach performance multiplier adjustments (research synthesis → score/size)
+      const _pmMap    = performanceMultipliers[sig.strategy_name] ?? {};
+      const _pmRegime = sig._activeRegime;
+      const _pmSess   = (sig.session ?? '').toLowerCase();
+      let _pmScoreAdj = 0, _pmSizeMult = 1.0;
+      for (const k of [
+        `regime|${_pmRegime}`,
+        `session|${_pmSess}`,
+        `entry_type|${sig.entry_type ?? ''}`,
+        `archetype|${sig.archetype ?? ''}`,
+        `htf_bias|${sig.htf_bias ?? ''}`,
+      ]) {
+        const m = _pmMap[k]; if (!m) continue;
+        _pmScoreAdj += m.scoreAdj;
+        _pmSizeMult *= m.sizeMult;
+      }
+      sig._pmScoreAdj  = _pmScoreAdj;
+      sig._pmSizeMult  = Math.max(0.30, Math.min(1.50, _pmSizeMult));
+
+      // Attach session calendar multiplier (DOW/WOM/month/hour_ET EDGE/AVOID patterns)
+      let _calMult = 1.0;
+      try {
+        const _nowET = new Date(new Date().toLocaleString('en-US', { timeZone: 'America/New_York' }));
+        const _DOW = ['Sun','Mon','Tue','Wed','Thu','Fri','Sat'][_nowET.getDay()];
+        const _MON = ['','Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'][_nowET.getMonth() + 1];
+        const _stratCal = calendarMults[sig.strategy_name] ?? {};
+        for (const k of [
+          `dow|${_DOW}`,
+          `week_of_month|W${Math.ceil(_nowET.getDate() / 7)}`,
+          `month|${_MON}`,
+          `hour_et|${_nowET.getHours()}:00`,
+        ]) {
+          const e = _stratCal[k]; if (!e) continue;
+          const adj = e.pattern === 'EDGE'  ?  Math.min( e.wr_delta * 0.5, 0.15)
+                    : e.pattern === 'AVOID' ? -Math.min(Math.abs(e.wr_delta) * 0.7, 0.25) : 0;
+          _calMult += adj;
+        }
+        _calMult = Math.max(0.50, Math.min(1.30, _calMult));
+      } catch (_) {}
+      sig._calendarSizeMult = _calMult;
       this._storeSignal({ ...sig, ticker: `${instrument}1!`, _rank: rank });
       anyFired = true;
     }
