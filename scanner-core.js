@@ -1047,13 +1047,73 @@ class Scanner extends EventEmitter {
     const received_at = new Date().toISOString();
     const rank        = signal._rank ?? null;
 
-    // ── Part 5: Adaptive position sizing recommendation ───────────────────────
-    // Base from tier; reduced by gate status and ATR expansion.
-    const sizeTier = rank?.tier ?? signal.tier ?? null;
-    let recommendedSizePct = sizeTier === 'S' ? 100 : sizeTier === 'A' ? 75 : 50;
-    const gateVerdict = signal._gateVerdict ?? null;
-    if (gateVerdict === 'CAUTIOUS')        recommendedSizePct = Math.max(25, recommendedSizePct - 10);
-    else if (gateVerdict === 'RESTRICTED') recommendedSizePct = Math.max(25, recommendedSizePct - 20);
+    // ── Part 5: Portfolio Intelligence sizing (Prompt #11) ────────────────────
+    // Trade Quality Score → base allocation × regime × session × portfolio × drawdown
+    const gateVerdict  = signal._gateVerdict  ?? null;
+    const behaviorMode = signal._behaviorMode ?? 'NORMAL';
+    const activeRegime = signal._activeRegime ?? 'NORMAL';
+    const sess         = (signal.session ?? '').toLowerCase();
+    const conf         = signal.confidence ?? 0;
+    const sizeTier     = rank?.tier ?? signal.tier ?? null;
+
+    // Phase 2: Trade Quality Score (0–100 pts)
+    let qualityPts = 0;
+    // Confidence contribution
+    if      (conf >= 85) qualityPts += 35;
+    else if (conf >= 75) qualityPts += 25;
+    else if (conf >= 65) qualityPts += 15;
+    else                 qualityPts +=  5;
+    // Regime behavior mode
+    if      (behaviorMode === 'AGGRESSIVE') qualityPts += 20;
+    else if (behaviorMode === 'NORMAL')     qualityPts += 10;
+    // Tier (institutional rank)
+    if      (sizeTier === 'S') qualityPts += 15;
+    else if (sizeTier === 'A') qualityPts +=  8;
+    else if (sizeTier === 'C') qualityPts -=  5;
+    // Regime
+    if      (activeRegime === 'TREND_BULL' || activeRegime === 'TREND_BEAR') qualityPts += 10;
+    else if (activeRegime === 'EXPANSION')  qualityPts +=  5;
+    else if (activeRegime === 'COMPRESSION') qualityPts -= 5;
+    else if (activeRegime === 'RANGE_CHOP') qualityPts -= 15;
+    // Session
+    if      (sess === 'ny_open')     qualityPts += 15;
+    else if (sess === 'power_hour')  qualityPts += 12;
+    else if (sess === 'pre_market')  qualityPts +=  5;
+    else if (sess === 'midday')      qualityPts +=  3;
+    else                             qualityPts +=  8;
+    // Gate verdict
+    if      (gateVerdict === 'CAUTIOUS')   qualityPts -= 5;
+    else if (gateVerdict === 'RESTRICTED') qualityPts -= 10;
+
+    // Phase 3: Map quality to base allocation (A+ 100%, A 80%, B+ 60%, B 40%, C 25%)
+    let qualityGrade, baseAlloc;
+    if      (qualityPts >= 80) { qualityGrade = 'A+'; baseAlloc = 100; }
+    else if (qualityPts >= 65) { qualityGrade = 'A';  baseAlloc = 80;  }
+    else if (qualityPts >= 50) { qualityGrade = 'B+'; baseAlloc = 60;  }
+    else if (qualityPts >= 35) { qualityGrade = 'B';  baseAlloc = 40;  }
+    else                       { qualityGrade = 'C';  baseAlloc = 25;  }
+
+    // Phase 4: Regime allocation multiplier
+    const REGIME_ALLOC_MULT = {
+      TREND_BULL: 1.25, TREND_BEAR: 1.25, EXPANSION: 1.10,
+      NORMAL: 1.00, SOFT_CHOP: 0.80, COMPRESSION: 0.70, RANGE_CHOP: 0.35,
+    };
+    const regimeMult = REGIME_ALLOC_MULT[activeRegime] ?? 1.00;
+
+    // Phase 5: Session allocation multiplier
+    const SESSION_ALLOC_MULT = {
+      ny_open: 1.25, power_hour: 1.15, pre_market: 0.90, midday: 0.75,
+    };
+    const sessionMult = SESSION_ALLOC_MULT[sess] ?? 1.00;
+
+    // Portfolio weight from strategy-ranking-worker (via ADAPTIVE_OVERRIDES)
+    const portfolioMult = Math.min(1.50, Math.max(0.50, signal._portfolioWeight ?? 1.0));
+
+    // Drawdown protection multiplier (from drawdown-protection-worker)
+    const drawdownMult = Math.min(1.0, Math.max(0.0, signal._drawdownSizeMult ?? 1.0));
+
+    // High-ATR expansion penalty (preserves original logic)
+    let atrPenalty = 1.0;
     try {
       const atrRow = this.db.prepare(
         `SELECT sf.atr_percentile FROM signal_features sf
@@ -1061,10 +1121,17 @@ class Scanner extends EventEmitter {
          WHERE s.instrument = ? AND sf.atr_percentile IS NOT NULL
          ORDER BY sf.recorded_at DESC LIMIT 1`
       ).get(signal.instrument);
-      if (atrRow?.atr_percentile >= 0.80) {
-        recommendedSizePct = Math.max(25, Math.round(recommendedSizePct * 0.75));
-      }
+      if (atrRow?.atr_percentile >= 0.80) atrPenalty = 0.75;
     } catch (_) {}
+
+    let recommendedSizePct = Math.round(
+      baseAlloc * regimeMult * sessionMult * portfolioMult * drawdownMult * atrPenalty
+    );
+    recommendedSizePct = Math.max(10, Math.min(100, recommendedSizePct));
+
+    // Attach quality metadata to signal for payload/logging
+    signal.quality_grade  = qualityGrade;
+    signal.quality_pts    = qualityPts;
     signal.recommended_size_pct = recommendedSizePct;
 
     // Build canonical payload; id is null until after insert
@@ -2133,6 +2200,12 @@ class Scanner extends EventEmitter {
       this._log(`${approvalTag} strat=${sig.strategy_name} ${instrument} ${sig.direction} conf=${sig.confidence} tier=${rank.tier} adjConf=${rank.adjustedConfidence}${rank.liveGated ? ' (live-gated)' : ''}${sig.quant_grade ? ` quantGrade=${sig.quant_grade} quantScore=${sig.quant_score}` : ''}`, 'signal');
 
       this._lastSignalTimes[stratKey] = Date.now();
+      // Attach portfolio intelligence context so _storeSignal can compute quality-adjusted sizing
+      const _ov = adaptiveOverrides[sig.strategy_name] ?? {};
+      sig._portfolioWeight  = _ov.portfolioWeight   ?? 1.0;
+      sig._drawdownSizeMult = _ov.drawdownSizeMult   ?? 1.0;
+      sig._behaviorMode     = _ov.behaviorMode       ?? 'NORMAL';
+      sig._activeRegime     = dbRegime ?? currentRegime;
       this._storeSignal({ ...sig, ticker: `${instrument}1!`, _rank: rank });
       anyFired = true;
     }

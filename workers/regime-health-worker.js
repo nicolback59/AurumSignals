@@ -242,6 +242,7 @@ async function run() {
         }
         // Always clear aggressiveMode when standing down
         if (ov.aggressiveMode) { ov.aggressiveMode = false; ovChanged = true; }
+        if (ov.behaviorMode !== 'STANDBY') { ov.behaviorMode = 'STANDBY'; ovChanged = true; }
       } else if (mode === 'NORMAL' || mode === 'AGGRESSIVE') {
         const hasRegimeHealthReasons = ov.reasons.some(r => r.startsWith('regime-health:'));
         const hasOtherReasons        = ov.reasons.some(r => !r.startsWith('regime-health:'));
@@ -262,6 +263,12 @@ async function run() {
           ovChanged = true;
         }
         // DEFENSIVE: do nothing else to overrides
+      }
+
+      // Always keep behaviorMode current for portfolio engine + scanner quality scoring
+      if (mode !== 'STANDBY' && ov.behaviorMode !== mode) {
+        ov.behaviorMode = mode;
+        ovChanged = true;
       }
 
       if (ovChanged) {

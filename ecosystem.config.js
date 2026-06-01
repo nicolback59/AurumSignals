@@ -802,6 +802,73 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── STRATEGY RANKING WORKER ───────────────────────────────────────────────
+    // Daily 06:15 UTC: computes health/confidence/allocation scores per strategy.
+    // Writes strategy_rankings table + portfolioWeight into ADAPTIVE_OVERRIDES.
+    {
+      name:         'strategy-ranking',
+      script:       'workers/strategy-ranking-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '15 6 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/strategy-ranking-error.log',
+      out_file:        '/root/AurumSignals/logs/strategy-ranking-out.log',
+      merge_logs:      true,
+    },
+
+    // ── DRAWDOWN PROTECTION WORKER ────────────────────────────────────────────
+    // Every 30 min: monitors consecutive losses + daily DD per strategy.
+    // Adjusts position sizing (0.75×/0.50×) or pauses at extreme drawdown.
+    // Updates ADAPTIVE_OVERRIDES drawdownProtectionLevel + drawdownSizeMult.
+    {
+      name:         'drawdown-protection',
+      script:       'workers/drawdown-protection-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '*/30 * * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/drawdown-protection-error.log',
+      out_file:        '/root/AurumSignals/logs/drawdown-protection-out.log',
+      merge_logs:      true,
+    },
+
+    // ── PORTFOLIO ENGINE WORKER ───────────────────────────────────────────────
+    // Every 4h: synthesizes all intelligence layers (rankings, regime, edge, DD)
+    // into capital allocation decisions. Posts recommendations to agent_messages.
+    {
+      name:         'portfolio-engine',
+      script:       'workers/portfolio-engine-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 */4 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/portfolio-engine-error.log',
+      out_file:        '/root/AurumSignals/logs/portfolio-engine-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
