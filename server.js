@@ -696,6 +696,86 @@ applyMigrations();
   } catch (err) { console.error('[phase6-migration]', err.message); }
 })();
 
+// ── DB Part 5: trade_dna materialized table ───────────────────────────────────
+(function applyDbPart5Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS trade_dna (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        source        TEXT    NOT NULL,
+        signal_id     INTEGER,
+        bt_trade_id   INTEGER,
+        strategy_name TEXT    NOT NULL,
+        instrument    TEXT,
+        direction     TEXT,
+        outcome       TEXT    NOT NULL,
+        session       TEXT,
+        regime        TEXT,
+        hour_et       INTEGER,
+        trade_date    TEXT,
+        entry         REAL,
+        sl            REAL,
+        tp1           REAL,
+        sl_pts        REAL,
+        tp1_pts       REAL,
+        rr_planned    REAL,
+        pnl_pts       REAL,
+        mfe_pts       REAL,
+        mae_pts       REAL,
+        hold_time_min REAL,
+        exit_type     TEXT,
+        mfe_sl_ratio  REAL,
+        mae_sl_ratio  REAL,
+        rr_achieved   REAL,
+        confidence    INTEGER,
+        archetype     TEXT,
+        entry_type    TEXT,
+        htf_bias      TEXT,
+        atr           REAL,
+        rsi           REAL,
+        refreshed_at  TEXT NOT NULL DEFAULT (datetime('now'))
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_dna_strategy  ON trade_dna(strategy_name, trade_date DESC)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_dna_outcome   ON trade_dna(outcome, strategy_name)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_dna_source    ON trade_dna(source, strategy_name)`);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_dna_refreshed ON trade_dna(refreshed_at DESC)`);
+  } catch (err) { console.error('[db-part5-migration]', err.message); }
+})();
+
+// ── DB Part 6: performance indexes + is_latest flag ───────────────────────────
+(function applyDbPart6Migrations() {
+  try {
+    // Compound index for reconcile-worker _getPending query
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_signals_status_strat ON signals(strategy_name, trade_status, received_at DESC)`);
+    // Outcome result lookups for stop-agent and tp-agent
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_outcomes_result ON outcomes(result, exit_at DESC)`);
+    // Loss forensics grouping
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_lf_strat_cat ON loss_forensics(strategy_name, failure_category, created_at DESC)`);
+    // Partial index: consensus reads only pending messages
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_am_pending ON agent_messages(priority, created_at) WHERE status = 'pending'`);
+    // Frequency-agent near-miss scans
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_rejections_strat ON signal_rejections(strategy, rejected_at DESC)`);
+
+    // is_latest flag on strategy_health_snapshots — eliminates correlated subquery
+    const shsCols = db.prepare("PRAGMA table_info(strategy_health_snapshots)").all().map(r => r.name);
+    if (!shsCols.includes('is_latest')) {
+      db.exec("ALTER TABLE strategy_health_snapshots ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 0");
+      // Backfill: mark the most recent snapshot per strategy as is_latest=1
+      db.exec(`
+        UPDATE strategy_health_snapshots SET is_latest = 1
+        WHERE snapshot_date = (
+          SELECT MAX(s2.snapshot_date)
+          FROM strategy_health_snapshots s2
+          WHERE s2.strategy_name = strategy_health_snapshots.strategy_name
+        )
+      `);
+      console.log('[migration] Added is_latest to strategy_health_snapshots (backfilled)');
+    }
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_shs_is_latest ON strategy_health_snapshots(is_latest) WHERE is_latest = 1`);
+  } catch (err) { console.error('[db-part6-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
