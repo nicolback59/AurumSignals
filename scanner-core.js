@@ -2601,8 +2601,9 @@ class Scanner extends EventEmitter {
         const insTrade = this.db.prepare(`
           INSERT INTO backtest_trades
             (run_id, instrument, bar_idx, timestamp, direction, setup, strategy_name,
-             trade_style, regime, entry, sl, tp1, outcome, score, confidence, pnl_pts)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             trade_style, regime, entry, sl, tp1, outcome, score, confidence, pnl_pts,
+             mfe_pts, mae_pts, hold_time_min, exit_type)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         const updNote = this.db.prepare(
           `UPDATE backtest_trades SET note = ?, noted_at = datetime('now') WHERE id = ?`
@@ -2624,7 +2625,10 @@ class Scanner extends EventEmitter {
               t.direction, t.setup ?? null, t.strategy_name ?? null,
               t.trade_style ?? null, t.regime ?? null,
               t.entry ?? null, t.sl ?? null, t.tp1 ?? null,
-              t.outcome, t.score ?? null, t.confidence ?? null, pnl_pts);
+              t.outcome, t.score ?? null, t.confidence ?? null, pnl_pts,
+              t.mfe_pts ?? null, t.mae_pts ?? null,
+              t.durationBars != null ? +(t.durationBars * 5).toFixed(1) : null,
+              t.exit_type ?? null);
 
             // Auto-generate deep learning notes for ALL trades (WIN/LOSS/BE)
             try {
@@ -2859,8 +2863,9 @@ class Scanner extends EventEmitter {
         const insTrade = this.db.prepare(`
           INSERT INTO backtest_trades
             (run_id, instrument, bar_idx, timestamp, direction, setup, strategy_name,
-             trade_style, regime, entry, sl, tp1, outcome, score, confidence, pnl_pts)
-          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+             trade_style, regime, entry, sl, tp1, outcome, score, confidence, pnl_pts,
+             mfe_pts, mae_pts, hold_time_min, exit_type)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         this.db.transaction(() => {
           for (const t of allTrades) {
@@ -2876,7 +2881,10 @@ class Scanner extends EventEmitter {
               t.direction, t.setup ?? null, t.strategy_name ?? null,
               t.trade_style ?? null, t.regime ?? null,
               t.entry ?? null, t.sl ?? null, t.tp1 ?? null,
-              t.outcome, t.score ?? null, t.confidence ?? null, pnl_pts);
+              t.outcome, t.score ?? null, t.confidence ?? null, pnl_pts,
+              t.mfe_pts ?? null, t.mae_pts ?? null,
+              t.durationBars != null ? +(t.durationBars * 5).toFixed(1) : null,
+              t.exit_type ?? null);
           }
         })();
       }

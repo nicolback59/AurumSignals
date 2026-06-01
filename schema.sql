@@ -170,6 +170,10 @@ CREATE TABLE IF NOT EXISTS backtest_trades (
   tp1            REAL,
   outcome        TEXT,    -- WIN | LOSS | BE
   pnl_pts        REAL,    -- realized P&L in points (positive=win, negative=loss, 0=BE)
+  mfe_pts        REAL,    -- Maximum Favorable Excursion (best price reached, points)
+  mae_pts        REAL,    -- Maximum Adverse Excursion (worst drawdown, points)
+  hold_time_min  REAL,    -- minutes from entry bar to exit bar (durationBars × 5)
+  exit_type      TEXT,    -- TP_HIT | SL_HIT | TIMEOUT
   score          INTEGER,
   confidence     INTEGER, -- 0–100 from new engine
   note           TEXT,

@@ -110,6 +110,58 @@ function resolveOutcome(bars5m, sigIdx, direction, tp1, sl, maxBars = 60, slippa
   return 'BE';
 }
 
+/**
+ * Like resolveOutcome but also computes MFE, MAE, durationBars, and exitType
+ * in a single forward scan — no second pass needed.
+ *
+ * MFE (Maximum Favorable Excursion): best unrealized gain reached (points).
+ * MAE (Maximum Adverse Excursion): worst unrealized drawdown reached (points).
+ * exitType: 'TP_HIT' | 'SL_HIT' | 'TIMEOUT'
+ */
+function resolveOutcomeFull(bars5m, sigIdx, entry, direction, tp1, sl, maxBars = 60, slippage = 0) {
+  const tp1Adj = direction === 'LONG' ? tp1 + slippage : tp1 - slippage;
+  const slAdj  = direction === 'LONG' ? sl  - slippage : sl  + slippage;
+
+  let mfe = 0;
+  let mae = 0;
+
+  const end = Math.min(sigIdx + maxBars + 1, bars5m.length);
+  for (let j = sigIdx + 1; j < end; j++) {
+    const { open, high, low } = bars5m[j];
+    const d = j - sigIdx;
+
+    if (direction === 'LONG') {
+      if (open >= tp1Adj) {
+        mfe = Math.max(mfe, open - entry);
+        return { outcome: 'WIN',  mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'TP_HIT' };
+      }
+      if (open <= slAdj) {
+        mae = Math.max(mae, entry - open);
+        return { outcome: 'LOSS', mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'SL_HIT' };
+      }
+      mfe = Math.max(mfe, high - entry);
+      mae = Math.max(mae, entry - low);
+      if (high >= tp1Adj) return { outcome: 'WIN',  mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'TP_HIT' };
+      if (low  <= slAdj)  return { outcome: 'LOSS', mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'SL_HIT' };
+    } else {
+      if (open <= tp1Adj) {
+        mfe = Math.max(mfe, entry - open);
+        return { outcome: 'WIN',  mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'TP_HIT' };
+      }
+      if (open >= slAdj) {
+        mae = Math.max(mae, open - entry);
+        return { outcome: 'LOSS', mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'SL_HIT' };
+      }
+      mfe = Math.max(mfe, entry - low);
+      mae = Math.max(mae, high - entry);
+      if (low  <= tp1Adj) return { outcome: 'WIN',  mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'TP_HIT' };
+      if (high >= slAdj)  return { outcome: 'LOSS', mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'SL_HIT' };
+    }
+  }
+
+  return { outcome: 'BE', mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: maxBars, exitType: 'TIMEOUT' };
+}
+
 // ── Base metrics ──────────────────────────────────────────────────────────────
 
 function calcMetrics(signalLog) {
@@ -316,32 +368,15 @@ function _runBacktest(bars1m, instrument, opts = {}) {
       const lastIdx = lastSigByStrategy[strat] ?? -Infinity;
       if (i - lastIdx < cooldown5m) continue;
 
-      const outcome = resolveOutcome(bars5m, i, sig.direction, sig.tp1, sig.sl, maxResolve, slippage);
+      const { outcome, mfe, mae, durationBars, exitType } = resolveOutcomeFull(
+        bars5m, i, sig.entry, sig.direction, sig.tp1, sig.sl, maxResolve, slippage
+      );
 
       // Compute P&L in points
       const risk    = sig.direction === 'LONG' ? sig.entry - sig.sl : sig.sl - sig.entry;
       const reward  = sig.direction === 'LONG' ? sig.tp1 - sig.entry : sig.entry - sig.tp1;
       const pnlPts  = outcome === 'WIN' ? +reward.toFixed(2) : outcome === 'LOSS' ? +(-risk).toFixed(2) : 0;
       const pnlR    = outcome === 'WIN' ? sig.rr ?? 1.5 : outcome === 'LOSS' ? -1 : 0;
-
-      // Actual bars to resolution (scanned in resolveOutcome above)
-      const durationBars = (() => {
-        const startIdx = i;
-        const fwdBars  = bars5m;
-        const cap      = maxResolve;
-        const tp1adj = sig.direction === 'LONG' ? sig.tp1 + slippage : sig.tp1 - slippage;
-        const slAdj  = sig.direction === 'LONG' ? sig.sl  - slippage : sig.sl  + slippage;
-        for (let d = 1; d <= cap; d++) {
-          const b = fwdBars[startIdx + d];
-          if (!b) break;
-          if (sig.direction === 'LONG') {
-            if (b.open >= tp1adj || b.high >= tp1adj || b.open <= slAdj || b.low <= slAdj) return d;
-          } else {
-            if (b.open <= tp1adj || b.low  <= tp1adj || b.open >= slAdj || b.high >= slAdj) return d;
-          }
-        }
-        return cap;
-      })();
 
       const regime  = detectRegime(bars5m, i);
 
@@ -377,6 +412,9 @@ function _runBacktest(bars1m, instrument, opts = {}) {
         outcome,
         pnlPts,
         pnlR,
+        mfe_pts:   mfe,
+        mae_pts:   mae,
+        exit_type: exitType,
         regime,
         session:     sig.session,
         trade_style: sig.trade_style,
@@ -553,6 +591,7 @@ module.exports = {
   runBacktest5m,
   runWalkForward,
   resolveOutcome,
+  resolveOutcomeFull,
   detectRegime,
   calcMetrics,
   calcEnhancedMetrics,

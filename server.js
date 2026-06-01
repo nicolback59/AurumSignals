@@ -310,6 +310,22 @@ function applyMigrations() {
       db.exec("ALTER TABLE backtest_trades ADD COLUMN pnl_pts REAL");
       console.log('[migration] Added pnl_pts to backtest_trades');
     }
+    if (!btCols.includes('mfe_pts')) {
+      db.exec("ALTER TABLE backtest_trades ADD COLUMN mfe_pts REAL");
+      console.log('[migration] Added mfe_pts to backtest_trades');
+    }
+    if (!btCols.includes('mae_pts')) {
+      db.exec("ALTER TABLE backtest_trades ADD COLUMN mae_pts REAL");
+      console.log('[migration] Added mae_pts to backtest_trades');
+    }
+    if (!btCols.includes('hold_time_min')) {
+      db.exec("ALTER TABLE backtest_trades ADD COLUMN hold_time_min REAL");
+      console.log('[migration] Added hold_time_min to backtest_trades');
+    }
+    if (!btCols.includes('exit_type')) {
+      db.exec("ALTER TABLE backtest_trades ADD COLUMN exit_type TEXT");
+      console.log('[migration] Added exit_type to backtest_trades');
+    }
     // Backfill pnl_pts for historical rows that have entry/tp1/sl but no pnl_pts
     db.exec(`
       UPDATE backtest_trades
