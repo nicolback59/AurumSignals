@@ -21,7 +21,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, bumpCycle, logWorkerError } = require('./worker-utils');
+const { openDb, heartbeat, bumpCycle, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME    = 'regime-agent';
 const INSTRUMENTS    = ['MNQ', 'MGC'];
@@ -45,6 +45,24 @@ const _insertRegime = db.prepare(`
 const _pruneOld = db.prepare(
   `DELETE FROM regime_states WHERE classified_at < datetime('now', '-${HISTORY_DAYS} days')`
 );
+const _getLastRegime = db.prepare(
+  `SELECT regime, classified_at FROM regime_states WHERE instrument = ? ORDER BY classified_at DESC LIMIT 1`
+);
+const _insertTransition = db.prepare(`
+  INSERT INTO regime_transitions (instrument, from_regime, to_regime, atr_at_transition)
+  VALUES (?, ?, ?, ?)
+`);
+
+const NOTABLE_TRANSITIONS = new Set([
+  'COMPRESSION>EXPANSION',
+  'COMPRESSION>TREND_BULL', 'COMPRESSION>TREND_BEAR',
+  'ANY>RANGE_CHOP',
+  'RANGE_CHOP>TREND_BULL', 'RANGE_CHOP>TREND_BEAR',
+  'SOFT_CHOP>TREND_BULL',  'SOFT_CHOP>TREND_BEAR',
+  'TREND_BULL>RANGE_CHOP', 'TREND_BEAR>RANGE_CHOP',
+  'TREND_BULL>COMPRESSION','TREND_BEAR>COMPRESSION',
+  'ANY>EXPANSION',
+]);
 
 // ── EMA calculation ────────────────────────────────────────────────────────────
 function calcEma(values, period) {
@@ -199,6 +217,9 @@ function runCycle() {
         continue;
       }
 
+      const prevRow    = _getLastRegime.get(instrument);
+      const prevRegime = prevRow?.regime ?? null;
+
       _insertRegime.run(
         instrument,
         result.regime,
@@ -213,6 +234,43 @@ function runCycle() {
         `[${WORKER_NAME}] ${instrument}: ${result.regime} ` +
         `(strength=${result.strength} ATRr=${result.raw.atrRatio} dirEff=${result.raw.dirEfficiency})`
       );
+
+      // ── Regime transition detection ─────────────────────────────────────────
+      if (prevRegime && prevRegime !== result.regime) {
+        try {
+          _insertTransition.run(instrument, prevRegime, result.regime, result.raw.atr ?? null);
+        } catch (_) {}
+
+        const specificKey = `${prevRegime}>${result.regime}`;
+        const anyKey      = `ANY>${result.regime}`;
+        const isNotable   = NOTABLE_TRANSITIONS.has(specificKey) || NOTABLE_TRANSITIONS.has(anyKey);
+
+        if (isNotable) {
+          const isUrgent = result.regime === 'RANGE_CHOP' ||
+                           (prevRegime === 'COMPRESSION' && (result.regime === 'EXPANSION' || result.regime.startsWith('TREND_')));
+          const emoji    = result.regime.startsWith('TREND_') ? '📈' :
+                           result.regime === 'RANGE_CHOP'     ? '🔴' :
+                           result.regime === 'EXPANSION'      ? '⚡' : '🔄';
+          const title = `${emoji} Regime: ${prevRegime} → ${result.regime} (${instrument})`;
+          const body  = [
+            `${instrument}: ${prevRegime} → ${result.regime}`,
+            `Strength: ${result.strength} | ATR ratio: ${result.raw.atrRatio} | Dir efficiency: ${result.raw.dirEfficiency}`,
+            result.regime === 'RANGE_CHOP'  ? 'Conditions deteriorating — strategies auto-guard' :
+            result.regime === 'EXPANSION'   ? 'Volatility expansion — breakout conditions' :
+            result.regime.startsWith('TREND_') ? 'Trend confirmed — increased edge window' :
+            prevRegime === 'COMPRESSION'    ? 'Compression resolving — watch for direction' : '',
+          ].filter(Boolean).join('\n');
+
+          sendNotification(title, body, {
+            priority: isUrgent ? 'high' : 'default',
+            tags: result.regime === 'RANGE_CHOP' ? 'rotating_light,no_entry' :
+                  result.regime.startsWith('TREND_') ? 'chart_increasing,green_circle' :
+                  'zap,eyes',
+          }).catch(() => {});
+
+          console.log(`[${WORKER_NAME}] TRANSITION ${instrument}: ${prevRegime} → ${result.regime} (notable)`);
+        }
+      }
     } catch (err) {
       console.error(`[${WORKER_NAME}] ${instrument} classify error: ${err.message}`);
       logWorkerError(db, WORKER_NAME, err);

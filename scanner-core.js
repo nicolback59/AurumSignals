@@ -1914,6 +1914,7 @@ class Scanner extends EventEmitter {
         confidence:     sig.confidence,
         lastSignalTime: this._lastSignalTimes[stratKey] ?? 0,
         db:             this.db,
+        aggressiveMode: !!(adaptiveOverrides[sig.strategy_name]?.aggressiveMode),
       });
 
       if (!cooldownResult.allowed) {

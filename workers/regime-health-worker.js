@@ -229,7 +229,6 @@ async function run() {
       let ovChanged = false;
 
       if (mode === 'STANDBY') {
-        // Pause strategy (unless manually paused — leave manualPause untouched)
         if (!ov.manualPause) {
           const alreadyHasReason = ov.reasons.some(r => r.startsWith('regime-health: STANDBY'));
           if (!alreadyHasReason) {
@@ -241,8 +240,9 @@ async function run() {
             ovChanged  = true;
           }
         }
+        // Always clear aggressiveMode when standing down
+        if (ov.aggressiveMode) { ov.aggressiveMode = false; ovChanged = true; }
       } else if (mode === 'NORMAL' || mode === 'AGGRESSIVE') {
-        // Lift pause only if ALL remaining reasons are regime-health: ones
         const hasRegimeHealthReasons = ov.reasons.some(r => r.startsWith('regime-health:'));
         const hasOtherReasons        = ov.reasons.some(r => !r.startsWith('regime-health:'));
 
@@ -251,11 +251,17 @@ async function run() {
           ov.paused  = false;
           ovChanged   = true;
         } else if (hasRegimeHealthReasons && !hasOtherReasons) {
-          // Clear stale regime-health reasons even if not paused
           ov.reasons = ov.reasons.filter(r => !r.startsWith('regime-health:'));
           ovChanged   = true;
         }
-        // DEFENSIVE: do nothing to overrides
+
+        // AGGRESSIVE mode: set flag so adaptive-cooldown applies 0.70× multiplier
+        const wantsAggressive = mode === 'AGGRESSIVE';
+        if ((ov.aggressiveMode ?? false) !== wantsAggressive) {
+          ov.aggressiveMode = wantsAggressive;
+          ovChanged = true;
+        }
+        // DEFENSIVE: do nothing else to overrides
       }
 
       if (ovChanged) {
