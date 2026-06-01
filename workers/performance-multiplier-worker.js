@@ -88,15 +88,25 @@ async function run() {
       n_samples       INTEGER,
       wr_delta        REAL,
       updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+      expires_at      TEXT,
       UNIQUE(strategy_name, condition_type, condition_key)
     )
   `).run();
 
+  // Phase 4 (Prompt #15): expire stale should_block rules before re-synthesising.
+  // Any block not re-confirmed within 90 days is automatically lifted.
+  try {
+    db.prepare(
+      `UPDATE performance_multipliers SET should_block = 0
+       WHERE should_block = 1 AND expires_at IS NOT NULL AND expires_at < datetime('now')`
+    ).run();
+  } catch (_) {}
+
   const upsert = db.prepare(`
     INSERT INTO performance_multipliers
       (strategy_name, condition_type, condition_key, score_adj, size_mult,
-       should_block, confidence, source, n_samples, wr_delta, updated_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+       should_block, confidence, source, n_samples, wr_delta, updated_at, expires_at)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'), datetime('now', '+90 days'))
     ON CONFLICT(strategy_name, condition_type, condition_key) DO UPDATE SET
       score_adj    = excluded.score_adj,
       size_mult    = excluded.size_mult,
@@ -105,7 +115,8 @@ async function run() {
       source       = excluded.source,
       n_samples    = excluded.n_samples,
       wr_delta     = excluded.wr_delta,
-      updated_at   = datetime('now')
+      updated_at   = datetime('now'),
+      expires_at   = datetime('now', '+90 days')
   `);
 
   const insertMsg = db.prepare(`

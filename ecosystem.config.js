@@ -941,6 +941,7 @@ module.exports = {
     // ── PROMPT 15 RED TEAM FOUNDATION WORKERS ────────────────────────────────
     // execution-reality: daily 08:00 UTC — slippage-adjusted P&L vs theoretical
     // quality-score-validator: weekly Sunday 07:30 UTC — validates grade weights
+    // regime-classifier-validator: weekly Sunday 08:00 UTC — validates regime multipliers
     {
       name:         'execution-reality',
       script:       'workers/execution-reality-worker.js',
@@ -976,6 +977,25 @@ module.exports = {
       log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
       error_file:      '/root/AurumSignals/logs/quality-score-validator-error.log',
       out_file:        '/root/AurumSignals/logs/quality-score-validator-out.log',
+      merge_logs:      true,
+    },
+
+    {
+      name:         'regime-classifier-validator',
+      script:       'workers/regime-classifier-validator-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 8 * * 0',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/regime-classifier-validator-error.log',
+      out_file:        '/root/AurumSignals/logs/regime-classifier-validator-out.log',
       merge_logs:      true,
     },
 
