@@ -12,6 +12,14 @@
  *   - Writes SSE events to sse_queue; api-server polls and forwards to clients.
  *   - Writes last 200 bars to bar_cache for the mini-chart API endpoint.
  *
+ * Standby mode (SCANNER_ROLE=standby):
+ *   - Registers as 'scanner-standby' in worker_health.
+ *   - Polls 'scanner-worker' heartbeat every 30 s.
+ *   - If primary has been silent for > 3 min, auto-promotes: starts the scanner
+ *     and writes heartbeats as 'scanner-standby' with status PROMOTED.
+ *   - Send SCANNER_ROLE=standby via ecosystem.config.js env_production for the
+ *     second scanner PM2 process.
+ *
  * Start: pm2 start ecosystem.config.js (SCANNER_MODE=worker env required in api-server)
  */
 
@@ -20,8 +28,13 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, bumpCycle, logWorkerError, getWorkerMeta } = require('./worker-utils');
 const { Scanner } = require('../scanner-core');
 
-const WORKER_NAME = 'scanner-worker';
-const BAR_CACHE_LIMIT = 200;
+const SCANNER_ROLE      = process.env.SCANNER_ROLE || 'primary';
+const IS_STANDBY        = SCANNER_ROLE === 'standby';
+const WORKER_NAME       = IS_STANDBY ? 'scanner-standby' : 'scanner-worker';
+const PRIMARY_NAME      = 'scanner-worker';
+const PROMOTE_THRESHOLD = 3 * 60 * 1000; // 3 min without primary heartbeat → promote
+const STANDBY_POLL_MS   = 30_000;
+const BAR_CACHE_LIMIT   = 200;
 
 // ── DB connection ─────────────────────────────────────────────────────────────
 const db = openDb();
@@ -95,14 +108,74 @@ scanner.on('backtest',  data => queueSse('backtest',    data));
 scanner.on('outcome',   data => queueSse('outcome',     data));
 scanner.on('error',     data => { queueSse('scannerError', data); logWorkerError(db, WORKER_NAME, data); });
 
-// ── Start ─────────────────────────────────────────────────────────────────────
-try {
-  scanner.start();
-  console.log(`[${WORKER_NAME}] Scanner started — pid ${process.pid}`);
-} catch (err) {
-  logWorkerError(db, WORKER_NAME, err);
-  heartbeat(db, WORKER_NAME, 'ERROR', { error: err.message });
-  process.exit(1);
+// ── Start (primary) or enter standby loop ─────────────────────────────────────
+if (!IS_STANDBY) {
+  try {
+    scanner.start();
+    console.log(`[${WORKER_NAME}] Scanner started — pid ${process.pid}`);
+  } catch (err) {
+    logWorkerError(db, WORKER_NAME, err);
+    heartbeat(db, WORKER_NAME, 'ERROR', { error: err.message });
+    process.exit(1);
+  }
+} else {
+  // ── Standby mode ────────────────────────────────────────────────────────────
+  // Wait for the primary to go stale, then auto-promote.
+  let promoted = false;
+
+  heartbeat(db, WORKER_NAME, 'STANDBY', {
+    pid: process.pid, role: 'standby', promotedAt: null,
+  });
+  console.log(`[${WORKER_NAME}] Standby mode — watching '${PRIMARY_NAME}' heartbeat`);
+
+  const _standbyPoll = setInterval(() => {
+    try {
+      const row = db.prepare(
+        "SELECT last_heartbeat FROM worker_health WHERE worker_name = ?"
+      ).get(PRIMARY_NAME);
+
+      const primaryAge = row?.last_heartbeat
+        ? Date.now() - new Date(row.last_heartbeat).getTime()
+        : null;
+
+      const primaryStale = primaryAge === null || primaryAge > PROMOTE_THRESHOLD;
+
+      if (!primaryStale) {
+        // Primary is alive — remain on standby
+        heartbeat(db, WORKER_NAME, 'STANDBY', {
+          pid: process.pid, role: 'standby',
+          primaryAgeS: primaryAge != null ? Math.round(primaryAge / 1000) : null,
+          promotedAt: null,
+        });
+        return;
+      }
+
+      if (promoted) return; // already running — don't re-promote
+      promoted = true;
+      clearInterval(_standbyPoll);
+
+      const promotedAt = new Date().toISOString();
+      const ageMin = primaryAge != null ? Math.round(primaryAge / 60_000) : '?';
+      console.log(
+        `[${WORKER_NAME}] PRIMARY STALE (${ageMin} min) — PROMOTING to active scanner`
+      );
+      heartbeat(db, WORKER_NAME, 'PROMOTED', {
+        pid: process.pid, role: 'promoted-primary', promotedAt,
+        primaryAgeS: primaryAge != null ? Math.round(primaryAge / 1000) : null,
+      });
+
+      try {
+        scanner.start();
+        console.log(`[${WORKER_NAME}] Scanner started after promotion — pid ${process.pid}`);
+      } catch (err) {
+        logWorkerError(db, WORKER_NAME, err);
+        heartbeat(db, WORKER_NAME, 'ERROR', { error: err.message });
+        process.exit(1);
+      }
+    } catch (err) {
+      console.warn(`[${WORKER_NAME}] Standby poll error: ${err.message}`);
+    }
+  }, STANDBY_POLL_MS);
 }
 
 // ── Global error handlers ─────────────────────────────────────────────────────
