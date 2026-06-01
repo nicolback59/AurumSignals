@@ -1473,6 +1473,72 @@ applyMigrations();
   } catch (err) { console.error('[prompt15-p34-migration]', err.message); }
 })();
 
+(function applyPrompt15P58Migrations() {
+  try {
+    // Phase 7: fdr_adjusted_p column for research_hypotheses
+    try { db.exec(`ALTER TABLE research_hypotheses ADD COLUMN fdr_adjusted_p REAL`); } catch (_) {}
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS portfolio_circuit_breaker_log (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        checked_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        triggered           INTEGER NOT NULL DEFAULT 0,
+        trigger_reason      TEXT,
+        combined_pnl_today  REAL,
+        strategies_at_l2    INTEGER,
+        strategies_flooded  INTEGER,
+        action              TEXT,
+        auto_recovered      INTEGER DEFAULT 0,
+        notes               TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS walk_forward_validation (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date            TEXT NOT NULL,
+        strategy_name       TEXT NOT NULL,
+        is_trade_count      INTEGER,
+        is_win_rate         REAL,
+        is_avg_pnl_pts      REAL,
+        is_expectancy       REAL,
+        is_sharpe           REAL,
+        oos_trade_count     INTEGER,
+        oos_win_rate        REAL,
+        oos_avg_pnl_pts     REAL,
+        oos_expectancy      REAL,
+        oos_sharpe          REAL,
+        wr_degradation_pct  REAL,
+        sharpe_retention    REAL,
+        overfit_flag        INTEGER NOT NULL DEFAULT 0,
+        verdict             TEXT,
+        computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_wfv_strategy ON walk_forward_validation(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_wfv_overfit  ON walk_forward_validation(overfit_flag DESC, run_date DESC);
+
+      CREATE TABLE IF NOT EXISTS regime_transition_log (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        checked_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        instrument          TEXT NOT NULL,
+        detection_type      TEXT,
+        current_regime      TEXT,
+        previous_regime     TEXT,
+        distinct_regimes    INTEGER,
+        stable_hours        REAL,
+        action              TEXT,
+        strategies_affected TEXT,
+        notes               TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_rtl_instrument ON regime_transition_log(instrument, checked_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_rtl_type       ON regime_transition_log(detection_type, checked_at DESC);
+    `);
+
+    db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run('portfolio-circuit-breaker');
+    db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run('walk-forward-validator');
+    db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run('regime-transition-detector');
+  } catch (err) { console.error('[prompt15-p58-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -3312,6 +3378,61 @@ app.get('/api/performance/execution', (req, res) => {
     res.json({ ok: true, execution_reality: reality, grade_validation: grades, weight_calibration: weights });
   } catch (err) {
     console.error('[/api/performance/execution]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+let _stmtWalkForward = null;
+try {
+  _stmtWalkForward = db.prepare(`
+    SELECT strategy_name, is_trade_count, is_win_rate, is_sharpe,
+           oos_trade_count, oos_win_rate, oos_sharpe,
+           wr_degradation_pct, sharpe_retention, overfit_flag, verdict, run_date
+    FROM walk_forward_validation
+    WHERE run_date = (SELECT MAX(run_date) FROM walk_forward_validation)
+    ORDER BY overfit_flag DESC, sharpe_retention ASC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtCircuitBreakerLog = null;
+try {
+  _stmtCircuitBreakerLog = db.prepare(`
+    SELECT checked_at, triggered, trigger_reason, combined_pnl_today,
+           strategies_at_l2, strategies_flooded, action, auto_recovered
+    FROM portfolio_circuit_breaker_log
+    ORDER BY checked_at DESC
+    LIMIT 48
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtRegimeTransitions = null;
+try {
+  _stmtRegimeTransitions = db.prepare(`
+    SELECT instrument, detection_type, current_regime, previous_regime,
+           distinct_regimes, stable_hours, action, strategies_affected, checked_at
+    FROM regime_transition_log
+    ORDER BY checked_at DESC
+    LIMIT 50
+  `);
+} catch (_err) { /* table not yet created */ }
+
+app.get('/api/performance/walk-forward', (req, res) => {
+  try {
+    const rows = _stmtWalkForward ? _stmtWalkForward.all() : [];
+    res.json({ ok: true, walk_forward: rows });
+  } catch (err) {
+    console.error('[/api/performance/walk-forward]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/performance/circuit-breaker', (req, res) => {
+  try {
+    const log         = _stmtCircuitBreakerLog  ? _stmtCircuitBreakerLog.all()  : [];
+    const transitions = _stmtRegimeTransitions  ? _stmtRegimeTransitions.all()  : [];
+    res.json({ ok: true, circuit_breaker_log: log, regime_transitions: transitions });
+  } catch (err) {
+    console.error('[/api/performance/circuit-breaker]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

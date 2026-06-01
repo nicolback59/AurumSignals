@@ -1497,3 +1497,62 @@ CREATE TABLE IF NOT EXISTS regime_classifier_validation (
 );
 CREATE INDEX IF NOT EXISTS idx_rcv_strategy ON regime_classifier_validation(strategy_name, run_date DESC);
 CREATE INDEX IF NOT EXISTS idx_rcv_validated ON regime_classifier_validation(multiplier_validated, multiplier_delta DESC);
+
+-- ── PROMPT 15 PHASES 5-8 — Portfolio CB + Walk-Forward + BH FDR + Regime Transition ─
+-- Phase 5: Portfolio-level circuit breaker (fires when multiple strategies in drawdown)
+-- Phase 6: IS vs OOS walk-forward validation (overfitting detection)
+-- Phase 7: fdr_adjusted_p added to research_hypotheses via ALTER TABLE in server.js
+-- Phase 8: Regime transition detector → transitionSizeMult in ADAPTIVE_OVERRIDES
+
+CREATE TABLE IF NOT EXISTS portfolio_circuit_breaker_log (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  checked_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  triggered           INTEGER NOT NULL DEFAULT 0,
+  trigger_reason      TEXT,
+  combined_pnl_today  REAL,
+  strategies_at_l2    INTEGER,
+  strategies_flooded  INTEGER,
+  action              TEXT,
+  auto_recovered      INTEGER DEFAULT 0,
+  notes               TEXT
+);
+
+CREATE TABLE IF NOT EXISTS walk_forward_validation (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date            TEXT NOT NULL,
+  strategy_name       TEXT NOT NULL,
+  is_trade_count      INTEGER,
+  is_win_rate         REAL,
+  is_avg_pnl_pts      REAL,
+  is_expectancy       REAL,
+  is_sharpe           REAL,
+  oos_trade_count     INTEGER,
+  oos_win_rate        REAL,
+  oos_avg_pnl_pts     REAL,
+  oos_expectancy      REAL,
+  oos_sharpe          REAL,
+  wr_degradation_pct  REAL,
+  sharpe_retention    REAL,
+  overfit_flag        INTEGER NOT NULL DEFAULT 0,
+  verdict             TEXT,
+  computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name)
+);
+CREATE INDEX IF NOT EXISTS idx_wfv_strategy ON walk_forward_validation(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_wfv_overfit  ON walk_forward_validation(overfit_flag DESC, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS regime_transition_log (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  checked_at          TEXT NOT NULL DEFAULT (datetime('now')),
+  instrument          TEXT NOT NULL,
+  detection_type      TEXT,
+  current_regime      TEXT,
+  previous_regime     TEXT,
+  distinct_regimes    INTEGER,
+  stable_hours        REAL,
+  action              TEXT,
+  strategies_affected TEXT,
+  notes               TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rtl_instrument ON regime_transition_log(instrument, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rtl_type       ON regime_transition_log(detection_type, checked_at DESC);

@@ -1101,6 +1101,67 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── PROMPT 15 PHASES 5-8 — Red Team Foundation (continued) ─────────────────
+    // portfolio-circuit-breaker: every 15 min — portfolio-level emergency stop
+    // walk-forward-validator: weekly Saturday 08:00 UTC — IS/OOS overfit detection
+    // regime-transition-detector: every 30 min — detects regime flux, reduces sizing
+    {
+      name:         'portfolio-circuit-breaker',
+      script:       'workers/portfolio-circuit-breaker-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '*/15 * * * *',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/portfolio-circuit-breaker-error.log',
+      out_file:        '/root/AurumSignals/logs/portfolio-circuit-breaker-out.log',
+      merge_logs:      true,
+    },
+
+    {
+      name:         'walk-forward-validator',
+      script:       'workers/walk-forward-validator-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 8 * * 6',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/walk-forward-validator-error.log',
+      out_file:        '/root/AurumSignals/logs/walk-forward-validator-out.log',
+      merge_logs:      true,
+    },
+
+    {
+      name:         'regime-transition-detector',
+      script:       'workers/regime-transition-detector-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '*/30 * * * *',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/regime-transition-detector-error.log',
+      out_file:        '/root/AurumSignals/logs/regime-transition-detector-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).

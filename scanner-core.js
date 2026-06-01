@@ -1122,6 +1122,9 @@ class Scanner extends EventEmitter {
     // Drawdown protection multiplier (from drawdown-protection-worker)
     const drawdownMult = Math.min(1.0, Math.max(0.0, signal._drawdownSizeMult ?? 1.0));
 
+    // Regime transition penalty (from regime-transition-detector-worker)
+    const transitionMult = Math.min(1.0, Math.max(0.30, signal._transitionSizeMult ?? 1.0));
+
     // High-ATR expansion penalty (preserves original logic)
     let atrPenalty = 1.0;
     try {
@@ -1135,7 +1138,7 @@ class Scanner extends EventEmitter {
     } catch (_) {}
 
     let recommendedSizePct = Math.round(
-      baseAlloc * regimeMult * sessionMult * calMult * pmSizeMult * portfolioMult * drawdownMult * atrPenalty
+      baseAlloc * regimeMult * sessionMult * calMult * pmSizeMult * portfolioMult * drawdownMult * transitionMult * atrPenalty
     );
     recommendedSizePct = Math.max(10, Math.min(100, recommendedSizePct));
 
@@ -2246,9 +2249,10 @@ class Scanner extends EventEmitter {
       this._lastSignalTimes[stratKey] = Date.now();
       // Attach portfolio intelligence context so _storeSignal can compute quality-adjusted sizing
       const _ov = adaptiveOverrides[sig.strategy_name] ?? {};
-      sig._portfolioWeight  = _ov.portfolioWeight   ?? 1.0;
-      sig._drawdownSizeMult = _ov.drawdownSizeMult   ?? 1.0;
-      sig._behaviorMode     = _ov.behaviorMode       ?? 'NORMAL';
+      sig._portfolioWeight    = _ov.portfolioWeight     ?? 1.0;
+      sig._drawdownSizeMult   = _ov.drawdownSizeMult    ?? 1.0;
+      sig._transitionSizeMult = _ov.transitionSizeMult  ?? 1.0;
+      sig._behaviorMode       = _ov.behaviorMode         ?? 'NORMAL';
       sig._activeRegime     = dbRegime ?? currentRegime;
 
       // Attach performance multiplier adjustments (research synthesis → score/size)
