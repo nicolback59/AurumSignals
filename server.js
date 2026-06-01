@@ -1211,6 +1211,74 @@ applyMigrations();
   } catch (err) { console.error('[prompt12-migration]', err.message); }
 })();
 
+(function applyPrompt13Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS risk_metrics_log (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date          TEXT NOT NULL,
+        strategy_name     TEXT NOT NULL,
+        window_days       INTEGER NOT NULL,
+        trading_days      INTEGER,
+        total_pnl_pts     REAL,
+        peak_pnl_pts      REAL,
+        max_drawdown_pts  REAL,
+        max_drawdown_pct  REAL,
+        sharpe_ratio      REAL,
+        sortino_ratio     REAL,
+        calmar_ratio      REAL,
+        annualized_pts    REAL,
+        win_days          INTEGER,
+        loss_days         INTEGER,
+        best_day_pts      REAL,
+        worst_day_pts     REAL,
+        computed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, window_days)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rml_strategy ON risk_metrics_log(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_rml_window   ON risk_metrics_log(window_days, run_date DESC);
+
+      CREATE TABLE IF NOT EXISTS correlation_log (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        checked_at            TEXT NOT NULL DEFAULT (datetime('now')),
+        strategy_a            TEXT NOT NULL,
+        strategy_b            TEXT NOT NULL,
+        correlation_30d       REAL,
+        both_active           INTEGER DEFAULT 0,
+        concurrent_direction  TEXT,
+        risk_level            TEXT,
+        notes                 TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_cl_checked  ON correlation_log(checked_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_cl_risk     ON correlation_log(risk_level, checked_at DESC);
+
+      CREATE TABLE IF NOT EXISTS session_calendar (
+        id             INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date       TEXT NOT NULL,
+        strategy_name  TEXT NOT NULL,
+        dimension      TEXT NOT NULL,
+        dimension_key  TEXT NOT NULL,
+        trade_count    INTEGER,
+        win_count      INTEGER,
+        loss_count     INTEGER,
+        win_rate       REAL,
+        baseline_wr    REAL,
+        wr_delta       REAL,
+        avg_pnl_pts    REAL,
+        total_pnl_pts  REAL,
+        pattern        TEXT,
+        computed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, dimension, dimension_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sc_strategy ON session_calendar(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_sc_pattern  ON session_calendar(pattern, wr_delta DESC);
+    `);
+    for (const agent of ['risk-metrics', 'correlation-risk', 'session-calendar']) {
+      db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+    }
+  } catch (err) { console.error('[prompt13-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -2962,6 +3030,58 @@ try {
     LIMIT 20
   `);
 } catch (_err) { /* table not yet created */ }
+
+let _stmtRiskMetrics90d = null;
+try {
+  _stmtRiskMetrics90d = db.prepare(`
+    SELECT strategy_name, window_days, trading_days,
+           total_pnl_pts, max_drawdown_pts, max_drawdown_pct,
+           sharpe_ratio, sortino_ratio, calmar_ratio,
+           annualized_pts, win_days, loss_days,
+           best_day_pts, worst_day_pts, run_date
+    FROM risk_metrics_log
+    WHERE window_days = 90
+      AND run_date = (SELECT MAX(run_date) FROM risk_metrics_log WHERE window_days = 90)
+    ORDER BY sharpe_ratio DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtSessionCalendar = null;
+try {
+  _stmtSessionCalendar = db.prepare(`
+    SELECT strategy_name, dimension, dimension_key,
+           trade_count, win_rate, baseline_wr, wr_delta,
+           avg_pnl_pts, pattern, run_date
+    FROM session_calendar
+    WHERE run_date = (SELECT MAX(run_date) FROM session_calendar)
+      AND pattern != 'NEUTRAL'
+    ORDER BY ABS(wr_delta) DESC
+    LIMIT 40
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtCorrRisk = null;
+try {
+  _stmtCorrRisk = db.prepare(`
+    SELECT strategy_a, strategy_b, correlation_30d,
+           both_active, concurrent_direction, risk_level, notes, checked_at
+    FROM correlation_log
+    WHERE checked_at = (SELECT MAX(checked_at) FROM correlation_log)
+    ORDER BY ABS(correlation_30d) DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+app.get('/api/performance/risk', (req, res) => {
+  try {
+    const metrics  = _stmtRiskMetrics90d  ? _stmtRiskMetrics90d.all()  : [];
+    const calendar = _stmtSessionCalendar ? _stmtSessionCalendar.all() : [];
+    const corr     = _stmtCorrRisk        ? _stmtCorrRisk.all()        : [];
+    res.json({ ok: true, risk_metrics_90d: metrics, session_calendar: calendar, correlation_risk: corr });
+  } catch (err) {
+    console.error('[/api/performance/risk]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 app.get('/api/health', (req, res) => {
   try {
