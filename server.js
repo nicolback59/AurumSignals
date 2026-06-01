@@ -792,6 +792,89 @@ applyMigrations();
   } catch (err) { console.error('[db-part6-migration]', err.message); }
 })();
 
+// ── Edge Audit Part 1: mfe_diagnostic_log table ───────────────────────────
+(function applyEdgeAuditPart1Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS mfe_diagnostic_log (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date            TEXT    NOT NULL,
+        strategy_name       TEXT    NOT NULL,
+        total_trades        INTEGER,
+        win_rate            REAL,
+        be_eligible_pct     REAL,
+        be_strong_pct       REAL,
+        regime_wr           TEXT,
+        conf_bucket_pnl     TEXT,
+        mae_gt50_pct        REAL,
+        mae_gt75_pct        REAL,
+        mae_gt100_pct       REAL,
+        avg_mae_sl_ratio    REAL,
+        avg_rr_achieved     REAL,
+        mfe_exceeds_tp1_pct REAL,
+        computed_at         TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_mfe_diag_date ON mfe_diagnostic_log(run_date DESC)`);
+  } catch (err) { console.error('[edge-audit-part1-migration]', err.message); }
+})();
+
+// ── Edge Audit Part 2: macro_events table + 2025-2026 calendar seed ──────
+(function applyEdgeAuditPart2Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS macro_events (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type    TEXT    NOT NULL,
+        event_date    TEXT    NOT NULL,
+        event_time_et TEXT    NOT NULL DEFAULT '08:30',
+        active        INTEGER NOT NULL DEFAULT 1,
+        notes         TEXT,
+        UNIQUE(event_type, event_date)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_macro_date ON macro_events(event_date, active)`);
+
+    // Seed 2025–2026 high-impact events (INSERT OR IGNORE — safe to re-run)
+    const ins = db.prepare(
+      `INSERT OR IGNORE INTO macro_events (event_type, event_date, event_time_et) VALUES (?, ?, ?)`
+    );
+    const fomc = [
+      // 2025 — FOMC announcement 14:00 ET
+      '2025-01-29','2025-03-19','2025-05-07','2025-06-18',
+      '2025-07-30','2025-09-17','2025-10-29','2025-12-10',
+      // 2026
+      '2026-01-28','2026-03-18','2026-05-06','2026-06-17',
+      '2026-07-29','2026-09-16',
+    ];
+    const nfp = [
+      // 2025 — NFP 08:30 ET
+      '2025-01-10','2025-02-07','2025-03-07','2025-04-04',
+      '2025-05-02','2025-06-06','2025-07-11','2025-08-01',
+      '2025-09-05','2025-10-03','2025-11-07','2025-12-05',
+      // 2026
+      '2026-01-09','2026-02-06','2026-03-06','2026-04-03',
+      '2026-05-01','2026-06-05',
+    ];
+    const cpi = [
+      // 2025 — CPI 08:30 ET (prior-month release)
+      '2025-01-15','2025-02-12','2025-03-12','2025-04-10',
+      '2025-05-13','2025-06-11','2025-07-11','2025-08-12',
+      '2025-09-10','2025-10-09','2025-11-13','2025-12-10',
+      // 2026
+      '2026-01-14','2026-02-11','2026-03-11','2026-04-08',
+      '2026-05-12','2026-06-10',
+    ];
+    const seedInTx = db.transaction(() => {
+      for (const d of fomc) ins.run('FOMC', d, '14:00');
+      for (const d of nfp)  ins.run('NFP',  d, '08:30');
+      for (const d of cpi)  ins.run('CPI',  d, '08:30');
+    });
+    seedInTx();
+  } catch (err) { console.error('[edge-audit-part2-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 

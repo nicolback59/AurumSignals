@@ -30,7 +30,7 @@ const {
   aggregate1hTo4h,
   aggregate1hToDaily,
 } = require('./strategies/shared-indicators');
-const { isBlackout, classifyNow } = require('./clock/market-clock');
+const { isBlackout, classifyNow, isNearMacroEvent } = require('./clock/market-clock');
 const BarAggregator = require('./feed/bar-aggregator');
 const { createFeed } = require('./feed/feed-selector');
 const BarWatcher    = require('./feed/bar-watcher');
@@ -1776,8 +1776,22 @@ class Scanner extends EventEmitter {
       if (rgRow?.regime) dbRegime = rgRow.regime;
     } catch (err) { this._log(`regime_states read error: ${err.message}`, 'signal'); }
 
+    // Macro event suppression — check once per scan cycle to avoid per-signal DB hits
+    let nearMacroEvent = false;
+    try { nearMacroEvent = isNearMacroEvent(this.db); } catch (_) {}
+    if (nearMacroEvent && signals.length > 0) {
+      this._log(`MACRO_WINDOW active — ${signals.length} signal(s) suppressed (±2h FOMC/CPI/NFP)`, 'signal');
+    }
+
     for (const sig of signals) {
       const stratKey = `${instrument}_${sig.strategy_name}`;
+
+      // ── Macro event window — suppress all signals ±2h around FOMC/CPI/NFP ──
+      if (nearMacroEvent) {
+        this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+          sig.confidence, null, 'macro_event_window (±2h FOMC/CPI/NFP)');
+        continue;
+      }
 
       // ── Duplicate guard — spam/same-bar prevention only (SCANNER_DUPLICATE_GUARD_MIN) ──
       if (Date.now() - (this._lastSignalTimes[stratKey] ?? 0) < duplicateGuardMs) {
@@ -1840,6 +1854,13 @@ class Scanner extends EventEmitter {
           this._log(`SIGNAL_FILTERED_OUT reason=session_blocked strat=${sig.strategy_name} session=${sig.session}`, 'signal');
           this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
             sig.confidence, null, `session '${sig.session}' blocked by adaptive learning`);
+          continue;
+        }
+        const sigRegime = sig.regime ?? dbRegime ?? currentRegime;
+        if ((ov.blockedRegimes ?? []).includes(sigRegime)) {
+          this._log(`SIGNAL_FILTERED_OUT reason=regime_blocked strat=${sig.strategy_name} regime=${sigRegime}`, 'signal');
+          this._storeRejection(instrument, sig.direction, sig.setup, sig.strategy_name,
+            sig.confidence, null, `regime '${sigRegime}' blocked (WR<44% in 90-day data)`);
           continue;
         }
       }

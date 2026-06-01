@@ -67,9 +67,30 @@ async function sendNtfy(title, body, priority = 'default') {
   } catch (_) { /* non-critical */ }
 }
 
+// ── Regime veto analysis (Edge Audit Part 2) ──────────────────────────────────
+// Returns regime names where WR < 44% over last 90 days with >= 10 trades.
+// Used to populate blockedRegimes in adaptive overrides — hard NO-TRADE per regime.
+function computeRegimeVetoes(db, strategyName) {
+  try {
+    const rows = db.prepare(`
+      SELECT regime,
+             COUNT(*) n,
+             SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) wins
+      FROM trade_dna
+      WHERE strategy_name = ?
+        AND trade_date >= date('now', '-90 days')
+        AND outcome IN ('WIN','LOSS')
+        AND regime IS NOT NULL
+      GROUP BY regime
+      HAVING n >= 10
+    `).all(strategyName);
+    return rows.filter(r => r.wins / r.n < 0.44).map(r => r.regime);
+  } catch (_) { return []; }
+}
+
 function computeGate(db, strategyName) {
   let score = 0;
-  const contributions = { edge: 0, health: 0, vetoes: 0, calibration: 0, correlation: 0 };
+  const contributions = { edge: 0, health: 0, vetoes: 0, calibration: 0, correlation: 0, regimes: 0 };
   const rationale = [];
 
   // ── 1. Edge health (Phase 4) ────────────────────────────────────────────────
@@ -154,6 +175,18 @@ function computeGate(db, strategyName) {
     }
   } catch (_) {}
 
+  // ── 6. Regime vetoes from trade_dna (Edge Audit Part 2) ─────────────────────
+  let vetoedRegimes = [];
+  try {
+    vetoedRegimes = computeRegimeVetoes(db, strategyName);
+    if (vetoedRegimes.length > 0) {
+      const pts = Math.min(vetoedRegimes.length * 5, 15);
+      score += pts;
+      contributions.regimes = pts;
+      rationale.push(`regime_vetoes=[${vetoedRegimes.join(',')}](+${pts})`);
+    }
+  } catch (_) {}
+
   return {
     score,
     gate_status:         gateStatus(score),
@@ -162,6 +195,7 @@ function computeGate(db, strategyName) {
     health_contribution: contributions.health,
     calibration_factor:  contributions.calibration > 0 ? 1.05 : 1.0,
     active_vetoes:       contributions.vetoes / 3,
+    regime_vetoes:       vetoedRegimes,
     rationale,
   };
 }
@@ -185,15 +219,19 @@ function saveOverrides(db, overrides) {
   `).run(JSON.stringify(overrides));
 }
 
-function applyGateToOverrides(db, strategyName, gateStatus, prevGateStatus) {
+function applyGateToOverrides(db, strategyName, gateStatus, prevGateStatus, blockedRegimes = []) {
   const overrides = loadOverrides(db);
   if (!overrides[strategyName]) {
     overrides[strategyName] = {
-      paused: false, blockLong: false, blockShort: false, blockedSessions: [], reasons: [],
+      paused: false, blockLong: false, blockShort: false,
+      blockedSessions: [], blockedRegimes: [], reasons: [],
     };
   }
   const ov = overrides[strategyName];
   if (!ov.reasons) ov.reasons = [];
+
+  // Always sync regime blocks from current data analysis
+  ov.blockedRegimes = blockedRegimes;
 
   if (gateStatus === 'GATED') {
     if (!ov.manualPause) {
@@ -233,7 +271,8 @@ async function run() {
     try {
       const gate = computeGate(db, strategy);
       const { score, gate_status, conf_adjustment, edge_contribution,
-              health_contribution, calibration_factor, active_vetoes, rationale } = gate;
+              health_contribution, calibration_factor, active_vetoes,
+              regime_vetoes, rationale } = gate;
 
       const adjustedConf = BASE_MIN_CONF + conf_adjustment;
 
@@ -253,7 +292,7 @@ async function run() {
       const prevStatus = prevRow?.gate_status ?? 'OPEN';
 
       // Inject into adaptive overrides (this is how the scanner picks it up)
-      applyGateToOverrides(db, strategy, gate_status, prevStatus);
+      applyGateToOverrides(db, strategy, gate_status, prevStatus, regime_vetoes ?? []);
 
       console.log(
         `[${WORKER_NAME}] ${strategy}: score=${score} status=${gate_status} ` +
