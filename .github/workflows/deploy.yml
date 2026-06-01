@@ -1,0 +1,39 @@
+name: Deploy to Droplet
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  deploy:
+    name: SSH deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.DROPLET_HOST }}
+          username: root
+          key: ${{ secrets.DROPLET_SSH_KEY }}
+          script: |
+            set -euo pipefail
+            cd /root/AurumSignals
+
+            echo "==> Pulling latest code"
+            git pull origin main
+
+            echo "==> Installing dependencies"
+            npm ci --omit=dev
+
+            echo "==> Syntax check"
+            node --check server.js
+
+            echo "==> Reloading PM2 processes"
+            pm2 reload ecosystem.config.js --update-env
+
+            echo "==> Saving PM2 process list"
+            pm2 save
+
+            echo "==> Deploy complete"
