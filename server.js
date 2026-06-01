@@ -2353,6 +2353,123 @@ app.get('/api/health', (req, res) => {
   }
 });
 
+// ── PROMETHEUS METRICS ────────────────────────────────────────────────────────
+// Plain-text Prometheus exposition format. No prom-client dependency needed —
+// we own all the data. Scrape with: prometheus.yml target http://host:3000/api/metrics
+app.get('/api/metrics', (req, res) => {
+  try {
+    const lines = [];
+    const g = (name, help, value, labels = '') => {
+      if (value === null || value === undefined || Number.isNaN(value)) return;
+      lines.push(`# HELP ${name} ${help}`);
+      lines.push(`# TYPE ${name} gauge`);
+      lines.push(labels ? `${name}{${labels}} ${value}` : `${name} ${value}`);
+    };
+    const c = (name, help, value, labels = '') => {
+      if (value === null || value === undefined || Number.isNaN(value)) return;
+      lines.push(`# HELP ${name} ${help}`);
+      lines.push(`# TYPE ${name} counter`);
+      lines.push(labels ? `${name}{${labels}} ${value}` : `${name} ${value}`);
+    };
+
+    // ── Process ───────────────────────────────────────────────────────────────
+    g('aurum_up', 'Always 1 — server is running', 1);
+    g('aurum_uptime_seconds', 'API server uptime in seconds', Math.floor(process.uptime()));
+    g('aurum_nodejs_heap_bytes', 'V8 heap used bytes', process.memoryUsage().heapUsed);
+
+    // ── Database ──────────────────────────────────────────────────────────────
+    let dbSizeBytes = null;
+    try { dbSizeBytes = require('fs').statSync(DB_PATH).size; } catch (_) {}
+    g('aurum_db_size_bytes', 'SQLite database file size in bytes', dbSizeBytes);
+
+    // ── Signal counts ─────────────────────────────────────────────────────────
+    const sigTotal  = _stmtSigCount.get().n;
+    const sigActive = _stmtActiveSigs.get().n;
+    const sigStuck  = _stmtStuckSigs.get().n;
+    c('aurum_signals_total',  'Total signals ever recorded', sigTotal);
+    g('aurum_signals_active', 'Signals with trade_status=ACTIVE', sigActive);
+    g('aurum_signals_stuck',  'Active signals older than 2 hours', sigStuck);
+
+    try {
+      const outRow = _stmtOutCount.get();
+      c('aurum_outcomes_total', 'Total trade outcomes recorded', outRow.n);
+    } catch (_) {}
+
+    // ── Scanner ───────────────────────────────────────────────────────────────
+    try {
+      const row = db.prepare(
+        "SELECT last_heartbeat, metadata FROM worker_health WHERE worker_name = 'scanner-worker'"
+      ).get();
+      let scannerHealthy = 0;
+      let barAgeS = null;
+      let scanCount = null;
+      let pm2Restarts = null;
+      if (row) {
+        const ageMs = row.last_heartbeat
+          ? Date.now() - new Date(row.last_heartbeat).getTime() : null;
+        scannerHealthy = ageMs != null && ageMs < 10 * 60_000 ? 1 : 0;
+        try {
+          const meta = row.metadata ? JSON.parse(row.metadata) : {};
+          if (meta.lastBarTimestamp) {
+            barAgeS = Math.round((Date.now() - new Date(meta.lastBarTimestamp).getTime()) / 1000);
+          }
+          scanCount   = meta.scanCount   ?? null;
+          pm2Restarts = meta.pm2Restarts ?? null;
+        } catch (_) {}
+      }
+      g('aurum_scanner_healthy',          '1 if scanner heartbeat < 10 min old', scannerHealthy);
+      g('aurum_scanner_bar_age_seconds',  'Seconds since last bar received by scanner', barAgeS);
+      c('aurum_scanner_scan_count_total', 'Cumulative scan cycles since last restart', scanCount);
+      c('aurum_scanner_restarts_total',   'PM2 restart count for scanner-worker', pm2Restarts);
+    } catch (_) {}
+
+    // ── Per-worker health ─────────────────────────────────────────────────────
+    try {
+      const workerRows = db.prepare(
+        'SELECT worker_name, last_heartbeat FROM worker_health'
+      ).all();
+      for (const w of workerRows) {
+        const ageMs = w.last_heartbeat
+          ? Date.now() - new Date(w.last_heartbeat).getTime() : null;
+        const healthy = ageMs != null && ageMs < 10 * 60_000 ? 1 : 0;
+        const ageS = ageMs != null ? Math.round(ageMs / 1000) : null;
+        const lbl = `worker="${w.worker_name}"`;
+        g('aurum_worker_healthy',    'Worker heartbeat < 10 min', healthy, lbl);
+        g('aurum_worker_age_seconds','Seconds since last worker heartbeat', ageS, lbl);
+      }
+    } catch (_) {}
+
+    // ── Strategy health scores ────────────────────────────────────────────────
+    if (_stmtStratHealth) {
+      try {
+        for (const r of _stmtStratHealth.all()) {
+          const lbl = `strategy="${r.strategy_name}"`;
+          g('aurum_strategy_health_score', 'Strategy health score 0-100', r.health_score, lbl);
+          g('aurum_strategy_wr_30d',       'Strategy 30-day win rate', r.wr_30d, lbl);
+          g('aurum_strategy_trades_30d',   'Strategy trade count last 30 days', r.trades_30d, lbl);
+        }
+      } catch (_) {}
+    }
+
+    // ── Edge health (decay scores) ────────────────────────────────────────────
+    if (_stmtEdgeHealth) {
+      try {
+        for (const r of _stmtEdgeHealth.all()) {
+          const lbl = `strategy="${r.strategy_name}"`;
+          g('aurum_edge_decay_score',        'Edge decay score (lower = healthier)', r.decay_score, lbl);
+          g('aurum_edge_consecutive_losses', 'Consecutive losses for strategy', r.consecutive_losses, lbl);
+        }
+      } catch (_) {}
+    }
+
+    res.set('Content-Type', 'text/plain; version=0.0.4; charset=utf-8');
+    res.set('Cache-Control', 'no-store');
+    res.send(lines.join('\n') + '\n');
+  } catch (err) {
+    res.status(500).set('Content-Type', 'text/plain').send(`# ERROR: ${err.message}\n`);
+  }
+});
+
 // ── INTELLIGENCE ENGINE API ───────────────────────────────────────────────────────────
 
 app.get('/api/intelligence', (req, res) => {
