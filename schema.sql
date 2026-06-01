@@ -823,6 +823,51 @@ CREATE INDEX IF NOT EXISTS idx_notif_type   ON notification_log(event_type, sent
 CREATE INDEX IF NOT EXISTS idx_notif_sent   ON notification_log(sent_at DESC);
 
 -- ════════════════════════════════════════════════════════════════════════════
+-- EDGE AUDIT — Part 1: MFE/MAE Diagnostic Log
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Weekly snapshot written by workers/mfe-diagnostic-worker.js (Mon 06:15 UTC).
+-- One row per strategy per run. JSON blobs for regime_wr and conf_bucket_pnl.
+CREATE TABLE IF NOT EXISTS mfe_diagnostic_log (
+  id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date            TEXT    NOT NULL,
+  strategy_name       TEXT    NOT NULL,
+  total_trades        INTEGER,
+  win_rate            REAL,
+  be_eligible_pct     REAL,   -- % of losses where mfe_sl_ratio >= 0.5
+  be_strong_pct       REAL,   -- % of losses where mfe_sl_ratio >= 0.75
+  regime_wr           TEXT,   -- JSON [{regime, n, wr}] sorted WR ASC
+  conf_bucket_pnl     TEXT,   -- JSON [{bucket, n, wr, avg_pnl}]
+  mae_gt50_pct        REAL,   -- % of trades where MAE > 50% of SL
+  mae_gt75_pct        REAL,   -- % of trades where MAE > 75% of SL
+  mae_gt100_pct       REAL,   -- % of trades where MAE > 100% of SL (full stop run)
+  avg_mae_sl_ratio    REAL,
+  avg_rr_achieved     REAL,   -- avg(mfe_pts / tp1_pts) — >1.0 = leaving money on table
+  mfe_exceeds_tp1_pct REAL,   -- % of trades where MFE exceeded TP1 distance
+  computed_at         TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name)
+);
+CREATE INDEX IF NOT EXISTS idx_mfe_diag_date ON mfe_diagnostic_log(run_date DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- EDGE AUDIT — Part 2: Macro Events Calendar
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- High-impact macro events (FOMC, CPI, NFP). Scanner suppresses all signals
+-- in a ±2h window around each event. Seeded with 2025-2026 dates in server.js.
+-- Add/deactivate rows as the calendar updates.
+CREATE TABLE IF NOT EXISTS macro_events (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  event_type    TEXT    NOT NULL,  -- FOMC | CPI | NFP | OTHER
+  event_date    TEXT    NOT NULL,  -- YYYY-MM-DD
+  event_time_et TEXT    NOT NULL DEFAULT '08:30',  -- HH:MM Eastern
+  active        INTEGER NOT NULL DEFAULT 1,
+  notes         TEXT,
+  UNIQUE(event_type, event_date)
+);
+CREATE INDEX IF NOT EXISTS idx_macro_date ON macro_events(event_date, active);
+
+-- ════════════════════════════════════════════════════════════════════════════
 -- DB PART 5 — trade_dna materialized table (Prompt #7)
 -- ════════════════════════════════════════════════════════════════════════════
 

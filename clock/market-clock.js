@@ -202,9 +202,38 @@ function getSessionInfoCompat(ts) {
   };
 }
 
+/**
+ * Returns true if the current time is within WINDOW_MIN minutes of any active
+ * macro event in the macro_events table (FOMC/CPI/NFP).
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {number} [windowMin=120]  half-window in minutes (default ±2h)
+ */
+function isNearMacroEvent(db, windowMin = 120) {
+  try {
+    const etNow    = DateTime.now().setZone('America/New_York');
+    const dateStr  = etNow.toISODate();           // YYYY-MM-DD
+    const nowMin   = etNow.hour * 60 + etNow.minute;
+
+    const rows = db.prepare(
+      `SELECT event_time_et FROM macro_events WHERE event_date = ? AND active = 1`
+    ).all(dateStr);
+
+    for (const row of rows) {
+      const [h, m]    = (row.event_time_et ?? '08:30').split(':').map(Number);
+      const eventMin  = h * 60 + m;
+      if (Math.abs(nowMin - eventMin) <= windowMin) return true;
+    }
+    return false;
+  } catch (_) {
+    return false;
+  }
+}
+
 module.exports = {
   classifyNow,
   isBlackout,
+  isNearMacroEvent,
   msUntilOpen,
   getSessionInfoCompat,
   SESSIONS,

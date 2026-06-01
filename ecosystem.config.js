@@ -611,6 +611,30 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── MFE/MAE DIAGNOSTIC WORKER ────────────────────────────────────────────
+    // Monday 06:15 UTC — after trade-dna refresh (04:30) and backup (04:00).
+    // Queries trade_dna for BE trigger potential, MAE stop health, MFE vs TP1
+    // gap, regime WR breakdown, and confidence bucket P&L. Sends weekly ntfy
+    // report with top actionable findings. Writes to mfe_diagnostic_log.
+    {
+      name:         'mfe-diagnostic-worker',
+      script:       'workers/mfe-diagnostic-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '15 6 * * 1',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/mfe-diagnostic-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/mfe-diagnostic-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
