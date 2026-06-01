@@ -2347,6 +2347,23 @@ app.get('/api/health', (req, res) => {
           return out;
         } catch { return null; }
       })(),
+      droplet: (() => {
+        try {
+          const row = db.prepare(
+            "SELECT metadata FROM worker_health WHERE worker_name = 'droplet-health'"
+          ).get();
+          if (!row?.metadata) return null;
+          const m = JSON.parse(row.metadata);
+          return {
+            cpu_pct:    m.cpu?.pct    ?? null,
+            ram_pct:    m.ram?.pct    ?? null,
+            disk_pct:   m.disk?.pct   ?? null,
+            wal_mb:     m.walMb       ?? null,
+            last_check: m.lastChecked ?? null,
+            alerts:     m.alerts      ?? null,
+          };
+        } catch { return null; }
+      })(),
     });
   } catch (err) {
     res.status(500).json({ status: 'error', error: err.message });
@@ -2376,6 +2393,20 @@ app.get('/api/metrics', (req, res) => {
     g('aurum_up', 'Always 1 — server is running', 1);
     g('aurum_uptime_seconds', 'API server uptime in seconds', Math.floor(process.uptime()));
     g('aurum_nodejs_heap_bytes', 'V8 heap used bytes', process.memoryUsage().heapUsed);
+
+    // ── Droplet OS resources (from droplet-health-worker) ─────────────────────
+    try {
+      const dhRow = db.prepare(
+        "SELECT metadata FROM worker_health WHERE worker_name = 'droplet-health'"
+      ).get();
+      if (dhRow?.metadata) {
+        const dh = JSON.parse(dhRow.metadata);
+        g('aurum_droplet_cpu_pct',  'Droplet CPU load % (1-min avg / cores)',  dh.cpu?.pct  ?? null);
+        g('aurum_droplet_ram_pct',  'Droplet RAM used %',                       dh.ram?.pct  ?? null);
+        g('aurum_droplet_disk_pct', 'Droplet root disk used %',                 dh.disk?.pct ?? null);
+        g('aurum_droplet_wal_mb',   'SQLite WAL file size in MB',               dh.walMb     ?? null);
+      }
+    } catch (_) {}
 
     // ── Database ──────────────────────────────────────────────────────────────
     let dbSizeBytes = null;
