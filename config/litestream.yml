@@ -1,0 +1,32 @@
+# Litestream — continuous SQLite replication to DigitalOcean Spaces
+#
+# Install:  see scripts/setup-litestream.sh
+# Start:    litestream replicate -config /root/AurumSignals/config/litestream.yml
+# Restore:  litestream restore -config /root/AurumSignals/config/litestream.yml \
+#             -o /tmp/signals-restored.db \
+#             s3://BUCKET.REGION.digitaloceanspaces.com/aurum/signals.db
+#
+# Env vars required (set in /etc/litestream.env or systemd EnvironmentFile):
+#   LITESTREAM_ACCESS_KEY_ID      — same as DO_SPACES_KEY
+#   LITESTREAM_SECRET_ACCESS_KEY  — same as DO_SPACES_SECRET
+#
+# These env vars are read automatically by litestream — no YAML interpolation needed.
+
+dbs:
+  - path: /root/AurumSignals/signals.db
+    replicas:
+      - name: do-spaces
+        # DigitalOcean Spaces is S3-compatible. Use your Spaces region below.
+        # Common regions: nyc3, sfo3, ams3, sgp1, fra1
+        type: s3
+        bucket: "${DO_SPACES_BUCKET}"
+        path: aurum/signals.db
+        endpoint: https://${DO_SPACES_REGION}.digitaloceanspaces.com
+        region: "${DO_SPACES_REGION}"
+        force-path-style: true
+        # WAL segments are uploaded every second (default). Recovery point objective ≈ 1s.
+        sync-interval: 1s
+        # Keep 24h of WAL snapshots (lets you roll back to any point in the last day)
+        retention: 24h
+        retention-check-interval: 1h
+        snapshot-interval: 6h

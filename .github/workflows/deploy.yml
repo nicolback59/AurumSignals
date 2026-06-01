@@ -37,6 +37,14 @@ jobs:
             pm2 set pm2-logrotate:compress false  2>/dev/null || true
             pm2 set pm2-logrotate:rotateInterval '0 0 * * *' 2>/dev/null || true
 
+            echo "==> Ensuring Litestream replication is running"
+            if systemctl is-active --quiet litestream; then
+              echo "    Litestream: active"
+            else
+              echo "    Litestream: not running — attempting restart"
+              systemctl restart litestream 2>/dev/null || echo "    Litestream not installed — run scripts/setup-litestream.sh"
+            fi
+
             echo "==> Reloading PM2 processes"
             pm2 reload ecosystem.config.js --update-env
 
