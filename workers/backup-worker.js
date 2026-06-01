@@ -120,6 +120,17 @@ async function runBackup() {
     db.close();
   }
 
+  // Run PRAGMA optimize before backup completes so SQLite updates its
+  // query planner statistics. Requires a brief writable connection (WAL-safe).
+  try {
+    const dbOpt = new Database(DB_PATH);
+    dbOpt.pragma('optimize');
+    dbOpt.close();
+    console.log(`[${WORKER_NAME}] PRAGMA optimize complete`);
+  } catch (optErr) {
+    console.warn(`[${WORKER_NAME}] PRAGMA optimize failed (non-fatal): ${optErr.message}`);
+  }
+
   const localElapsed = ((Date.now() - localStart) / 1000).toFixed(1);
   const localSizeMb  = (fs.statSync(destPath).size / 1_048_576).toFixed(1);
   console.log(`[${WORKER_NAME}] Local backup complete — ${localSizeMb} MB in ${localElapsed}s`);

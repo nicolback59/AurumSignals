@@ -588,6 +588,29 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── TRADE DNA WORKER ──────────────────────────────────────────────────────
+    // 04:30 UTC daily — 30 min after nightly backup. Full-refresh of trade_dna
+    // materialized table (signals + outcomes + backtest_trades JOIN with
+    // pre-computed mfe_sl_ratio, mae_sl_ratio, rr_achieved for ML/agents).
+    {
+      name:         'trade-dna-worker',
+      script:       'workers/trade-dna-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 4 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/trade-dna-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/trade-dna-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).

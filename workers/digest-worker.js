@@ -143,10 +143,7 @@ async function run() {
     SELECT strategy_name, health_score, health_status, wr_30d, trades_30d, wr_trend,
            exp_30d, top_failure, top_failure_pct
     FROM   strategy_health_snapshots
-    WHERE  snapshot_date = (
-      SELECT MAX(s2.snapshot_date) FROM strategy_health_snapshots s2
-      WHERE  s2.strategy_name = strategy_health_snapshots.strategy_name
-    )
+    WHERE  is_latest = 1
     ORDER  BY strategy_name
   `);
 

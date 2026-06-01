@@ -511,9 +511,11 @@ CREATE TABLE IF NOT EXISTS strategy_health_snapshots (
   health_score   REAL,
   health_status  TEXT,            -- HEALTHY / CAUTION / DEGRADED / CRITICAL
   computed_at    TEXT    NOT NULL DEFAULT (datetime('now')),
+  is_latest      INTEGER NOT NULL DEFAULT 0,  -- 1 = current snapshot for this strategy
   UNIQUE(strategy_name, snapshot_date)
 );
-CREATE INDEX IF NOT EXISTS idx_shs_strategy ON strategy_health_snapshots(strategy_name, snapshot_date DESC);
+CREATE INDEX IF NOT EXISTS idx_shs_strategy  ON strategy_health_snapshots(strategy_name, snapshot_date DESC);
+CREATE INDEX IF NOT EXISTS idx_shs_is_latest ON strategy_health_snapshots(is_latest) WHERE is_latest = 1;
 
 -- Confidence calibration audit: does confidence=75 actually predict 65% WR?
 CREATE TABLE IF NOT EXISTS calibration_audit (
@@ -819,3 +821,82 @@ CREATE TABLE IF NOT EXISTS notification_log (
 CREATE INDEX IF NOT EXISTS idx_notif_signal ON notification_log(signal_id);
 CREATE INDEX IF NOT EXISTS idx_notif_type   ON notification_log(event_type, sent_at DESC);
 CREATE INDEX IF NOT EXISTS idx_notif_sent   ON notification_log(sent_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- DB PART 5 — trade_dna materialized table (Prompt #7)
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Materialized join of signals + outcomes + backtest_trades.
+-- Rebuilt nightly by workers/trade-dna-worker.js (4:30 AM UTC).
+-- Provides a single flat table of all resolved trades with pre-computed
+-- ratios that stop-agent, tp-agent, and future ML models can query directly.
+CREATE TABLE IF NOT EXISTS trade_dna (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  source        TEXT    NOT NULL,   -- LIVE | BACKTEST
+  signal_id     INTEGER,            -- live trades: references signals(id)
+  bt_trade_id   INTEGER,            -- backtest trades: references backtest_trades(id)
+  strategy_name TEXT    NOT NULL,
+  instrument    TEXT,
+  direction     TEXT,
+  outcome       TEXT    NOT NULL,   -- WIN | LOSS | BE
+  session       TEXT,
+  regime        TEXT,
+  hour_et       INTEGER,            -- 0–23 ET hour at entry bar
+  trade_date    TEXT,               -- YYYY-MM-DD
+  entry         REAL,
+  sl            REAL,
+  tp1           REAL,
+  sl_pts        REAL,               -- ABS(entry - sl)
+  tp1_pts       REAL,               -- ABS(tp1 - entry)
+  rr_planned    REAL,               -- tp1_pts / sl_pts
+  pnl_pts       REAL,
+  mfe_pts       REAL,               -- Maximum Favorable Excursion
+  mae_pts       REAL,               -- Maximum Adverse Excursion
+  hold_time_min REAL,
+  exit_type     TEXT,               -- TP_HIT | SL_HIT | TIMEOUT
+  -- pre-computed ratios (key ML features)
+  mfe_sl_ratio  REAL,               -- mfe_pts / sl_pts (1.0 = full risk recovered)
+  mae_sl_ratio  REAL,               -- mae_pts / sl_pts (1.0 = touched stop)
+  rr_achieved   REAL,               -- mfe_pts / tp1_pts (1.0 = TP fully hit)
+  -- from signal_features (live trades only)
+  confidence    INTEGER,
+  archetype     TEXT,
+  entry_type    TEXT,
+  htf_bias      TEXT,
+  atr           REAL,
+  rsi           REAL,
+  refreshed_at  TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_dna_strategy  ON trade_dna(strategy_name, trade_date DESC);
+CREATE INDEX IF NOT EXISTS idx_dna_outcome   ON trade_dna(outcome, strategy_name);
+CREATE INDEX IF NOT EXISTS idx_dna_source    ON trade_dna(source, strategy_name);
+CREATE INDEX IF NOT EXISTS idx_dna_refreshed ON trade_dna(refreshed_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- DB PART 6 — Performance indexes + query planner hints (Prompt #7)
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Compound index for reconcile-worker _getPending: strategy + status + time
+CREATE INDEX IF NOT EXISTS idx_signals_status_strat
+  ON signals(strategy_name, trade_status, received_at DESC);
+
+-- Outcome result lookups for stop-agent and tp-agent rolling windows
+CREATE INDEX IF NOT EXISTS idx_outcomes_result
+  ON outcomes(result, exit_at DESC);
+
+-- Loss forensics grouping by strategy + category
+CREATE INDEX IF NOT EXISTS idx_lf_strat_cat
+  ON loss_forensics(strategy_name, failure_category, created_at DESC);
+
+-- Partial index: consensus reads only pending messages (eliminates full-table scan)
+CREATE INDEX IF NOT EXISTS idx_am_pending
+  ON agent_messages(priority, created_at) WHERE status = 'pending';
+
+-- Frequency-agent near-miss scans by strategy + time
+CREATE INDEX IF NOT EXISTS idx_rejections_strat
+  ON signal_rejections(strategy, rejected_at DESC);
+
+-- is_latest flag: replaces correlated subquery in digest-worker + health queries.
+-- strategy-health-worker sets is_latest=1 on new snapshot, clears 0 on older rows.
+-- Migration: ALTER TABLE adds column to existing DBs (server.js applyMigrations).
+-- ALTER TABLE strategy_health_snapshots ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 0;

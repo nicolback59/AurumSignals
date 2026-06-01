@@ -286,6 +286,13 @@ async function main() {
         topFailure, topFailPct != null ? +topFailPct.toFixed(4) : null,
         healthScore, healthStatus,
       );
+
+      // Keep is_latest flag consistent: clear old rows, mark new one as latest
+      try {
+        db.prepare(`UPDATE strategy_health_snapshots SET is_latest = 0 WHERE strategy_name = ? AND snapshot_date != ?`).run(strategy, today);
+        db.prepare(`UPDATE strategy_health_snapshots SET is_latest = 1 WHERE strategy_name = ? AND snapshot_date = ?`).run(strategy, today);
+      } catch (_) {}
+
       snapshotsWritten++;
 
       // Alert if DEGRADED or CRITICAL
