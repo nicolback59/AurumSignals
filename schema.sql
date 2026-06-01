@@ -1363,3 +1363,106 @@ CREATE TABLE IF NOT EXISTS pnl_decomposition (
 );
 CREATE INDEX IF NOT EXISTS idx_pd_strategy ON pnl_decomposition(strategy_name, run_date DESC);
 CREATE INDEX IF NOT EXISTS idx_pd_role     ON pnl_decomposition(role, expectancy_score DESC);
+
+-- ── PROMPT 15 PHASES 1-2 — Red Team Foundation ───────────────────────────────
+-- Phase 1: Execution Reality — slippage-adjusted P&L vs theoretical metrics.
+-- Phase 2: Quality Score Validator — empirical validation of grade weights.
+
+CREATE TABLE IF NOT EXISTS execution_log (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  trade_dna_id           INTEGER,
+  run_date               TEXT NOT NULL,
+  strategy_name          TEXT NOT NULL,
+  trade_date             TEXT,
+  hour_et                INTEGER,
+  session                TEXT,
+  regime                 TEXT,
+  instrument             TEXT,
+  outcome                TEXT,
+  theoretical_pnl_pts    REAL,
+  estimated_slippage_pts REAL,
+  adjusted_pnl_pts       REAL,
+  sl_pts                 REAL,
+  tp1_pts                REAL,
+  atr                    REAL,
+  slippage_pct_of_stop   REAL,
+  computed_at            TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_el_strategy ON execution_log(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_el_session  ON execution_log(session, estimated_slippage_pts DESC);
+
+CREATE TABLE IF NOT EXISTS execution_reality_summary (
+  id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date                 TEXT NOT NULL,
+  strategy_name            TEXT NOT NULL,
+  window_days              INTEGER NOT NULL,
+  trade_count              INTEGER,
+  theoretical_wr           REAL,
+  adjusted_wr              REAL,
+  wr_gap_pts               REAL,
+  theoretical_expectancy   REAL,
+  adjusted_expectancy      REAL,
+  theoretical_sharpe       REAL,
+  adjusted_sharpe          REAL,
+  theoretical_sortino      REAL,
+  adjusted_sortino         REAL,
+  avg_slippage_pts         REAL,
+  avg_slippage_pct_stop    REAL,
+  reality_gap_pct          REAL,
+  edge_survives_execution  INTEGER,
+  computed_at              TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, window_days)
+);
+CREATE INDEX IF NOT EXISTS idx_ers_strategy ON execution_reality_summary(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_ers_gap      ON execution_reality_summary(reality_gap_pct DESC);
+
+CREATE TABLE IF NOT EXISTS quality_score_validation (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date              TEXT NOT NULL,
+  strategy_name         TEXT NOT NULL,
+  quality_grade         TEXT NOT NULL,
+  min_pts               INTEGER,
+  max_pts               INTEGER,
+  base_alloc_pct        INTEGER,
+  trade_count           INTEGER,
+  win_rate              REAL,
+  avg_pnl_pts           REAL,
+  expectancy_score      REAL,
+  baseline_wr           REAL,
+  wr_delta              REAL,
+  z_vs_next_lower       REAL,
+  grade_validated       INTEGER,
+  computed_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, quality_grade)
+);
+CREATE INDEX IF NOT EXISTS idx_qsv_strategy ON quality_score_validation(strategy_name, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS quality_score_weights (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date          TEXT NOT NULL,
+  strategy_name     TEXT NOT NULL,
+  component         TEXT NOT NULL,
+  component_value   TEXT NOT NULL,
+  current_pts       REAL,
+  empirical_pts     REAL,
+  calibration_delta REAL,
+  sample_size       INTEGER,
+  observed_wr       REAL,
+  baseline_wr       REAL,
+  computed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, component, component_value)
+);
+CREATE INDEX IF NOT EXISTS idx_qsw_strategy ON quality_score_weights(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_qsw_delta    ON quality_score_weights(calibration_delta DESC);
+
+CREATE TABLE IF NOT EXISTS quality_score_regression (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date      TEXT NOT NULL,
+  strategy_name TEXT NOT NULL,
+  pearson_r     REAL,
+  r_squared     REAL,
+  trade_count   INTEGER,
+  interpretation TEXT,
+  computed_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name)
+);

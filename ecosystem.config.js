@@ -938,6 +938,47 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── PROMPT 15 RED TEAM FOUNDATION WORKERS ────────────────────────────────
+    // execution-reality: daily 08:00 UTC — slippage-adjusted P&L vs theoretical
+    // quality-score-validator: weekly Sunday 07:30 UTC — validates grade weights
+    {
+      name:         'execution-reality',
+      script:       'workers/execution-reality-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 8 * * *',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/execution-reality-error.log',
+      out_file:        '/root/AurumSignals/logs/execution-reality-out.log',
+      merge_logs:      true,
+    },
+
+    {
+      name:         'quality-score-validator',
+      script:       'workers/quality-score-validator-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 7 * * 0',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/quality-score-validator-error.log',
+      out_file:        '/root/AurumSignals/logs/quality-score-validator-out.log',
+      merge_logs:      true,
+    },
+
     // ── PROMPT 14 PERFORMANCE MULTIPLIER ENGINE ──────────────────────────────
     // performance-multiplier: daily 07:45 UTC — synthesizes research → live scoring multipliers
     // pnl-decomposition: weekly Saturday 06:00 UTC — 90-day P&L attribution (10 dimensions)

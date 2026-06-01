@@ -1329,6 +1329,114 @@ applyMigrations();
   } catch (err) { console.error('[prompt14-migration]', err.message); }
 })();
 
+(function applyPrompt15Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS execution_log (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        trade_dna_id           INTEGER,
+        run_date               TEXT NOT NULL,
+        strategy_name          TEXT NOT NULL,
+        trade_date             TEXT,
+        hour_et                INTEGER,
+        session                TEXT,
+        regime                 TEXT,
+        instrument             TEXT,
+        outcome                TEXT,
+        theoretical_pnl_pts    REAL,
+        estimated_slippage_pts REAL,
+        adjusted_pnl_pts       REAL,
+        sl_pts                 REAL,
+        tp1_pts                REAL,
+        atr                    REAL,
+        slippage_pct_of_stop   REAL,
+        computed_at            TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_el_strategy ON execution_log(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_el_session  ON execution_log(session, estimated_slippage_pts DESC);
+
+      CREATE TABLE IF NOT EXISTS execution_reality_summary (
+        id                       INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date                 TEXT NOT NULL,
+        strategy_name            TEXT NOT NULL,
+        window_days              INTEGER NOT NULL,
+        trade_count              INTEGER,
+        theoretical_wr           REAL,
+        adjusted_wr              REAL,
+        wr_gap_pts               REAL,
+        theoretical_expectancy   REAL,
+        adjusted_expectancy      REAL,
+        theoretical_sharpe       REAL,
+        adjusted_sharpe          REAL,
+        theoretical_sortino      REAL,
+        adjusted_sortino         REAL,
+        avg_slippage_pts         REAL,
+        avg_slippage_pct_stop    REAL,
+        reality_gap_pct          REAL,
+        edge_survives_execution  INTEGER,
+        computed_at              TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, window_days)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ers_strategy ON execution_reality_summary(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_ers_gap      ON execution_reality_summary(reality_gap_pct DESC);
+
+      CREATE TABLE IF NOT EXISTS quality_score_validation (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date              TEXT NOT NULL,
+        strategy_name         TEXT NOT NULL,
+        quality_grade         TEXT NOT NULL,
+        min_pts               INTEGER,
+        max_pts               INTEGER,
+        base_alloc_pct        INTEGER,
+        trade_count           INTEGER,
+        win_rate              REAL,
+        avg_pnl_pts           REAL,
+        expectancy_score      REAL,
+        baseline_wr           REAL,
+        wr_delta              REAL,
+        z_vs_next_lower       REAL,
+        grade_validated       INTEGER,
+        computed_at           TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, quality_grade)
+      );
+      CREATE INDEX IF NOT EXISTS idx_qsv_strategy ON quality_score_validation(strategy_name, run_date DESC);
+
+      CREATE TABLE IF NOT EXISTS quality_score_weights (
+        id                INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date          TEXT NOT NULL,
+        strategy_name     TEXT NOT NULL,
+        component         TEXT NOT NULL,
+        component_value   TEXT NOT NULL,
+        current_pts       REAL,
+        empirical_pts     REAL,
+        calibration_delta REAL,
+        sample_size       INTEGER,
+        observed_wr       REAL,
+        baseline_wr       REAL,
+        computed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, component, component_value)
+      );
+      CREATE INDEX IF NOT EXISTS idx_qsw_strategy ON quality_score_weights(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_qsw_delta    ON quality_score_weights(calibration_delta DESC);
+
+      CREATE TABLE IF NOT EXISTS quality_score_regression (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date      TEXT NOT NULL,
+        strategy_name TEXT NOT NULL,
+        pearson_r     REAL,
+        r_squared     REAL,
+        trade_count   INTEGER,
+        interpretation TEXT,
+        computed_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name)
+      );
+    `);
+    for (const agent of ['execution-reality', 'quality-score-validator']) {
+      db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+    }
+  } catch (err) { console.error('[prompt15-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -3080,6 +3188,61 @@ try {
     LIMIT 20
   `);
 } catch (_err) { /* table not yet created */ }
+
+let _stmtExecutionReality = null;
+try {
+  _stmtExecutionReality = db.prepare(`
+    SELECT strategy_name, window_days, trade_count,
+           theoretical_wr, adjusted_wr,
+           theoretical_sharpe, adjusted_sharpe,
+           theoretical_sortino, adjusted_sortino,
+           avg_slippage_pts, avg_slippage_pct_stop,
+           reality_gap_pct, edge_survives_execution, run_date
+    FROM execution_reality_summary
+    WHERE run_date = (SELECT MAX(run_date) FROM execution_reality_summary)
+    ORDER BY strategy_name, window_days
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtQualityValidation = null;
+try {
+  _stmtQualityValidation = db.prepare(`
+    SELECT qv.strategy_name, qv.quality_grade, qv.trade_count, qv.win_rate,
+           qv.avg_pnl_pts, qv.wr_delta, qv.z_vs_next_lower, qv.grade_validated,
+           qr.pearson_r, qr.r_squared, qr.interpretation, qv.run_date
+    FROM quality_score_validation qv
+    LEFT JOIN quality_score_regression qr
+      ON qr.strategy_name = qv.strategy_name AND qr.run_date = qv.run_date
+    WHERE qv.run_date = (SELECT MAX(run_date) FROM quality_score_validation)
+    ORDER BY qv.strategy_name, qv.min_pts DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtQualityWeights = null;
+try {
+  _stmtQualityWeights = db.prepare(`
+    SELECT strategy_name, component, component_value,
+           current_pts, empirical_pts, calibration_delta, sample_size,
+           observed_wr, baseline_wr
+    FROM quality_score_weights
+    WHERE run_date = (SELECT MAX(run_date) FROM quality_score_weights)
+      AND ABS(calibration_delta) >= 5
+    ORDER BY ABS(calibration_delta) DESC
+    LIMIT 50
+  `);
+} catch (_err) { /* table not yet created */ }
+
+app.get('/api/performance/execution', (req, res) => {
+  try {
+    const reality   = _stmtExecutionReality  ? _stmtExecutionReality.all()  : [];
+    const grades    = _stmtQualityValidation ? _stmtQualityValidation.all() : [];
+    const weights   = _stmtQualityWeights    ? _stmtQualityWeights.all()    : [];
+    res.json({ ok: true, execution_reality: reality, grade_validation: grades, weight_calibration: weights });
+  } catch (err) {
+    console.error('[/api/performance/execution]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 let _stmtPerfMultipliers = null;
 try {
