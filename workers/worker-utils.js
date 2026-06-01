@@ -63,4 +63,77 @@ function getWorkerMeta(db, workerName) {
   } catch (_) { return {}; }
 }
 
-module.exports = { openDb, heartbeat, bumpCycle, logWorkerError, getWorkerMeta, DB_PATH };
+/**
+ * Send a notification via ntfy with optional Sendgrid email fallback.
+ *
+ * ntfy env vars:   NTFY_URL, NTFY_TOPIC, NTFY_TOKEN (optional)
+ * email env vars:  SENDGRID_API_KEY, ALERT_EMAIL_TO
+ *                  ALERT_EMAIL_FROM  (optional — defaults to ALERT_EMAIL_TO)
+ *
+ * @param {string}  title
+ * @param {string}  body
+ * @param {object}  opts
+ * @param {string}  opts.priority      — ntfy priority (default|high|urgent)
+ * @param {string}  opts.tags          — ntfy emoji tags
+ * @param {boolean} opts.emailFallback — if true, email fires when ntfy fails
+ * @returns {{ ntfyOk: boolean, emailOk: boolean }}
+ */
+async function sendNotification(title, body, { priority = 'default', tags = 'bell', emailFallback = false } = {}) {
+  const ntfyUrl   = (process.env.NTFY_URL  || 'https://ntfy.sh').replace(/\/$/, '');
+  const ntfyTopic = process.env.NTFY_TOPIC || '';
+  const ntfyToken = process.env.NTFY_TOKEN || '';
+
+  let ntfyOk = false;
+
+  if (ntfyTopic) {
+    try {
+      const headers = {
+        'Content-Type': 'text/plain',
+        'Title':    title,
+        'Priority': priority,
+        'Tags':     tags,
+      };
+      if (ntfyToken) headers['Authorization'] = `Bearer ${ntfyToken}`;
+      const r = await fetch(`${ntfyUrl}/${ntfyTopic}`, {
+        method: 'POST', headers, body,
+        signal: AbortSignal.timeout(8_000),
+      });
+      ntfyOk = r.ok;
+    } catch (_) { ntfyOk = false; }
+  }
+
+  let emailOk = false;
+
+  if (emailFallback && !ntfyOk) {
+    const sgKey     = process.env.SENDGRID_API_KEY  || '';
+    const emailTo   = process.env.ALERT_EMAIL_TO    || '';
+    const emailFrom = process.env.ALERT_EMAIL_FROM  || emailTo;
+
+    if (sgKey && emailTo) {
+      try {
+        const r = await fetch('https://api.sendgrid.com/v3/mail/send', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${sgKey}`,
+            'Content-Type':  'application/json',
+          },
+          body: JSON.stringify({
+            personalizations: [{ to: [{ email: emailTo }] }],
+            from:    { email: emailFrom },
+            subject: `[Aurum Signals] ${title}`,
+            content: [{ type: 'text/plain', value: body }],
+          }),
+          signal: AbortSignal.timeout(10_000),
+        });
+        emailOk = r.status === 202;
+        if (emailOk) {
+          console.log(`[sendNotification] ntfy failed — email fallback delivered to ${emailTo}`);
+        }
+      } catch (_) { emailOk = false; }
+    }
+  }
+
+  return { ntfyOk, emailOk };
+}
+
+module.exports = { openDb, heartbeat, bumpCycle, logWorkerError, getWorkerMeta, sendNotification, DB_PATH };

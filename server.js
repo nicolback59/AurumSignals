@@ -7,6 +7,7 @@ const crypto   = require('crypto');
 const path     = require('path');
 const fs       = require('fs');
 const { spawn } = require('child_process');
+const rateLimit = require('express-rate-limit');
 const { getLearningStats, detectEdgeDegradation, loadAdaptiveOverrides, saveAdaptiveOverrides } = require('./learning');
 const { getParams, saveParams, getStyleParams } = require('./strategy-params');
 const { Scanner }          = require('./scanner-core');
@@ -39,6 +40,9 @@ const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET || '';
 const NTFY_URL       = (process.env.NTFY_URL || 'https://ntfy.sh').replace(/\/$/, '');
 const NTFY_TOPIC     = process.env.NTFY_TOPIC || '';
 const NTFY_TOKEN     = process.env.NTFY_TOKEN || '';
+const SENDGRID_KEY   = process.env.SENDGRID_API_KEY  || '';
+const ALERT_EMAIL_TO = process.env.ALERT_EMAIL_TO    || '';
+const ALERT_EMAIL_FROM = process.env.ALERT_EMAIL_FROM || ALERT_EMAIL_TO;
 
 const FRONTEND_URL = (process.env.FRONTEND_URL || '').replace(/\/$/, '');
 
@@ -68,6 +72,20 @@ app.use((req, res, next) => {
   express.json({ limit: '64kb' })(req, res, next);
 });
 app.use(express.static(__dirname));
+
+// ── Rate limiting ─────────────────────────────────────────────────────────────
+// webhook: TradingView fires at most once per bar — 60/min is very generous
+app.use('/webhook', rateLimit({ windowMs: 60_000, max: 60,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many webhook requests' } }));
+// auth endpoints: slow-brute protection
+app.use('/api/auth', rateLimit({ windowMs: 15 * 60_000, max: 10,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Too many auth attempts, try again later' } }));
+// general API: 300 req/15 min — more than enough for a solo dashboard
+app.use('/api', rateLimit({ windowMs: 15 * 60_000, max: 300,
+  standardHeaders: true, legacyHeaders: false,
+  message: { error: 'Rate limit exceeded' } }));
 
 // ── DATABASE ─────────────────────────────────────────────────────────────────────────────
 fs.mkdirSync(path.dirname(DB_PATH), { recursive: true });
@@ -922,13 +940,11 @@ const upsertOutcome = db.prepare(`
     notes      = excluded.notes
 `);
 
-// ── NTFY ─────────────────────────────────────────────────────────────────────────────
-function sendNtfy(s) {
-  if (!NTFY_TOPIC) return;
-
-  const arrow    = s.direction === 'LONG' ? '▲' : '▼';
+// ── NTFY + email fallback ─────────────────────────────────────────────────────
+async function sendNtfy(s) {
   const priority = s.grade === 'A+' ? 'urgent' : 'high';
   const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
+  const title    = `${s.direction === 'LONG' ? '[LONG]' : '[SHORT]'} ${s.grade} - ${s.ticker}`;
 
   const body = [
     s.setup             ? `Setup:   ${s.setup}`            : null,
@@ -942,16 +958,46 @@ function sendNtfy(s) {
     s.session           ? `Session: ${s.session}`          : null,
   ].filter(Boolean).join('\n');
 
-  const headers = {
-    'Content-Type': 'text/plain',
-    'Title':    `${s.direction === 'LONG' ? '[LONG]' : '[SHORT]'} ${s.grade} - ${s.ticker}`,
-    'Priority': priority,
-    'Tags':     tags,
-  };
-  if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
+  let ntfyOk = false;
+  if (NTFY_TOPIC) {
+    try {
+      const headers = {
+        'Content-Type': 'text/plain',
+        'Title': title, 'Priority': priority, 'Tags': tags,
+      };
+      if (NTFY_TOKEN) headers['Authorization'] = `Bearer ${NTFY_TOKEN}`;
+      const r = await fetch(`${NTFY_URL}/${NTFY_TOPIC}`, {
+        method: 'POST', headers, body,
+        signal: AbortSignal.timeout(8_000),
+      });
+      ntfyOk = r.ok;
+    } catch (err) {
+      console.error('[ntfy] signal send failed:', err.message);
+    }
+  }
 
-  fetch(`${NTFY_URL}/${NTFY_TOPIC}`, { method: 'POST', headers, body })
-    .catch(err => console.error('[ntfy] send failed:', err.message));
+  // Email fallback — fires only when ntfy fails and Sendgrid is configured
+  if (!ntfyOk && SENDGRID_KEY && ALERT_EMAIL_TO) {
+    try {
+      await fetch('https://api.sendgrid.com/v3/mail/send', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${SENDGRID_KEY}`,
+          'Content-Type':  'application/json',
+        },
+        body: JSON.stringify({
+          personalizations: [{ to: [{ email: ALERT_EMAIL_TO }] }],
+          from:    { email: ALERT_EMAIL_FROM },
+          subject: `[Aurum Signals] ${title}`,
+          content: [{ type: 'text/plain', value: body }],
+        }),
+        signal: AbortSignal.timeout(10_000),
+      });
+      console.log(`[ntfy] email fallback delivered to ${ALERT_EMAIL_TO}`);
+    } catch (emailErr) {
+      console.error('[ntfy] email fallback also failed:', emailErr.message);
+    }
+  }
 }
 
 // ── WEBHOOK ──────────────────────────────────────────────────────────────────────────────

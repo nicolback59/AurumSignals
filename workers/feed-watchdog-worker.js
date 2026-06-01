@@ -25,7 +25,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, logWorkerError } = require('./worker-utils');
+const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME          = 'feed-watchdog';
 const SCANNER_STALE_S      = 10 * 60;   // alert if scanner heartbeat > 10 min old
@@ -43,26 +43,12 @@ function isActiveWindow() {
   return dow >= 1 && dow <= 5 && hour >= ACTIVE_WINDOW_START && hour < ACTIVE_WINDOW_END;
 }
 
-// ── ntfy sender ───────────────────────────────────────────────────────────────
+// Thin wrapper — watchdog alerts always use email fallback since they signal infrastructure failure
 async function sendNtfy(title, body, priority = 'high', tags = 'warning,rotating_light') {
-  const ntfyUrl   = (process.env.NTFY_URL   || 'https://ntfy.sh').replace(/\/$/, '');
-  const ntfyTopic = process.env.NTFY_TOPIC  || '';
-  const ntfyToken = process.env.NTFY_TOKEN  || '';
-  if (!ntfyTopic) return false;
-  try {
-    const headers = {
-      'Content-Type': 'text/plain',
-      'Title':    title,
-      'Priority': priority,
-      'Tags':     tags,
-    };
-    if (ntfyToken) headers['Authorization'] = `Bearer ${ntfyToken}`;
-    const r = await fetch(`${ntfyUrl}/${ntfyTopic}`, {
-      method: 'POST', headers, body,
-      signal: AbortSignal.timeout(8_000),
-    });
-    return r.ok;
-  } catch (_) { return false; }
+  const { ntfyOk, emailOk } = await sendNotification(title, body, {
+    priority, tags, emailFallback: true,
+  });
+  return ntfyOk || emailOk;
 }
 
 // ── Load persisted watchdog state from worker_health metadata ─────────────────
