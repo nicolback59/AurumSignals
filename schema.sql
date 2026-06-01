@@ -1100,3 +1100,73 @@ CREATE TABLE IF NOT EXISTS regime_health_log (
 );
 CREATE INDEX IF NOT EXISTS idx_rhl_strategy ON regime_health_log(strategy_name, checked_at DESC);
 CREATE INDEX IF NOT EXISTS idx_rhl_mode     ON regime_health_log(behavior_mode, checked_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- PROMPT 11 — Portfolio Intelligence Engine
+-- strategy-ranking-worker   (daily 06:15 UTC)  — Phase 1: strategy scores
+-- drawdown-protection-worker (every 30 min)    — Phase 6: DD protection
+-- portfolio-engine-worker    (every 4h)        — Phase 10: capital allocation
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS strategy_rankings (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date         TEXT NOT NULL,
+  strategy_name    TEXT NOT NULL,
+  instrument       TEXT,
+  health_score     INTEGER,
+  confidence_score INTEGER,
+  allocation_score INTEGER,
+  rank_position    INTEGER,
+  wr_30d           REAL,
+  wr_90d           REAL,
+  pf_30d           REAL,
+  expectancy_30d   REAL,
+  trade_count_90d  INTEGER,
+  max_loss_streak  INTEGER,
+  trades_per_week  REAL,
+  edge_status      TEXT,
+  behavior_mode    TEXT,
+  notes            TEXT,
+  computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sr_strategy ON strategy_rankings(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_sr_alloc    ON strategy_rankings(allocation_score DESC, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS drawdown_log (
+  id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name          TEXT NOT NULL,
+  instrument             TEXT,
+  checked_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  protection_level       INTEGER,
+  level_name             TEXT,
+  consecutive_losses     INTEGER,
+  consecutive_wins       INTEGER,
+  daily_dd_pct           REAL,
+  daily_pts              REAL,
+  drawdown_size_mult     REAL,
+  prev_protection_level  INTEGER,
+  level_changed          INTEGER DEFAULT 0,
+  notes                  TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_ddl_strategy ON drawdown_log(strategy_name, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ddl_level    ON drawdown_log(protection_level, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS portfolio_allocations (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_ts               TEXT NOT NULL DEFAULT (datetime('now')),
+  strategy_name        TEXT NOT NULL,
+  instrument           TEXT,
+  raw_weight           REAL,
+  final_weight_pct     REAL,
+  allocation_score     INTEGER,
+  behavior_mode        TEXT,
+  edge_status          TEXT,
+  dd_protection_level  INTEGER,
+  degradation_flags    TEXT,
+  recommendation       TEXT,
+  capital_action       TEXT,
+  notes                TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pa_strategy ON portfolio_allocations(strategy_name, run_ts DESC);
+CREATE INDEX IF NOT EXISTS idx_pa_action   ON portfolio_allocations(capital_action, run_ts DESC);

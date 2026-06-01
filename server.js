@@ -1050,6 +1050,79 @@ applyMigrations();
   } catch (err) { console.error('[prompt10-migration]', err.message); }
 })();
 
+// Prompt 11 migration: strategy_rankings, drawdown_log, portfolio_allocations
+(function applyPrompt11Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS strategy_rankings (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date         TEXT NOT NULL,
+        strategy_name    TEXT NOT NULL,
+        instrument       TEXT,
+        health_score     INTEGER,
+        confidence_score INTEGER,
+        allocation_score INTEGER,
+        rank_position    INTEGER,
+        wr_30d           REAL,
+        wr_90d           REAL,
+        pf_30d           REAL,
+        expectancy_30d   REAL,
+        trade_count_90d  INTEGER,
+        max_loss_streak  INTEGER,
+        trades_per_week  REAL,
+        edge_status      TEXT,
+        behavior_mode    TEXT,
+        notes            TEXT,
+        computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sr_strategy ON strategy_rankings(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_sr_alloc    ON strategy_rankings(allocation_score DESC, run_date DESC);
+
+      CREATE TABLE IF NOT EXISTS drawdown_log (
+        id                     INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name          TEXT NOT NULL,
+        instrument             TEXT,
+        checked_at             TEXT NOT NULL DEFAULT (datetime('now')),
+        protection_level       INTEGER,
+        level_name             TEXT,
+        consecutive_losses     INTEGER,
+        consecutive_wins       INTEGER,
+        daily_dd_pct           REAL,
+        daily_pts              REAL,
+        drawdown_size_mult     REAL,
+        prev_protection_level  INTEGER,
+        level_changed          INTEGER DEFAULT 0,
+        notes                  TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_ddl_strategy ON drawdown_log(strategy_name, checked_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ddl_level    ON drawdown_log(protection_level, checked_at DESC);
+
+      CREATE TABLE IF NOT EXISTS portfolio_allocations (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_ts               TEXT NOT NULL DEFAULT (datetime('now')),
+        strategy_name        TEXT NOT NULL,
+        instrument           TEXT,
+        raw_weight           REAL,
+        final_weight_pct     REAL,
+        allocation_score     INTEGER,
+        behavior_mode        TEXT,
+        edge_status          TEXT,
+        dd_protection_level  INTEGER,
+        degradation_flags    TEXT,
+        recommendation       TEXT,
+        capital_action       TEXT,
+        notes                TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_pa_strategy ON portfolio_allocations(strategy_name, run_ts DESC);
+      CREATE INDEX IF NOT EXISTS idx_pa_action   ON portfolio_allocations(capital_action, run_ts DESC);
+    `);
+    for (const agent of ['strategy-ranking', 'drawdown-protection', 'portfolio-engine']) {
+      db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+    }
+  } catch (err) { console.error('[prompt11-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -2260,6 +2333,82 @@ app.get('/api/backtest/details', (req, res) => {
 });
 
 // ── STRATEGY PARAMS ───────────────────────────────────────────────────────────────────────
+// ── Portfolio Intelligence API (Prompt #11) ───────────────────────────────────
+app.get('/api/portfolio', (req, res) => {
+  try {
+    const rankings  = _stmtStrategyRankings ? _stmtStrategyRankings.all() : [];
+    const allocs    = _stmtPortfolioAlloc   ? _stmtPortfolioAlloc.all()   : [];
+    const drawdowns = _stmtDrawdownLog      ? _stmtDrawdownLog.all()      : [];
+
+    const ddMap = {};
+    for (const d of drawdowns) ddMap[d.strategy_name] = d;
+
+    const strategies = rankings.map(r => {
+      const a  = allocs.find(a => a.strategy_name === r.strategy_name)     ?? {};
+      const dd = ddMap[r.strategy_name] ?? {};
+      return {
+        strategy_name:    r.strategy_name,
+        instrument:       r.instrument,
+        rank:             r.rank_position,
+        scores: {
+          health:      r.health_score,
+          confidence:  r.confidence_score,
+          allocation:  r.allocation_score,
+        },
+        performance: {
+          wr_30d:         r.wr_30d,
+          wr_90d:         r.wr_90d,
+          pf_30d:         r.pf_30d,
+          expectancy_30d: r.expectancy_30d,
+          trade_count_90d: r.trade_count_90d,
+          trades_per_week: r.trades_per_week,
+          max_loss_streak: r.max_loss_streak,
+        },
+        status: {
+          edge_status:   r.edge_status,
+          behavior_mode: r.behavior_mode,
+        },
+        portfolio: {
+          weight_pct:    a.final_weight_pct ?? null,
+          capital_action: a.capital_action ?? null,
+          degradation:   a.degradation_flags ?? null,
+          recommendation: a.recommendation ?? null,
+        },
+        drawdown: {
+          protection_level:   dd.protection_level   ?? 0,
+          level_name:         dd.level_name         ?? 'CLEAR',
+          consecutive_losses: dd.consecutive_losses ?? 0,
+          daily_dd_pct:       dd.daily_dd_pct       ?? 0,
+          size_mult:          dd.drawdown_size_mult  ?? 1.0,
+        },
+        notes: r.notes,
+        as_of: r.run_date,
+      };
+    });
+
+    // Capital efficiency tiers
+    const capitalTiers = [
+      { label: '$10k',  mnq_contracts: 1, mgc_contracts: 0, cash_reserve_pct: 40,
+        note: 'Single MNQ contract only — MGC margin too risky at this size' },
+      { label: '$50k',  mnq_contracts: 2, mgc_contracts: 1, cash_reserve_pct: 25,
+        note: '2 MNQ + 1 MGC — begin diversification across instruments' },
+      { label: '$100k', mnq_contracts: 3, mgc_contracts: 2, cash_reserve_pct: 20,
+        note: '3 MNQ + 2 MGC — full strategy suite active' },
+      { label: '$500k', mnq_contracts: 10, mgc_contracts: 5, cash_reserve_pct: 15,
+        note: 'Prop desk model — dedicated risk per strategy, intraday drawdown desk' },
+    ];
+
+    res.json({
+      strategies,
+      capital_tiers: capitalTiers,
+      generated_at: new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[/api/portfolio]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 app.get('/api/strategy/params', (req, res) => {
   const rows = db.prepare('SELECT * FROM strategy_params').all();
   const result = {};
@@ -2611,6 +2760,51 @@ try {
   `);
 } catch (_err) { /* table not yet created */ }
 
+let _stmtStrategyRankings = null;
+try {
+  _stmtStrategyRankings = db.prepare(`
+    SELECT strategy_name, instrument, health_score, confidence_score, allocation_score,
+           rank_position, wr_30d, wr_90d, pf_30d, expectancy_30d,
+           trade_count_90d, max_loss_streak, trades_per_week,
+           edge_status, behavior_mode, notes, run_date
+    FROM strategy_rankings
+    WHERE run_date = (
+      SELECT MAX(r2.run_date) FROM strategy_rankings r2
+      WHERE r2.strategy_name = strategy_rankings.strategy_name
+    )
+    ORDER BY rank_position ASC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtDrawdownLog = null;
+try {
+  _stmtDrawdownLog = db.prepare(`
+    SELECT strategy_name, protection_level, level_name,
+           consecutive_losses, daily_dd_pct, drawdown_size_mult, checked_at
+    FROM drawdown_log
+    WHERE checked_at = (
+      SELECT MAX(d2.checked_at) FROM drawdown_log d2
+      WHERE d2.strategy_name = drawdown_log.strategy_name
+    )
+    ORDER BY protection_level DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtPortfolioAlloc = null;
+try {
+  _stmtPortfolioAlloc = db.prepare(`
+    SELECT strategy_name, instrument, final_weight_pct, allocation_score,
+           behavior_mode, edge_status, dd_protection_level,
+           degradation_flags, capital_action, recommendation, run_ts
+    FROM portfolio_allocations
+    WHERE run_ts = (
+      SELECT MAX(p2.run_ts) FROM portfolio_allocations p2
+      WHERE p2.strategy_name = portfolio_allocations.strategy_name
+    )
+    ORDER BY final_weight_pct DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
 app.get('/api/health', (req, res) => {
   try {
     const dbOk = !!_stmtHealthPing.get();
@@ -2776,6 +2970,52 @@ app.get('/api/health', (req, res) => {
               stop_rec:      r.stop_rec,
               tp_rec:        r.tp_rec,
               as_of:         r.checked_at,
+            };
+          }
+          return out;
+        } catch { return null; }
+      })(),
+      portfolio: (() => {
+        if (!_stmtPortfolioAlloc || !_stmtStrategyRankings) return null;
+        try {
+          const allocs  = _stmtPortfolioAlloc.all();
+          const ranks   = _stmtStrategyRankings ? _stmtStrategyRankings.all() : [];
+          const rankMap = {};
+          for (const r of ranks) rankMap[r.strategy_name] = r;
+          const out = {};
+          for (const a of allocs) {
+            const rk = rankMap[a.strategy_name] ?? {};
+            out[a.strategy_name] = {
+              weight_pct:       a.final_weight_pct,
+              capital_action:   a.capital_action,
+              allocation_score: a.allocation_score,
+              health_score:     rk.health_score    ?? null,
+              confidence_score: rk.confidence_score ?? null,
+              rank:             rk.rank_position    ?? null,
+              behavior_mode:    a.behavior_mode,
+              edge_status:      a.edge_status,
+              dd_level:         a.dd_protection_level,
+              degradation:      a.degradation_flags ?? null,
+              recommendation:   a.recommendation,
+              as_of:            a.run_ts,
+            };
+          }
+          return out;
+        } catch { return null; }
+      })(),
+      drawdown: (() => {
+        if (!_stmtDrawdownLog) return null;
+        try {
+          const rows = _stmtDrawdownLog.all();
+          const out  = {};
+          for (const r of rows) {
+            out[r.strategy_name] = {
+              protection_level:   r.protection_level,
+              level_name:         r.level_name,
+              consecutive_losses: r.consecutive_losses,
+              daily_dd_pct:       r.daily_dd_pct,
+              size_mult:          r.drawdown_size_mult,
+              as_of:              r.checked_at,
             };
           }
           return out;
