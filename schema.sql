@@ -793,3 +793,25 @@ CREATE TABLE IF NOT EXISTS frequency_analysis (
 );
 CREATE INDEX IF NOT EXISTS idx_frqa_strategy ON frequency_analysis(strategy_name, computed_at DESC);
 CREATE INDEX IF NOT EXISTS idx_frqa_pct      ON frequency_analysis(pct_of_total DESC, computed_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- DB PARTS 1 & 2 — Signal Lifecycle + Notification Log (Prompt #7)
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Notification delivery log — one row per notification event per signal.
+-- Tracks every ntfy push and email fallback: latency, success, channel.
+-- Enables: delivery rate, avg latency, per-channel success rate, /api/health.
+CREATE TABLE IF NOT EXISTS notification_log (
+  id          INTEGER PRIMARY KEY AUTOINCREMENT,
+  signal_id   INTEGER REFERENCES signals(id) ON DELETE CASCADE,
+  event_type  TEXT    NOT NULL,  -- TRADE_ENTRY | WIN | LOSS | BE | EXPIRED | TEST
+  channel     TEXT    NOT NULL DEFAULT 'ntfy',  -- ntfy | email | both
+  title       TEXT,
+  sent_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+  success     INTEGER NOT NULL DEFAULT 1,  -- 1=delivered 0=failed
+  latency_s   REAL,                        -- seconds from signal received_at to sent_at
+  error_msg   TEXT                         -- populated if success=0
+);
+CREATE INDEX IF NOT EXISTS idx_notif_signal ON notification_log(signal_id);
+CREATE INDEX IF NOT EXISTS idx_notif_type   ON notification_log(event_type, sent_at DESC);
+CREATE INDEX IF NOT EXISTS idx_notif_sent   ON notification_log(sent_at DESC);

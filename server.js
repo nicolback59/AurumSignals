@@ -6,6 +6,7 @@ const Database = require('better-sqlite3');
 const crypto   = require('crypto');
 const path     = require('path');
 const fs       = require('fs');
+const SERVER_VERSION = (() => { try { return require('./package.json').version; } catch (_) { return 'unknown'; } })();
 const { spawn } = require('child_process');
 const rateLimit = require('express-rate-limit');
 const { getLearningStats, detectEdgeDegradation, loadAdaptiveOverrides, saveAdaptiveOverrides } = require('./learning');
@@ -362,6 +363,18 @@ function applyMigrations() {
     if (!cols.includes('entry_type')) {
       db.exec("ALTER TABLE signals ADD COLUMN entry_type TEXT");
       console.log('[migration] Added entry_type to signals');
+    }
+    if (!cols.includes('scanner_version')) {
+      db.exec("ALTER TABLE signals ADD COLUMN scanner_version TEXT");
+      console.log('[migration] Added scanner_version to signals');
+    }
+    if (!cols.includes('notified_at')) {
+      db.exec("ALTER TABLE signals ADD COLUMN notified_at TEXT");
+      console.log('[migration] Added notified_at to signals');
+    }
+    if (!cols.includes('approved_at')) {
+      db.exec("ALTER TABLE signals ADD COLUMN approved_at TEXT");
+      console.log('[migration] Added approved_at to signals');
     }
   }
   // outcomes: exit_type + tp1_bars + max_extension_pts
@@ -915,18 +928,47 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_opt_status ON optimizer_candidates(status, created_at DESC);
 `);
 
+// ── Notification log ─────────────────────────────────────────────────────────
+// Created here (not schema.sql exec) so it's available immediately on startup
+// even on existing databases that skip the schema.sql run.
+db.exec(`
+  CREATE TABLE IF NOT EXISTS notification_log (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    signal_id   INTEGER REFERENCES signals(id) ON DELETE CASCADE,
+    event_type  TEXT    NOT NULL,
+    channel     TEXT    NOT NULL DEFAULT 'ntfy',
+    title       TEXT,
+    sent_at     TEXT    NOT NULL DEFAULT (datetime('now')),
+    success     INTEGER NOT NULL DEFAULT 1,
+    latency_s   REAL,
+    error_msg   TEXT
+  );
+  CREATE INDEX IF NOT EXISTS idx_notif_signal ON notification_log(signal_id);
+  CREATE INDEX IF NOT EXISTS idx_notif_type   ON notification_log(event_type, sent_at DESC);
+  CREATE INDEX IF NOT EXISTS idx_notif_sent   ON notification_log(sent_at DESC);
+`);
+
 thresholdManager.init(db);
 
 const insertSignal = db.prepare(`
   INSERT INTO signals
     (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
      score, confidence, tier, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
-     trade_style, instrument, rr, trade_status, raw_payload)
+     trade_style, instrument, rr, trade_status, raw_payload, scanner_version, approved_at)
   VALUES
     (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
      @score, @confidence, @tier, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
-     @trade_style, @instrument, @rr, 'ACTIVE', @raw_payload)
+     @trade_style, @instrument, @rr, 'ACTIVE', @raw_payload, @scanner_version, datetime('now'))
 `);
+
+const _insertNotifLog = db.prepare(`
+  INSERT INTO notification_log (signal_id, event_type, channel, title, sent_at, success, latency_s, error_msg)
+  VALUES (@signal_id, @event_type, @channel, @title, datetime('now'), @success, @latency_s, @error_msg)
+`);
+
+const _setNotifiedAt = db.prepare(
+  `UPDATE signals SET notified_at = datetime('now') WHERE id = ? AND notified_at IS NULL`
+);
 
 const upsertOutcome = db.prepare(`
   INSERT INTO outcomes (signal_id, result, exit_price, exit_at, pnl_pts, pnl_usd, notes)
@@ -941,7 +983,9 @@ const upsertOutcome = db.prepare(`
 `);
 
 // ── NTFY + email fallback ─────────────────────────────────────────────────────
-async function sendNtfy(s) {
+// signalId: the signals.id row this notification belongs to (null for system alerts)
+// receivedAt: signals.received_at ISO string — used to compute delivery latency
+async function sendNtfy(s, signalId = null, receivedAt = null) {
   const priority = s.grade === 'A+' ? 'urgent' : 'high';
   const tags     = s.direction === 'LONG' ? 'chart_increasing,green_circle' : 'chart_decreasing,red_circle';
   const title    = `${s.direction === 'LONG' ? '[LONG]' : '[SHORT]'} ${s.grade} - ${s.ticker}`;
@@ -958,7 +1002,11 @@ async function sendNtfy(s) {
     s.session           ? `Session: ${s.session}`          : null,
   ].filter(Boolean).join('\n');
 
-  let ntfyOk = false;
+  const sendStart = Date.now();
+  let ntfyOk  = false;
+  let emailOk = false;
+  let errorMsg = null;
+
   if (NTFY_TOPIC) {
     try {
       const headers = {
@@ -971,7 +1019,9 @@ async function sendNtfy(s) {
         signal: AbortSignal.timeout(8_000),
       });
       ntfyOk = r.ok;
+      if (!ntfyOk) errorMsg = `ntfy HTTP ${r.status}`;
     } catch (err) {
+      errorMsg = err.message;
       console.error('[ntfy] signal send failed:', err.message);
     }
   }
@@ -993,11 +1043,31 @@ async function sendNtfy(s) {
         }),
         signal: AbortSignal.timeout(10_000),
       });
+      emailOk = true;
       console.log(`[ntfy] email fallback delivered to ${ALERT_EMAIL_TO}`);
     } catch (emailErr) {
       console.error('[ntfy] email fallback also failed:', emailErr.message);
     }
   }
+
+  // ── Write to notification_log ───────────────────────────────────────────────
+  try {
+    const success   = ntfyOk || emailOk ? 1 : 0;
+    const channel   = ntfyOk ? 'ntfy' : (emailOk ? 'email' : 'ntfy');
+    const latencyS  = receivedAt
+      ? +((Date.now() - new Date(receivedAt).getTime()) / 1000).toFixed(1)
+      : +((Date.now() - sendStart) / 1000).toFixed(1);
+    _insertNotifLog.run({
+      signal_id:  signalId,
+      event_type: 'TRADE_ENTRY',
+      channel,
+      title,
+      success,
+      latency_s:  latencyS,
+      error_msg:  success ? null : (errorMsg ?? 'unknown'),
+    });
+    if (success && signalId) _setNotifiedAt.run(signalId);
+  } catch (_) { /* non-critical — never block signal delivery */ }
 }
 
 // ── WEBHOOK ──────────────────────────────────────────────────────────────────────────────
@@ -1024,34 +1094,37 @@ app.post('/webhook', (req, res) => {
   const num = v => (v != null && v !== '' ? Number(v) : null);
 
   try {
+    const nowIso = new Date().toISOString();
     const info = insertSignal.run({
-      ticker:        b.ticker         || 'NQ1!',
-      timeframe:     b.timeframe      || b.interval || null,
+      ticker:          b.ticker         || 'NQ1!',
+      timeframe:       b.timeframe      || b.interval || null,
       direction,
       grade,
-      setup:         b.setup          || null,
-      strategy_name: b.strategy_name  || null,
-      entry:         num(b.entry),
-      sl:            num(b.sl),
-      tp1:           num(b.tp1),
-      tp2:           num(b.tp2),
-      tp3:           num(b.tp3),
-      score:         num(b.score),
-      confidence:    num(b.confidence) ?? null,
-      tier:          b.tier           || null,
-      win_prob_tp1:  num(b.win_prob_tp1),
-      win_prob_tp2:  num(b.win_prob_tp2),
-      win_prob_tp3:  num(b.win_prob_tp3),
-      htf_bias:      b.htf_bias       || null,
-      session:       b.session        || null,
-      trade_style:   b.trade_style    || b.tradeStyle || null,
-      instrument:    b.instrument     || null,
-      rr:            num(b.rr),
-      raw_payload:   raw,
+      setup:           b.setup          || null,
+      strategy_name:   b.strategy_name  || null,
+      entry:           num(b.entry),
+      sl:              num(b.sl),
+      tp1:             num(b.tp1),
+      tp2:             num(b.tp2),
+      tp3:             num(b.tp3),
+      score:           num(b.score),
+      confidence:      num(b.confidence) ?? null,
+      tier:            b.tier           || null,
+      win_prob_tp1:    num(b.win_prob_tp1),
+      win_prob_tp2:    num(b.win_prob_tp2),
+      win_prob_tp3:    num(b.win_prob_tp3),
+      htf_bias:        b.htf_bias       || null,
+      session:         b.session        || null,
+      trade_style:     b.trade_style    || b.tradeStyle || null,
+      instrument:      b.instrument     || null,
+      rr:              num(b.rr),
+      raw_payload:     raw,
+      scanner_version: b.scanner_version || SERVER_VERSION,
     });
+    const signalId   = info.lastInsertRowid;
     const stratLabel = b.strategy_name || b.setup || 'TradingView';
-    console.log(`[${new Date().toISOString()}] ${direction} ${grade} | ${stratLabel} | score=${b.score||'?'} | id=${info.lastInsertRowid}`);
-    res.json({ ok: true, id: info.lastInsertRowid });
+    console.log(`[${nowIso}] ${direction} ${grade} | ${stratLabel} | score=${b.score||'?'} | id=${signalId}`);
+    res.json({ ok: true, id: signalId });
     sendNtfy({
       ticker: b.ticker || 'NQ1!', direction, grade,
       setup: b.setup || null,
@@ -1059,7 +1132,7 @@ app.post('/webhook', (req, res) => {
       tp1: num(b.tp1), tp2: num(b.tp2), tp3: num(b.tp3),
       score: num(b.score), win_prob_tp1: num(b.win_prob_tp1),
       session: b.session || null,
-    });
+    }, signalId, nowIso);
   } catch (err) {
     console.error('DB insert error:', err.message);
     res.status(500).json({ error: 'Database error' });
