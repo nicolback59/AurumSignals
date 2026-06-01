@@ -1052,3 +1052,24 @@ CREATE TABLE IF NOT EXISTS strategy_evolution_log (
 );
 CREATE INDEX IF NOT EXISTS idx_sel_strategy ON strategy_evolution_log(strategy_name, run_date DESC);
 CREATE INDEX IF NOT EXISTS idx_sel_trend    ON strategy_evolution_log(trend, run_date DESC);
+
+-- ── PROMPT 9 PHASE 9 — Self-improvement log ──────────────────────────────────
+-- Written by workers/self-improvement-worker.js (Sat 07:00 UTC).
+-- Consolidated actionable recommendations derived from all prior phases.
+
+CREATE TABLE IF NOT EXISTS self_improvement_log (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date         TEXT NOT NULL,
+  strategy_name    TEXT NOT NULL,
+  recommendation   TEXT NOT NULL,   -- RAISE_CONFIDENCE_FLOOR | BLOCK_SESSION | BLOCK_REGIME |
+                                    -- WIDEN_STOPS | TIGHTEN_STOPS | INCREASE_TP |
+                                    -- BLOCK_DIRECTION | DEGRADATION_WARNING | TP_UNREALISTIC_50PT
+  dimension        TEXT,            -- session name / regime / direction / null
+  evidence         TEXT,            -- JSON: source phase + triggering metric values
+  priority         INTEGER,         -- 1=critical 5=low (matches agent_messages)
+  message_posted   INTEGER DEFAULT 0,
+  computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, recommendation, dimension)
+);
+CREATE INDEX IF NOT EXISTS idx_sil2_strategy ON self_improvement_log(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_sil2_priority ON self_improvement_log(priority, run_date DESC);

@@ -995,6 +995,32 @@ applyMigrations();
   } catch (err) { console.error('[prompt9-migration]', err.message); }
 })();
 
+(function applyPrompt9Phase9Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS self_improvement_log (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date         TEXT NOT NULL,
+        strategy_name    TEXT NOT NULL,
+        recommendation   TEXT NOT NULL,
+        dimension        TEXT,
+        evidence         TEXT,
+        priority         INTEGER,
+        message_posted   INTEGER DEFAULT 0,
+        computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, recommendation, dimension)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sil2_strategy ON self_improvement_log(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_sil2_priority ON self_improvement_log(priority, run_date DESC);
+    `);
+    db.prepare(`
+      INSERT INTO agent_trust_scores (agent_name, trust_score, description)
+      VALUES ('self-improvement', 0.75, 'Synthesizes all phase outputs into actionable recommendations — Prompt 9 Phase 9')
+      ON CONFLICT(agent_name) DO NOTHING
+    `).run();
+  } catch (err) { console.error('[prompt9-phase9-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 

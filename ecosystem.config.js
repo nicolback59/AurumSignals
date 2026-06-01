@@ -683,6 +683,32 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── SELF-IMPROVEMENT WORKER ───────────────────────────────────────────────
+    // Saturday 07:00 UTC — one day after outcome-intelligence-worker (Fri).
+    // Reads latest analysis from all Phase 1-8, 10-13 tables and converts
+    // findings into prioritised agent_messages recommendations:
+    // RAISE_CONFIDENCE_FLOOR, BLOCK_SESSION, BLOCK_REGIME, WIDEN/TIGHTEN_STOPS,
+    // INCREASE_TP, BLOCK_DIRECTION (MGC), DEGRADATION_WARNING, TP_UNREALISTIC_50PT.
+    // Writes to self_improvement_log; posts to agent_messages for consensus.
+    {
+      name:         'self-improvement-worker',
+      script:       'workers/self-improvement-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 7 * * 6',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/self-improvement-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/self-improvement-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── OUTCOME INTELLIGENCE WORKER ──────────────────────────────────────────
     // Friday 07:00 UTC — after trade-dna refresh. Runs 5 phases: MAE deep
     // analysis, expectancy decomposition, regime/session WR breakdown, and
