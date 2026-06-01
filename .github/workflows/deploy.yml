@@ -30,6 +30,13 @@ jobs:
             echo "==> Syntax check"
             node --check server.js
 
+            echo "==> Ensuring log rotation is configured"
+            pm2 install pm2-logrotate 2>/dev/null || true
+            pm2 set pm2-logrotate:max_size 20M    2>/dev/null || true
+            pm2 set pm2-logrotate:retain 7        2>/dev/null || true
+            pm2 set pm2-logrotate:compress false  2>/dev/null || true
+            pm2 set pm2-logrotate:rotateInterval '0 0 * * *' 2>/dev/null || true
+
             echo "==> Reloading PM2 processes"
             pm2 reload ecosystem.config.js --update-env
 

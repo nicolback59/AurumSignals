@@ -564,6 +564,30 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── DAILY DIGEST ─────────────────────────────────────────────────────────
+    // 11:30 UTC (7:30 AM EDT / 6:30 AM EST) — before market open every day.
+    // Sends one ntfy push with overnight summary: scanner, signals, strategy
+    // health, edge health, Droplet resources, overnight alerts, worker status.
+    // Priority: min (silent notification — informational only, not an alert).
+    {
+      name:         'digest-worker',
+      script:       'workers/digest-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 11 * * *',
+      autorestart:  false,
+      max_memory_restart: '100M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/digest-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/digest-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
