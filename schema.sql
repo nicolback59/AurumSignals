@@ -1052,3 +1052,51 @@ CREATE TABLE IF NOT EXISTS strategy_evolution_log (
 );
 CREATE INDEX IF NOT EXISTS idx_sel_strategy ON strategy_evolution_log(strategy_name, run_date DESC);
 CREATE INDEX IF NOT EXISTS idx_sel_trend    ON strategy_evolution_log(trend, run_date DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- PROMPT 10 — Regime Intelligence Engine
+-- regime-performance-worker (daily 05:30 UTC) — Phase 5 performance database
+-- regime-health-worker      (every 30 min)    — Phase 11 health scoring
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS regime_performance_stats (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date         TEXT NOT NULL,
+  strategy_name    TEXT NOT NULL,
+  regime           TEXT NOT NULL,
+  trade_count      INTEGER,
+  win_count        INTEGER,
+  loss_count       INTEGER,
+  win_rate         REAL,
+  profit_factor    REAL,
+  expectancy       REAL,
+  avg_win_pts      REAL,
+  avg_loss_pts     REAL,
+  avg_mae_pts      REAL,
+  avg_mfe_pts      REAL,
+  max_loss_streak  INTEGER,
+  trades_per_week  REAL,
+  computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, regime)
+);
+CREATE INDEX IF NOT EXISTS idx_rps_strategy ON regime_performance_stats(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_rps_regime   ON regime_performance_stats(regime, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS regime_health_log (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name     TEXT NOT NULL,
+  instrument        TEXT,
+  checked_at        TEXT NOT NULL DEFAULT (datetime('now')),
+  current_regime    TEXT,
+  regime_strength   REAL,
+  regime_wr         REAL,
+  regime_expectancy REAL,
+  recent_7d_wr      REAL,
+  health_score      INTEGER,
+  behavior_mode     TEXT,
+  stop_rec          TEXT,
+  tp_rec            TEXT,
+  notes             TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_rhl_strategy ON regime_health_log(strategy_name, checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rhl_mode     ON regime_health_log(behavior_mode, checked_at DESC);
