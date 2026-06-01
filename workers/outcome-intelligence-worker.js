@@ -30,6 +30,193 @@ function postAgentMessage(db, strategy, msgType, payload, priority) {
   }
 }
 
+// ── Phase 1 — Trade DNA review ────────────────────────────────────────────────
+
+function runPhase1(db, strategy, runDate) {
+  console.log(`[${WORKER_NAME}] Phase 1 DNA review: ${strategy}`);
+
+  const all = db.prepare(`
+    SELECT outcome, direction, pnl_pts, archetype, entry_type, trade_date
+    FROM trade_dna
+    WHERE strategy_name = ?
+      AND outcome IN ('WIN','LOSS','BE')
+    ORDER BY trade_date ASC
+  `).all(strategy);
+
+  if (all.length < 5) {
+    console.log(`[${WORKER_NAME}] Phase 1 ${strategy}: skipped (N=${all.length} < 5)`);
+    return {};
+  }
+
+  const wins   = all.filter(r => r.outcome === 'WIN');
+  const losses = all.filter(r => r.outcome === 'LOSS');
+  const wr     = (wins.length + losses.length) > 0
+    ? wins.length / (wins.length + losses.length) : 0;
+
+  const avgPnl     = all.reduce((s, r) => s + (r.pnl_pts ?? 0), 0) / all.length;
+  const avgWinPts  = wins.length  ? wins.reduce((s, r)   => s + (r.pnl_pts ?? 0), 0) / wins.length   : 0;
+  const avgLossPts = losses.length ? losses.reduce((s, r) => s + (r.pnl_pts ?? 0), 0) / losses.length : 0;
+  const sumWins    = wins.reduce((s, r)   => s + Math.max(r.pnl_pts ?? 0, 0), 0);
+  const sumLosses  = losses.reduce((s, r) => s + Math.abs(r.pnl_pts ?? 0), 0);
+  const profitFactor = sumLosses > 0 ? sumWins / sumLosses : null;
+
+  // Max consecutive losses (chronological order already assured by ORDER BY)
+  let maxConsecLosses = 0;
+  let curStreak = 0;
+  for (const r of all) {
+    if (r.outcome === 'LOSS') { curStreak++; maxConsecLosses = Math.max(maxConsecLosses, curStreak); }
+    else curStreak = 0;
+  }
+
+  // Direction breakdown
+  const longRows  = all.filter(r => r.direction === 'LONG');
+  const shortRows = all.filter(r => r.direction === 'SHORT');
+  const longWins  = longRows.filter(r => r.outcome === 'WIN').length;
+  const shortWins = shortRows.filter(r => r.outcome === 'WIN').length;
+  const longLosses  = longRows.filter(r => r.outcome === 'LOSS').length;
+  const shortLosses = shortRows.filter(r => r.outcome === 'LOSS').length;
+  const longWr  = (longWins + longLosses)   > 0 ? longWins  / (longWins  + longLosses)  : null;
+  const shortWr = (shortWins + shortLosses) > 0 ? shortWins / (shortWins + shortLosses) : null;
+
+  // Best / worst archetype (≥5 trades)
+  const archetypeMap = {};
+  for (const r of all) {
+    if (!r.archetype) continue;
+    if (!archetypeMap[r.archetype]) archetypeMap[r.archetype] = { wins: 0, losses: 0 };
+    if (r.outcome === 'WIN')  archetypeMap[r.archetype].wins++;
+    if (r.outcome === 'LOSS') archetypeMap[r.archetype].losses++;
+  }
+  let bestArch = null, worstArch = null, bestArchWr = -1, worstArchWr = 2;
+  for (const [arch, s] of Object.entries(archetypeMap)) {
+    const total = s.wins + s.losses;
+    if (total < 5) continue;
+    const aWr = s.wins / total;
+    if (aWr > bestArchWr)  { bestArchWr  = aWr;  bestArch  = arch; }
+    if (aWr < worstArchWr) { worstArchWr = aWr;  worstArch = arch; }
+  }
+
+  // Best / worst entry_type (≥5 trades)
+  const entryMap = {};
+  for (const r of all) {
+    if (!r.entry_type) continue;
+    if (!entryMap[r.entry_type]) entryMap[r.entry_type] = { wins: 0, losses: 0 };
+    if (r.outcome === 'WIN')  entryMap[r.entry_type].wins++;
+    if (r.outcome === 'LOSS') entryMap[r.entry_type].losses++;
+  }
+  let bestEntry = null, worstEntry = null, bestEntryWr = -1, worstEntryWr = 2;
+  for (const [et, s] of Object.entries(entryMap)) {
+    const total = s.wins + s.losses;
+    if (total < 5) continue;
+    const eWr = s.wins / total;
+    if (eWr > bestEntryWr)  { bestEntryWr  = eWr;  bestEntry  = et; }
+    if (eWr < worstEntryWr) { worstEntryWr = eWr;  worstEntry = et; }
+  }
+
+  const summary = {
+    total_trades: all.length, win_count: wins.length, loss_count: losses.length,
+    be_count: all.filter(r => r.outcome === 'BE').length,
+    win_rate: +wr.toFixed(4), avg_pnl_pts: +avgPnl.toFixed(4),
+    avg_win_pts: +avgWinPts.toFixed(4), avg_loss_pts: +avgLossPts.toFixed(4),
+    profit_factor: profitFactor != null ? +profitFactor.toFixed(4) : null,
+    max_consecutive_losses: maxConsecLosses,
+    long_wr: longWr != null ? +longWr.toFixed(4) : null,
+    short_wr: shortWr != null ? +shortWr.toFixed(4) : null,
+    best_archetype: bestArch, best_archetype_wr: bestArchWr > -1 ? +bestArchWr.toFixed(4) : null,
+    worst_archetype: worstArch, worst_archetype_wr: worstArchWr < 2 ? +worstArchWr.toFixed(4) : null,
+    best_entry_type: bestEntry, best_entry_wr: bestEntryWr > -1 ? +bestEntryWr.toFixed(4) : null,
+    worst_entry_type: worstEntry, worst_entry_wr: worstEntryWr < 2 ? +worstEntryWr.toFixed(4) : null,
+  };
+
+  upsertLog(db, runDate, strategy, 'dna_review', 'summary', +wr.toFixed(4), JSON.stringify(summary), all.length, null);
+  upsertLog(db, runDate, strategy, 'dna_review', 'win_rate',          +wr.toFixed(4),                  null, all.length, null);
+  upsertLog(db, runDate, strategy, 'dna_review', 'avg_pnl_pts',       +avgPnl.toFixed(4),              null, all.length, null);
+  upsertLog(db, runDate, strategy, 'dna_review', 'profit_factor',     profitFactor != null ? +profitFactor.toFixed(4) : null, null, all.length, null);
+  upsertLog(db, runDate, strategy, 'dna_review', 'max_consec_losses', maxConsecLosses,                 null, all.length, null);
+  if (longWr  != null) upsertLog(db, runDate, strategy, 'dna_review', 'long_wr',  +longWr.toFixed(4),  null, longRows.length,  null);
+  if (shortWr != null) upsertLog(db, runDate, strategy, 'dna_review', 'short_wr', +shortWr.toFixed(4), null, shortRows.length, null);
+  if (bestArch)  upsertLog(db, runDate, strategy, 'dna_review', 'best_archetype',  +bestArchWr.toFixed(4),  null, null, bestArch);
+  if (worstArch) upsertLog(db, runDate, strategy, 'dna_review', 'worst_archetype', +worstArchWr.toFixed(4), null, null, worstArch);
+  if (bestEntry)  upsertLog(db, runDate, strategy, 'dna_review', 'best_entry_type',  +bestEntryWr.toFixed(4),  null, null, bestEntry);
+  if (worstEntry) upsertLog(db, runDate, strategy, 'dna_review', 'worst_entry_type', +worstEntryWr.toFixed(4), null, null, worstEntry);
+
+  console.log(`[${WORKER_NAME}] Phase 1 ${strategy}: N=${all.length} WR=${(wr*100).toFixed(1)}% PF=${profitFactor?.toFixed(2) ?? 'n/a'} maxConsecL=${maxConsecLosses}`);
+  return { wr, avgPnl, profitFactor, maxConsecLosses };
+}
+
+// ── Phase 2 — MFE/MAE extended analysis ──────────────────────────────────────
+
+function runPhase2(db, strategy, runDate) {
+  console.log(`[${WORKER_NAME}] Phase 2 MFE/MAE ext: ${strategy}`);
+
+  // Winner MFE distribution (mfe_sl_ratio = mfe / sl_distance)
+  const winRows = db.prepare(`
+    SELECT mfe_pts, mfe_sl_ratio, tp1_pts
+    FROM trade_dna
+    WHERE strategy_name = ?
+      AND outcome = 'WIN'
+      AND mfe_pts IS NOT NULL
+    ORDER BY mfe_sl_ratio ASC
+  `).all(strategy);
+
+  if (winRows.length >= 10) {
+    const mfeSl = winRows.map(r => r.mfe_sl_ratio ?? 0).sort((a, b) => a - b);
+    upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'win_mfe_sl_p25', percentile(mfeSl, 0.25), null, winRows.length, null);
+    upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'win_mfe_sl_p50', percentile(mfeSl, 0.50), null, winRows.length, null);
+    upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'win_mfe_sl_p75', percentile(mfeSl, 0.75), null, winRows.length, null);
+    upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'win_mfe_sl_p90', percentile(mfeSl, 0.90), null, winRows.length, null);
+
+    // MFE efficiency: how much of TP1 did price reach on average (for winners with tp1_pts > 0)
+    const withTp1 = winRows.filter(r => r.tp1_pts != null && r.tp1_pts > 0);
+    if (withTp1.length >= 5) {
+      const efficiency = withTp1.map(r => r.mfe_pts / r.tp1_pts);
+      const avgEfficiency = efficiency.reduce((s, v) => s + v, 0) / efficiency.length;
+      upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'mfe_tp1_efficiency', +avgEfficiency.toFixed(4), null, withTp1.length, null);
+    }
+  }
+
+  // Loss MFE distribution — how far in profit did losing trades go before reversing
+  const lossRows = db.prepare(`
+    SELECT mfe_pts, mfe_sl_ratio
+    FROM trade_dna
+    WHERE strategy_name = ?
+      AND outcome = 'LOSS'
+      AND mfe_pts IS NOT NULL
+    ORDER BY mfe_sl_ratio ASC
+  `).all(strategy);
+
+  if (lossRows.length >= 5) {
+    const lossMfeSl = lossRows.map(r => r.mfe_sl_ratio ?? 0).sort((a, b) => a - b);
+    const avgLossMfe = lossMfeSl.reduce((s, v) => s + v, 0) / lossMfeSl.length;
+    upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'loss_avg_mfe_sl_ratio', +avgLossMfe.toFixed(4), null, lossRows.length, null);
+    upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'loss_mfe_sl_p50',       percentile(lossMfeSl, 0.50), null, lossRows.length, null);
+
+    // "Reversed winners" — losses where price was ≥ 0.75× SL in profit before reversing
+    const reversedCount = lossRows.filter(r => (r.mfe_sl_ratio ?? 0) >= 0.75).length;
+    const reversedPct   = reversedCount / lossRows.length;
+    upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'reversed_winner_pct', +reversedPct.toFixed(4), null, lossRows.length,
+      reversedPct >= 0.20 ? 'HIGH_REVERSAL_RATE' : null);
+  }
+
+  // TP too tight signal: if median winner mfe_sl_ratio > 1.5 (MFE regularly 1.5× SL = TP is leaving big gains on table)
+  if (winRows.length >= 10) {
+    const mfeSl = winRows.map(r => r.mfe_sl_ratio ?? 0).sort((a, b) => a - b);
+    const medianWinMfe = percentile(mfeSl, 0.50);
+    if (medianWinMfe > 1.5) {
+      upsertLog(db, runDate, strategy, 'mfe_mae_ext', 'tp_tight_signal', medianWinMfe, null, winRows.length, 'TP_TOO_TIGHT');
+      postAgentMessage(db, strategy, 'observation', {
+        observation: 'tp_too_tight',
+        strategy,
+        median_winner_mfe_sl_ratio: +medianWinMfe.toFixed(4),
+        note: 'Winners regularly exceed TP1 distance by >1.5x — TP target may be leaving significant gains on table',
+        timestamp: new Date().toISOString(),
+      }, 3);
+    }
+  }
+
+  console.log(`[${WORKER_NAME}] Phase 2 ${strategy}: winners=${winRows.length} losses=${lossRows.length}`);
+  return { winCount: winRows.length, lossCount: lossRows.length };
+}
+
 // ── Phase 3 — MAE deep analysis ───────────────────────────────────────────────
 
 function runPhase3(db, strategy, runDate) {
@@ -334,6 +521,8 @@ async function main() {
 
   for (const strategy of STRATEGIES) {
     try {
+      const dna      = runPhase1(db, strategy, runDate);
+      runPhase2(db, strategy, runDate);
       const mae      = runPhase3(db, strategy, runDate);
       runPhase8(db, strategy, runDate);
       const regimes  = runPhase9(db, strategy, runDate);
@@ -344,6 +533,7 @@ async function main() {
       const topSession = sessions.sort((a, b) => b.wr - a.wr)[0];
 
       const parts = [`[${strategy}]`];
+      if (dna.wr != null) parts.push(`WR=${(dna.wr*100).toFixed(1)}% PF=${dna.profitFactor?.toFixed(2) ?? 'n/a'}`);
       if (topRegime)  parts.push(`top regime: ${topRegime.regime} WR=${(topRegime.wr*100).toFixed(0)}%`);
       if (topSession) parts.push(`top session: ${topSession.session} WR=${(topSession.wr*100).toFixed(0)}%`);
       if (edges.edgesFound > 0) parts.push(`${edges.edgesFound} edge cross(es) found`);
