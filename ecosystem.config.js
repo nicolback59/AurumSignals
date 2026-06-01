@@ -540,6 +540,30 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── DROPLET HEALTH MONITOR ────────────────────────────────────────────────
+    // Every 5 min: CPU load, RAM %, disk %, SQLite WAL size.
+    // Alerts via ntfy (+email fallback) at warning and critical thresholds.
+    // Auto-checkpoints WAL if it exceeds 50 MB.
+    // CPU >70%/90% | RAM >80%/90% | Disk >75%/85% | WAL >50 MB
+    {
+      name:         'droplet-health',
+      script:       'workers/droplet-health-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '*/5 * * * *',
+      autorestart:  false,
+      max_memory_restart: '100M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/droplet-health-error.log',
+      out_file:        '/root/AurumSignals/logs/droplet-health-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).

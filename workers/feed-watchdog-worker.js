@@ -237,6 +237,16 @@ async function run() {
     : `all clear${active ? '' : ' (outside active window)'}`;
   console.log(`[${WORKER_NAME}] ${statusLine} | alerts=${alertsFired} recoveries=${recoveriesFired}`);
 
+  // ── Ping healthchecks.io dead-man's-switch ────────────────────────────────
+  // If this worker stops running (PM2 cron fails, process hangs), healthchecks.io
+  // will alert after the grace period. Set HEALTHCHECKS_URL in .env to activate.
+  const _hcUrl = process.env.HEALTHCHECKS_URL;
+  if (_hcUrl) {
+    await fetch(_hcUrl, { signal: AbortSignal.timeout(5_000) }).catch(err =>
+      console.warn(`[${WORKER_NAME}] healthchecks.io ping failed: ${err.message}`)
+    );
+  }
+
   db.close();
   process.exit(0);
 }
