@@ -683,6 +683,77 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── OUTCOME INTELLIGENCE WORKER ──────────────────────────────────────────
+    // Friday 07:00 UTC — after trade-dna refresh. Runs 5 phases: MAE deep
+    // analysis, expectancy decomposition, regime/session WR breakdown, and
+    // edge discovery (regime×session cross-products, hour-of-day patterns).
+    // Writes to outcome_intelligence_log; posts agent_messages for strong edges.
+    {
+      name:         'outcome-intelligence-worker',
+      script:       'workers/outcome-intelligence-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 7 * * 5',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/outcome-intelligence-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/outcome-intelligence-worker-out.log',
+      merge_logs:      true,
+    },
+
+    // ── STOP OPTIMIZER WORKER ─────────────────────────────────────────────────
+    // Wednesday 06:30 UTC — Phase 5 Stop Intelligence. Computes p50/p75/p90
+    // MAE percentiles for winners, derives optimal SL ATR ratio, detects
+    // near-stop and recoverable losses. Writes to stop_intelligence_log.
+    {
+      name:         'stop-optimizer-worker',
+      script:       'workers/stop-optimizer-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 6 * * 3',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/stop-optimizer-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/stop-optimizer-worker-out.log',
+      merge_logs:      true,
+    },
+
+    // ── STRATEGY EVOLUTION WORKER ─────────────────────────────────────────────
+    // Thursday 06:30 UTC — Phases 11-12 Strategy Evolution. Rolling WR
+    // comparison (30d recent vs 31-90d prior) per archetype and regime.
+    // Anti-overfitting: ≥15 recent + ≥5 prior trades required.
+    // Posts DEGRADING/IMPROVING to agent_messages. Writes to strategy_evolution_log.
+    {
+      name:         'strategy-evolution-worker',
+      script:       'workers/strategy-evolution-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 6 * * 4',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/strategy-evolution-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/strategy-evolution-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
