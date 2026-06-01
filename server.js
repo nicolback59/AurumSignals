@@ -875,6 +875,32 @@ applyMigrations();
   } catch (err) { console.error('[edge-audit-part2-migration]', err.message); }
 })();
 
+(function applyEdgeAuditPart4Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS backtest_multi_tp (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date         TEXT    NOT NULL,
+        strategy_name    TEXT    NOT NULL,
+        trade_count      INTEGER,
+        base_pnl         REAL,
+        m15_pnl          REAL,
+        m20_pnl          REAL,
+        base_wr          REAL,
+        m15_wr           REAL,
+        m20_wr           REAL,
+        m15_tp2_hit_pct  INTEGER,
+        m20_tp2_hit_pct  INTEGER,
+        recommended_model TEXT,
+        notes            TEXT,
+        computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_bmt_strategy ON backtest_multi_tp(strategy_name, run_date DESC);
+    `);
+  } catch (err) { console.error('[edge-audit-part4-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 

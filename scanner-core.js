@@ -925,6 +925,85 @@ class Scanner extends EventEmitter {
     } catch (err) { this._err('[tp-track] TP hit tracking error', err); }
   }
 
+  // ── Active position monitoring (Part 3: BE trigger + SL risk alerts) ─────────
+  // Scans all ACTIVE signals for the given instrument each scan cycle.
+  // Fires a BE_TRIGGER alert when unrealized gain ≥ 0.5× SL distance.
+  // Fires an SL_RISK alert when unrealized loss ≥ 0.8× SL distance.
+  // Both use _tryMarkNotified for idempotency — one alert per signal per event type.
+  _trackActivePositions(bars, instrument) {
+    try {
+      const actives = this._stmts.getAllActiveSignals.all().filter(s => s.instrument === instrument);
+      if (!actives.length) return;
+      const lastBar = bars[bars.length - 1];
+      if (!lastBar) return;
+      const currentPrice = lastBar.close ?? (lastBar.high + lastBar.low) / 2;
+      const STRAT_LABELS = {
+        MNQ_INTRADAY: 'MNQ Intraday', MGC_SCALP: 'MGC Scalp',
+        NQ_NY_OPEN: 'NQ NY Open', MNQ_FIRE: 'MNQ FIRE',
+      };
+      const url = `${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`;
+
+      for (const sig of actives) {
+        if (!sig.entry || !sig.sl) continue;
+        const slPts = Math.abs(sig.entry - sig.sl);
+        if (slPts <= 0) continue;
+        const unrealized = sig.direction === 'LONG'
+          ? currentPrice - sig.entry
+          : sig.entry - currentPrice;
+
+        // BE trigger: price moved ≥ 0.5R in our favour
+        if (unrealized >= slPts * 0.5) {
+          if (this._tryMarkNotified(sig.id, 'BE_TRIGGER')) {
+            if (this.cfg.ntfyTopic) {
+              const stratLabel = STRAT_LABELS[sig.strategy_name] || sig.strategy_name || instrument;
+              const headers = {
+                'Content-Type': 'text/plain',
+                'Title':    `🔒 BE Trigger — ${instrument} ${sig.direction}`,
+                'Priority': 'high',
+                'Tags':     'lock,white_check_mark',
+              };
+              if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+              const body = [
+                `🔒 Move stop to entry — ${sig.direction} ${stratLabel}`,
+                `Entry: ${sig.entry}  |  Current: ${currentPrice.toFixed(2)}`,
+                `Unrealized: +${unrealized.toFixed(2)} pts  (${(unrealized / slPts * 100).toFixed(0)}% of SL)`,
+                `Signal #${sig.id}`,
+              ].join('\n');
+              this._ntfyWithRetry(url, { method: 'POST', headers, body }, `BE_TRIGGER id=${sig.id}`)
+                .catch(err => this._err('[ntfy-be] BE trigger retry failed', err));
+            }
+            this._log(`BE_TRIGGER #${sig.id} ${instrument} ${sig.direction} unrealized=+${unrealized.toFixed(2)}pts`, 'signal');
+          }
+        }
+
+        // SL risk: price within 20% of stop-out
+        if (unrealized <= -(slPts * 0.80)) {
+          if (this._tryMarkNotified(sig.id, 'SL_RISK')) {
+            if (this.cfg.ntfyTopic) {
+              const stratLabel = STRAT_LABELS[sig.strategy_name] || sig.strategy_name || instrument;
+              const headers = {
+                'Content-Type': 'text/plain',
+                'Title':    `⚠️ SL Risk — ${instrument} ${sig.direction}`,
+                'Priority': 'urgent',
+                'Tags':     'warning,rotating_light',
+              };
+              if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+              const body = [
+                `⚠️ Near stop-out — ${sig.direction} ${stratLabel}`,
+                `Entry: ${sig.entry}  |  Current: ${currentPrice.toFixed(2)}`,
+                `SL: ${sig.sl}  |  Loss: ${unrealized.toFixed(2)} pts  (${(Math.abs(unrealized) / slPts * 100).toFixed(0)}% of SL)`,
+                `Signal #${sig.id}`,
+              ].join('\n');
+              this._ntfyWithRetry(url, { method: 'POST', headers, body }, `SL_RISK id=${sig.id}`)
+                .catch(err => this._err('[ntfy-sl] SL risk retry failed', err));
+            }
+            this._log(`SL_RISK #${sig.id} ${instrument} ${sig.direction} unrealized=${unrealized.toFixed(2)}pts`, 'signal');
+          }
+        }
+      }
+    } catch (err) { this._err('[position-track] active position tracking error', err); }
+  }
+
   // ── Signal storage ────────────────────────────────────────────────────────────
 
   _storeSignal(signal) {
@@ -2426,6 +2505,8 @@ class Scanner extends EventEmitter {
       if (mgcReady) this._autoResolveOutcomes(mgcResBars, 'MGC');
       if (mnqReady) this._trackHigherTPs(mnqResBars, 'MNQ');
       if (mgcReady) this._trackHigherTPs(mgcResBars, 'MGC');
+      if (mnqReady) this._trackActivePositions(mnqResBars, 'MNQ');
+      if (mgcReady) this._trackActivePositions(mgcResBars, 'MGC');
 
     } catch (err) {
       this._err('Scan cycle error', err);
