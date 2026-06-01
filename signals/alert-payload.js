@@ -79,6 +79,7 @@ function buildAlertPayload(raw, extras = {}) {
     dna_score:          raw.dnaScore              ?? null,
     quant_score:        raw.quant_score           ?? null,
     quant_grade:        raw.quant_grade           ?? null,
+    recommended_size_pct: raw.recommended_size_pct ?? null,
   };
 
   // ── Levels ─────────────────────────────────────────────────────────────────
@@ -145,6 +146,7 @@ function flattenPayload(p) {
     win_prob_tp4:        p.quality?.win_prob_tp4,
     quant_score:         p.quality?.quant_score ?? p.quant_score,
     quant_grade:         p.quality?.quant_grade ?? p.quant_grade,
+    recommended_size_pct: p.quality?.recommended_size_pct ?? null,
 
     entry: p.levels?.entry,
     sl:    p.levels?.sl,
@@ -184,6 +186,7 @@ function buildNtfyBody(p) {
     '',
     `Strategy: ${stratLabel}`,
     flat.tier != null          ? `Tier: ${flat.tier}`                      : null,
+    flat.recommended_size_pct != null ? `Size: ${flat.recommended_size_pct}% recommended` : null,
     conf != null               ? `Confidence: ${conf}%`                    : null,
     flat.quant_grade != null   ? `Quant Grade: ${flat.quant_grade} (${flat.quant_score ?? '?'}/100)` : null,
     '',
