@@ -1255,3 +1255,66 @@ CREATE TABLE IF NOT EXISTS edge_discoveries (
 );
 CREATE INDEX IF NOT EXISTS idx_ed_strategy ON edge_discoveries(strategy_name, discovered_at DESC);
 CREATE INDEX IF NOT EXISTS idx_ed_impact   ON edge_discoveries(impact_score DESC);
+
+-- ── PROMPT 13 — Gap Analysis ──────────────────────────────────────────────────
+-- Three workers filling critical post-12 gaps: risk-adjusted return metrics,
+-- cross-strategy correlation risk, and performance calendar/heatmap.
+
+CREATE TABLE IF NOT EXISTS risk_metrics_log (
+  id                INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date          TEXT NOT NULL,
+  strategy_name     TEXT NOT NULL,
+  window_days       INTEGER NOT NULL,
+  trading_days      INTEGER,
+  total_pnl_pts     REAL,
+  peak_pnl_pts      REAL,
+  max_drawdown_pts  REAL,
+  max_drawdown_pct  REAL,
+  sharpe_ratio      REAL,
+  sortino_ratio     REAL,
+  calmar_ratio      REAL,
+  annualized_pts    REAL,
+  win_days          INTEGER,
+  loss_days         INTEGER,
+  best_day_pts      REAL,
+  worst_day_pts     REAL,
+  computed_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, window_days)
+);
+CREATE INDEX IF NOT EXISTS idx_rml_strategy ON risk_metrics_log(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_rml_window   ON risk_metrics_log(window_days, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS correlation_log (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  checked_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  strategy_a            TEXT NOT NULL,
+  strategy_b            TEXT NOT NULL,
+  correlation_30d       REAL,
+  both_active           INTEGER DEFAULT 0,
+  concurrent_direction  TEXT,
+  risk_level            TEXT,
+  notes                 TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cl_checked  ON correlation_log(checked_at DESC);
+CREATE INDEX IF NOT EXISTS idx_cl_risk     ON correlation_log(risk_level, checked_at DESC);
+
+CREATE TABLE IF NOT EXISTS session_calendar (
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date       TEXT NOT NULL,
+  strategy_name  TEXT NOT NULL,
+  dimension      TEXT NOT NULL,
+  dimension_key  TEXT NOT NULL,
+  trade_count    INTEGER,
+  win_count      INTEGER,
+  loss_count     INTEGER,
+  win_rate       REAL,
+  baseline_wr    REAL,
+  wr_delta       REAL,
+  avg_pnl_pts    REAL,
+  total_pnl_pts  REAL,
+  pattern        TEXT,
+  computed_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, dimension, dimension_key)
+);
+CREATE INDEX IF NOT EXISTS idx_sc_strategy ON session_calendar(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_sc_pattern  ON session_calendar(pattern, wr_delta DESC);

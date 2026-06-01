@@ -938,6 +938,67 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── PROMPT 13 GAP-FILL WORKERS ───────────────────────────────────────────
+    // risk-metrics: daily 07:30 UTC — Sharpe/Sortino/Calmar/MaxDD from live trades
+    // correlation-risk: every 30 min — cross-strategy P&L correlation + concurrent signal risk
+    // session-calendar: weekly Friday 20:00 UTC — DOW/WOM/month/hour_et/session×DOW heatmap
+    {
+      name:         'risk-metrics',
+      script:       'workers/risk-metrics-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 7 * * *',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/risk-metrics-error.log',
+      out_file:        '/root/AurumSignals/logs/risk-metrics-out.log',
+      merge_logs:      true,
+    },
+
+    {
+      name:         'correlation-risk',
+      script:       'workers/correlation-risk-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '*/30 * * * *',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/correlation-risk-error.log',
+      out_file:        '/root/AurumSignals/logs/correlation-risk-out.log',
+      merge_logs:      true,
+    },
+
+    {
+      name:         'session-calendar',
+      script:       'workers/session-calendar-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 20 * * 5',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/session-calendar-error.log',
+      out_file:        '/root/AurumSignals/logs/session-calendar-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
