@@ -611,6 +611,30 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── MULTI-TP BACKTEST WORKER ──────────────────────────────────────────────
+    // Tuesday 06:30 UTC — after trade-dna refresh (Mon 04:30) + a day of data.
+    // Simulates BASE vs M1.5 (50%@TP1+trail to 1.5R) vs M2.0 (50%@TP1+trail to 2R)
+    // against stored trade_dna data. Writes to backtest_multi_tp. Sends ntfy
+    // with recommended model and expected P&L improvement percentage.
+    {
+      name:         'multi-tp-backtest-worker',
+      script:       'workers/multi-tp-backtest-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 6 * * 2',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/multi-tp-backtest-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/multi-tp-backtest-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).

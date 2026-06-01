@@ -792,6 +792,37 @@ applyMigrations();
   } catch (err) { console.error('[db-part6-migration]', err.message); }
 })();
 
+// ── Edge Audit Part 4: backtest_multi_tp table ────────────────────────────
+(function applyEdgeAuditPart4Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS backtest_multi_tp (
+        id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date             TEXT    NOT NULL,
+        strategy_name        TEXT    NOT NULL,
+        lookback_days        INTEGER NOT NULL DEFAULT 90,
+        total_trades         INTEGER,
+        base_wr              REAL,
+        base_total_pnl       REAL,
+        base_avg_pnl         REAL,
+        m15_wr               REAL,
+        m15_total_pnl        REAL,
+        m15_avg_pnl          REAL,
+        m15_tp2_hit_pct      REAL,
+        m20_wr               REAL,
+        m20_total_pnl        REAL,
+        m20_avg_pnl          REAL,
+        m20_tp2_hit_pct      REAL,
+        best_model           TEXT,
+        pnl_improvement_pct  REAL,
+        computed_at          TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name)
+      )
+    `);
+    db.exec(`CREATE INDEX IF NOT EXISTS idx_mtp_date ON backtest_multi_tp(run_date DESC)`);
+  } catch (err) { console.error('[edge-audit-part4-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 

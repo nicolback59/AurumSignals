@@ -925,7 +925,90 @@ class Scanner extends EventEmitter {
     } catch (err) { this._err('[tp-track] TP hit tracking error', err); }
   }
 
-  // ── Signal storage ────────────────────────────────────────────────────────────
+  // ── Active position management notifications (Edge Audit Part 3) ──────────────
+  //
+  // Runs every scan cycle alongside _trackHigherTPs. Checks all ACTIVE signals
+  // and fires two types of trade management alerts:
+  //
+  //   BE_TRIGGER  — price moved >= 50% of SL distance favorable → "move stop to entry"
+  //   SL_RISK     — price within 20% of stop (80% adverse move) → "stop is at risk"
+  //
+  // Both use _tryMarkNotified() for deduplication — alert fires once per signal,
+  // survives restarts via notification_log DB backing.
+
+  _trackActivePositions(bars, instrument) {
+    try {
+      const actives = this._stmts.getAllActiveSignals.all().filter(s => s.instrument === instrument);
+      if (!actives.length) return;
+
+      const lastBar = bars[bars.length - 1];
+      if (!lastBar) return;
+      const currentPrice = lastBar.close ?? (lastBar.high + lastBar.low) / 2;
+
+      const STRAT_LABELS = {
+        MNQ_INTRADAY: 'MNQ Intraday', MGC_SCALP: 'MGC Scalp',
+        NQ_NY_OPEN: 'NQ NY Open', MNQ_FIRE: 'MNQ FIRE',
+      };
+
+      for (const sig of actives) {
+        if (!sig.entry || !sig.sl) continue;
+        const slPts = Math.abs(sig.entry - sig.sl);
+        if (slPts <= 0) continue;
+
+        const unrealized = sig.direction === 'LONG'
+          ? currentPrice - sig.entry
+          : sig.entry - currentPrice;
+
+        // BE trigger: moved >= 0.5R favorable
+        if (unrealized >= slPts * 0.5) {
+          if (this._tryMarkNotified(sig.id, 'BE_TRIGGER')) {
+            const rAchieved = (unrealized / slPts).toFixed(1);
+            const label = STRAT_LABELS[sig.strategy_name] || sig.strategy_name;
+            const body  = [
+              `🔒 ${sig.direction} ${label}  @${sig.entry}`,
+              `Price: +${unrealized.toFixed(1)} pts (+${rAchieved}R)`,
+              `→ Move stop to entry (break even)`,
+            ].join('\n');
+            const headers = {
+              'Content-Type': 'text/plain',
+              'Title':    `🔒 BE Trigger — ${instrument} ${sig.direction}`,
+              'Priority': 'high',
+              'Tags':     'lock,white_check_mark',
+            };
+            if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+            this._ntfyWithRetry(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`,
+              { method: 'POST', headers, body }, `BE_TRIGGER id=${sig.id}`)
+              .catch(() => {});
+            this._log(`BE_TRIGGER #${sig.id} ${instrument} ${sig.direction}: +${unrealized.toFixed(1)} pts (+${rAchieved}R)`, 'signal');
+          }
+        }
+
+        // SL risk: >= 80% adverse move (20% buffer left before stop)
+        if (unrealized <= -(slPts * 0.80)) {
+          if (this._tryMarkNotified(sig.id, 'SL_RISK')) {
+            const pctUsed = Math.round((Math.abs(unrealized) / slPts) * 100);
+            const label = STRAT_LABELS[sig.strategy_name] || sig.strategy_name;
+            const body  = [
+              `⚠️ ${sig.direction} ${label}  @${sig.entry}`,
+              `Drawdown: ${unrealized.toFixed(1)} pts  (${pctUsed}% of SL consumed)`,
+              `Stop: ${sig.sl}`,
+            ].join('\n');
+            const headers = {
+              'Content-Type': 'text/plain',
+              'Title':    `⚠️ SL Risk — ${instrument} ${sig.direction}`,
+              'Priority': 'high',
+              'Tags':     'warning,chart_decreasing',
+            };
+            if (this.cfg.ntfyToken) headers['Authorization'] = `Bearer ${this.cfg.ntfyToken}`;
+            this._ntfyWithRetry(`${this.cfg.ntfyUrl}/${this.cfg.ntfyTopic}`,
+              { method: 'POST', headers, body }, `SL_RISK id=${sig.id}`)
+              .catch(() => {});
+            this._log(`SL_RISK #${sig.id} ${instrument} ${sig.direction}: ${unrealized.toFixed(1)} pts (${pctUsed}% to SL)`, 'signal');
+          }
+        }
+      }
+    } catch (err) { this._err('[position-track] active position tracking error', err); }
+  }
 
   _storeSignal(signal) {
     // Evaluate TP2/TP3 viability before storage.
@@ -2405,6 +2488,8 @@ class Scanner extends EventEmitter {
       if (mgcReady) this._autoResolveOutcomes(mgcResBars, 'MGC');
       if (mnqReady) this._trackHigherTPs(mnqResBars, 'MNQ');
       if (mgcReady) this._trackHigherTPs(mgcResBars, 'MGC');
+      if (mnqReady) this._trackActivePositions(mnqResBars, 'MNQ');
+      if (mgcReady) this._trackActivePositions(mgcResBars, 'MGC');
 
     } catch (err) {
       this._err('Scan cycle error', err);

@@ -900,3 +900,38 @@ CREATE INDEX IF NOT EXISTS idx_rejections_strat
 -- strategy-health-worker sets is_latest=1 on new snapshot, clears 0 on older rows.
 -- Migration: ALTER TABLE adds column to existing DBs (server.js applyMigrations).
 -- ALTER TABLE strategy_health_snapshots ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 0;
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- EDGE AUDIT — Part 4: Multi-TP Backtest Results
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Weekly comparison written by workers/multi-tp-backtest-worker.js (Tue 06:30 UTC).
+-- Simulates BASE vs M1.5 (50%@TP1+trail to 1.5R) vs M2.0 (50%@TP1+trail to 2R)
+-- against stored trade_dna data. rr_achieved >= tp2_ratio → TP2 would have been hit.
+CREATE TABLE IF NOT EXISTS backtest_multi_tp (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date             TEXT    NOT NULL,
+  strategy_name        TEXT    NOT NULL,
+  lookback_days        INTEGER NOT NULL DEFAULT 90,
+  total_trades         INTEGER,
+  -- Base model (current — all-in at TP1)
+  base_wr              REAL,
+  base_total_pnl       REAL,
+  base_avg_pnl         REAL,
+  -- Multi-TP 1.5R model
+  m15_wr               REAL,
+  m15_total_pnl        REAL,
+  m15_avg_pnl          REAL,
+  m15_tp2_hit_pct      REAL,   -- fraction of WIN trades where MFE reached 1.5× TP1
+  -- Multi-TP 2.0R model
+  m20_wr               REAL,
+  m20_total_pnl        REAL,
+  m20_avg_pnl          REAL,
+  m20_tp2_hit_pct      REAL,   -- fraction of WIN trades where MFE reached 2.0× TP1
+  -- Summary
+  best_model           TEXT,   -- BASE | M15 | M20
+  pnl_improvement_pct  REAL,   -- best_model P&L vs base_total_pnl (percent)
+  computed_at          TEXT    NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name)
+);
+CREATE INDEX IF NOT EXISTS idx_mtp_date ON backtest_multi_tp(run_date DESC);

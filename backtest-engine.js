@@ -162,6 +162,89 @@ function resolveOutcomeFull(bars5m, sigIdx, entry, direction, tp1, sl, maxBars =
   return { outcome: 'BE', mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: maxBars, exitType: 'TIMEOUT' };
 }
 
+/**
+ * Multi-TP resolver — simulates the "50% at TP1, trail remainder to TP2" model.
+ *
+ * Trade management rules:
+ *   - SL hit before TP1  → full loss at SL (identical to base model)
+ *   - TP1 hit            → exit 50% at TP1; trail stop to entry for remaining 50%
+ *   - TP2 hit after TP1  → exit remaining 50% at TP2 (full win both legs)
+ *   - Entry revisited after TP1, TP2 not hit → remaining 50% exits at BE (+0)
+ *   - Timeout            → exit at last close (treated as BE on remaining half)
+ *
+ * Returns { outcome, pnl, mfe, mae, durationBars, exitType, tp1Hit, tp2Hit }
+ *   outcome: 'WIN' | 'PARTIAL_WIN' | 'LOSS' | 'BE'
+ *   pnl:     blended P&L in points (positive = profit)
+ */
+function resolveOutcomeMultiTP(bars5m, sigIdx, entry, direction, tp1, sl, tp2, maxBars = 60, slippage = 0) {
+  const tp1Adj = direction === 'LONG' ? tp1 + slippage : tp1 - slippage;
+  const slAdj  = direction === 'LONG' ? sl  - slippage : sl  + slippage;
+  const tp2Adj = tp2 != null
+    ? (direction === 'LONG' ? tp2 + slippage : tp2 - slippage)
+    : null;
+
+  const tp1Pts = Math.abs(tp1 - entry);
+  const slPts  = Math.abs(sl  - entry);
+
+  let mfe = 0, mae = 0;
+  let tp1Hit = false;
+
+  const end = Math.min(sigIdx + maxBars + 1, bars5m.length);
+
+  for (let j = sigIdx + 1; j < end; j++) {
+    const { open, high, low, close } = bars5m[j];
+    const d = j - sigIdx;
+
+    if (!tp1Hit) {
+      // ── Phase 1: scanning for TP1 or SL ──────────────────────────────────
+      if (direction === 'LONG') {
+        mfe = Math.max(mfe, high - entry);
+        mae = Math.max(mae, entry - low);
+        if (open >= tp1Adj || high >= tp1Adj) { tp1Hit = true; continue; }
+        if (open <= slAdj  || low  <= slAdj)  {
+          return { outcome: 'LOSS', pnl: -slPts, mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'SL_HIT', tp1Hit: false, tp2Hit: false };
+        }
+      } else {
+        mfe = Math.max(mfe, entry - low);
+        mae = Math.max(mae, high - entry);
+        if (open <= tp1Adj || low  <= tp1Adj) { tp1Hit = true; continue; }
+        if (open >= slAdj  || high >= slAdj)  {
+          return { outcome: 'LOSS', pnl: -slPts, mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'SL_HIT', tp1Hit: false, tp2Hit: false };
+        }
+      }
+    } else {
+      // ── Phase 2: TP1 hit — trailing remaining 50% from entry ─────────────
+      // Trail stop is at entry (BE). Exit remaining half if TP2 hit or if
+      // price comes back to entry level.
+      if (direction === 'LONG') {
+        mfe = Math.max(mfe, high - entry);
+        if (tp2Adj != null && (open >= tp2Adj || high >= tp2Adj)) {
+          const tp2Pts = Math.abs(tp2 - entry);
+          return { outcome: 'WIN', pnl: +(0.5 * tp1Pts + 0.5 * tp2Pts).toFixed(2), mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'TP2_HIT', tp1Hit: true, tp2Hit: true };
+        }
+        if (open <= entry || low <= entry) {
+          return { outcome: 'PARTIAL_WIN', pnl: +(0.5 * tp1Pts).toFixed(2), mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'TRAIL_BE', tp1Hit: true, tp2Hit: false };
+        }
+      } else {
+        mfe = Math.max(mfe, entry - low);
+        if (tp2Adj != null && (open <= tp2Adj || low <= tp2Adj)) {
+          const tp2Pts = Math.abs(tp2 - entry);
+          return { outcome: 'WIN', pnl: +(0.5 * tp1Pts + 0.5 * tp2Pts).toFixed(2), mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'TP2_HIT', tp1Hit: true, tp2Hit: true };
+        }
+        if (open >= entry || high >= entry) {
+          return { outcome: 'PARTIAL_WIN', pnl: +(0.5 * tp1Pts).toFixed(2), mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: d, exitType: 'TRAIL_BE', tp1Hit: true, tp2Hit: false };
+        }
+      }
+    }
+  }
+
+  // Timeout
+  if (tp1Hit) {
+    return { outcome: 'PARTIAL_WIN', pnl: +(0.5 * tp1Pts).toFixed(2), mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: maxBars, exitType: 'TIMEOUT', tp1Hit: true, tp2Hit: false };
+  }
+  return { outcome: 'BE', pnl: 0, mfe: +mfe.toFixed(2), mae: +mae.toFixed(2), durationBars: maxBars, exitType: 'TIMEOUT', tp1Hit: false, tp2Hit: false };
+}
+
 // ── Base metrics ──────────────────────────────────────────────────────────────
 
 function calcMetrics(signalLog) {
@@ -592,6 +675,7 @@ module.exports = {
   runWalkForward,
   resolveOutcome,
   resolveOutcomeFull,
+  resolveOutcomeMultiTP,
   detectRegime,
   calcMetrics,
   calcEnhancedMetrics,
