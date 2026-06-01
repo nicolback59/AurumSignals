@@ -509,6 +509,275 @@ function runPhase13(db, strategy, runDate) {
   return { edgesFound, baselineWr };
 }
 
+// ── Phase 6 — MGC Scalp instrument deep review ───────────────────────────────
+
+function runPhase6(db, runDate) {
+  const strategy = 'MGC_SCALP';
+  console.log(`[${WORKER_NAME}] Phase 6 MGC deep review`);
+
+  const rows = db.prepare(`
+    SELECT outcome, direction, pnl_pts, hold_time_min, exit_type, atr, hour_et, session
+    FROM trade_dna
+    WHERE strategy_name = ?
+      AND outcome IN ('WIN','LOSS','BE')
+  `).all(strategy);
+
+  if (rows.length < 5) {
+    console.log(`[${WORKER_NAME}] Phase 6: skipped (N=${rows.length} < 5)`);
+    return;
+  }
+
+  // ── Direction bias ────────────────────────────────────────────────────────
+  for (const dir of ['LONG', 'SHORT']) {
+    const dirRows = rows.filter(r => r.direction === dir);
+    const w = dirRows.filter(r => r.outcome === 'WIN').length;
+    const l = dirRows.filter(r => r.outcome === 'LOSS').length;
+    if (w + l < 5) continue;
+    const wr     = w / (w + l);
+    const avgPnl = dirRows.reduce((s, r) => s + (r.pnl_pts ?? 0), 0) / dirRows.length;
+    upsertLog(db, runDate, strategy, 'mgc_review', `direction_${dir.toLowerCase()}`,
+      +wr.toFixed(4),
+      JSON.stringify({ wr: +wr.toFixed(4), avg_pnl: +avgPnl.toFixed(4), trade_count: dirRows.length }),
+      dirRows.length, null);
+  }
+
+  // ── ATR vol tier performance (tertiles) ───────────────────────────────────
+  const withAtr = rows.filter(r => r.atr != null && r.atr > 0).sort((a, b) => a.atr - b.atr);
+  if (withAtr.length >= 15) {
+    const t1 = Math.floor(withAtr.length / 3);
+    const t2 = Math.floor(withAtr.length * 2 / 3);
+    const tiers = [
+      { label: 'atr_low',  slice: withAtr.slice(0, t1) },
+      { label: 'atr_med',  slice: withAtr.slice(t1, t2) },
+      { label: 'atr_high', slice: withAtr.slice(t2) },
+    ];
+    for (const { label, slice } of tiers) {
+      const w = slice.filter(r => r.outcome === 'WIN').length;
+      const l = slice.filter(r => r.outcome === 'LOSS').length;
+      if (w + l < 3) continue;
+      const wr     = w / (w + l);
+      const avgPnl = slice.reduce((s, r) => s + (r.pnl_pts ?? 0), 0) / slice.length;
+      upsertLog(db, runDate, strategy, 'mgc_review', label,
+        +wr.toFixed(4),
+        JSON.stringify({ wr: +wr.toFixed(4), avg_pnl: +avgPnl.toFixed(4), trade_count: slice.length }),
+        slice.length, null);
+    }
+  }
+
+  // ── Hold time buckets ─────────────────────────────────────────────────────
+  const holdBuckets = [
+    { label: 'hold_lt15m',   fn: r => r.hold_time_min != null && r.hold_time_min <  15 },
+    { label: 'hold_15_30m',  fn: r => r.hold_time_min != null && r.hold_time_min >= 15 && r.hold_time_min < 30 },
+    { label: 'hold_30_60m',  fn: r => r.hold_time_min != null && r.hold_time_min >= 30 && r.hold_time_min < 60 },
+    { label: 'hold_gt60m',   fn: r => r.hold_time_min != null && r.hold_time_min >= 60 },
+  ];
+  for (const { label, fn } of holdBuckets) {
+    const bucket = rows.filter(fn);
+    const w = bucket.filter(r => r.outcome === 'WIN').length;
+    const l = bucket.filter(r => r.outcome === 'LOSS').length;
+    if (w + l < 3) continue;
+    const wr     = w / (w + l);
+    const avgPnl = bucket.reduce((s, r) => s + (r.pnl_pts ?? 0), 0) / bucket.length;
+    upsertLog(db, runDate, strategy, 'mgc_review', label,
+      +wr.toFixed(4),
+      JSON.stringify({ wr: +wr.toFixed(4), avg_pnl: +avgPnl.toFixed(4), trade_count: bucket.length }),
+      bucket.length, null);
+  }
+
+  // ── Exit type breakdown ───────────────────────────────────────────────────
+  const exitMap = {};
+  for (const r of rows) {
+    if (!r.exit_type) continue;
+    exitMap[r.exit_type] = (exitMap[r.exit_type] ?? 0) + 1;
+  }
+  const totalWithExit = Object.values(exitMap).reduce((s, v) => s + v, 0);
+  for (const [et, count] of Object.entries(exitMap)) {
+    upsertLog(db, runDate, strategy, 'mgc_review', `exit_${et.toLowerCase()}`,
+      totalWithExit > 0 ? +(count / totalWithExit).toFixed(4) : null,
+      null, count, null);
+  }
+
+  // ── Granular intraday session bands (ET hours) ────────────────────────────
+  const sessionBands = [
+    { label: 'mgc_band_overnight',  fn: r => r.hour_et != null && (r.hour_et < 3 || r.hour_et >= 20) },
+    { label: 'mgc_band_london',     fn: r => r.hour_et != null && r.hour_et >= 3  && r.hour_et <  5  },
+    { label: 'mgc_band_premarket',  fn: r => r.hour_et != null && r.hour_et >= 7  && r.hour_et <  9  },
+    { label: 'mgc_band_ny_open',    fn: r => r.hour_et != null && r.hour_et >= 9  && r.hour_et <  11 },
+    { label: 'mgc_band_ny_midday',  fn: r => r.hour_et != null && r.hour_et >= 11 && r.hour_et <  14 },
+    { label: 'mgc_band_afternoon',  fn: r => r.hour_et != null && r.hour_et >= 14 && r.hour_et <  17 },
+  ];
+  for (const { label, fn } of sessionBands) {
+    const band = rows.filter(fn);
+    const w = band.filter(r => r.outcome === 'WIN').length;
+    const l = band.filter(r => r.outcome === 'LOSS').length;
+    if (w + l < 3) continue;
+    const wr     = w / (w + l);
+    const avgPnl = band.reduce((s, r) => s + (r.pnl_pts ?? 0), 0) / band.length;
+    upsertLog(db, runDate, strategy, 'mgc_review', label,
+      +wr.toFixed(4),
+      JSON.stringify({ wr: +wr.toFixed(4), avg_pnl: +avgPnl.toFixed(4), trade_count: band.length }),
+      band.length, null);
+  }
+
+  console.log(`[${WORKER_NAME}] Phase 6 MGC: N=${rows.length} done`);
+  return { tradeCount: rows.length };
+}
+
+// ── Phase 7 — MNQ cross-strategy instrument deep review ──────────────────────
+
+function runPhase7(db, runDate) {
+  const MNQ_STRATEGIES = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT'];
+  console.log(`[${WORKER_NAME}] Phase 7 MNQ deep review`);
+
+  // ── Cross-strategy scorecard ──────────────────────────────────────────────
+  const scorecardParts = [];
+  for (const strat of MNQ_STRATEGIES) {
+    const r = db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN outcome = 'WIN'  THEN 1 ELSE 0 END) AS wins,
+             SUM(CASE WHEN outcome = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+             AVG(pnl_pts) AS avg_pnl,
+             AVG(CASE WHEN outcome = 'WIN'  THEN pnl_pts END) AS avg_win,
+             AVG(CASE WHEN outcome = 'LOSS' THEN pnl_pts END) AS avg_loss,
+             SUM(CASE WHEN outcome = 'WIN'  AND pnl_pts > 0 THEN pnl_pts ELSE 0 END) AS gross_win,
+             SUM(CASE WHEN outcome = 'LOSS' AND pnl_pts < 0 THEN ABS(pnl_pts) ELSE 0 END) AS gross_loss
+      FROM trade_dna
+      WHERE strategy_name = ?
+        AND outcome IN ('WIN','LOSS','BE')
+    `).get(strat);
+
+    if (!r || r.total < 5) continue;
+
+    const wr = (r.wins + r.losses) > 0 ? r.wins / (r.wins + r.losses) : 0;
+    const pf = (r.gross_loss ?? 0) > 0 ? (r.gross_win ?? 0) / r.gross_loss : null;
+
+    upsertLog(db, runDate, strat, 'mnq_review', 'scorecard',
+      +wr.toFixed(4),
+      JSON.stringify({
+        strategy: strat, wr: +wr.toFixed(4), avg_pnl: +(r.avg_pnl ?? 0).toFixed(4),
+        avg_win: +(r.avg_win ?? 0).toFixed(4), avg_loss: +(r.avg_loss ?? 0).toFixed(4),
+        profit_factor: pf != null ? +pf.toFixed(4) : null, trade_count: r.total,
+      }),
+      r.total, null);
+
+    scorecardParts.push(`${strat}: WR=${(wr*100).toFixed(1)}% PF=${pf?.toFixed(2) ?? 'n/a'}`);
+  }
+
+  // ── Regime fit matrix: best MNQ strategy per regime ──────────────────────
+  const regimeRows = db.prepare(`
+    SELECT strategy_name, regime,
+           SUM(CASE WHEN outcome = 'WIN'  THEN 1 ELSE 0 END) AS wins,
+           SUM(CASE WHEN outcome = 'LOSS' THEN 1 ELSE 0 END) AS losses
+    FROM trade_dna
+    WHERE strategy_name IN ('MNQ_INTRADAY','MNQ_SWING','MNQ_50PT')
+      AND outcome IN ('WIN','LOSS')
+      AND regime IS NOT NULL
+    GROUP BY strategy_name, regime
+  `).all();
+
+  // Build { regime → { strategy → {wins, losses} } }
+  const regimeMatrix = {};
+  for (const r of regimeRows) {
+    if (!regimeMatrix[r.regime]) regimeMatrix[r.regime] = {};
+    regimeMatrix[r.regime][r.strategy_name] = { wins: r.wins, losses: r.losses };
+  }
+
+  for (const [regime, stratMap] of Object.entries(regimeMatrix)) {
+    let bestStrat = null, bestWr = -1;
+    const detail = {};
+    for (const [strat, s] of Object.entries(stratMap)) {
+      const total = s.wins + s.losses;
+      if (total < 5) continue;
+      const wr = s.wins / total;
+      detail[strat] = { wr: +wr.toFixed(4), trade_count: total };
+      if (wr > bestWr) { bestWr = wr; bestStrat = strat; }
+    }
+    if (!bestStrat) continue;
+    // Write one row per MNQ strategy for this regime under mnq_review
+    for (const [strat, d] of Object.entries(detail)) {
+      upsertLog(db, runDate, strat, 'mnq_review', `regime_fit_${regime}`,
+        d.wr, JSON.stringify({ regime, wr: d.wr, trade_count: d.trade_count, best_strategy: bestStrat }),
+        d.trade_count, strat === bestStrat ? 'BEST_FIT' : null);
+    }
+  }
+
+  // ── MNQ_50PT realism check ────────────────────────────────────────────────
+  const pt50Rows = db.prepare(`
+    SELECT mfe_pts, tp1_pts, outcome
+    FROM trade_dna
+    WHERE strategy_name = 'MNQ_50PT'
+      AND outcome IN ('WIN','LOSS')
+      AND mfe_pts IS NOT NULL
+      AND tp1_pts IS NOT NULL AND tp1_pts > 0
+  `).all();
+
+  if (pt50Rows.length >= 5) {
+    const reached50 = pt50Rows.filter(r => r.mfe_pts >= 50).length;
+    const reached50Pct = reached50 / pt50Rows.length;
+    const avgMfe = pt50Rows.reduce((s, r) => s + r.mfe_pts, 0) / pt50Rows.length;
+    const mfeSorted = pt50Rows.map(r => r.mfe_pts).sort((a, b) => a - b);
+    const mfeP50 = mfeSorted[Math.floor(0.5 * mfeSorted.length)];
+
+    upsertLog(db, runDate, 'MNQ_50PT', 'mnq_review', '50pt_mfe_reach_pct',
+      +reached50Pct.toFixed(4),
+      JSON.stringify({ reached_50pt_pct: +reached50Pct.toFixed(4), avg_mfe_pts: +avgMfe.toFixed(2), median_mfe_pts: +mfeP50.toFixed(2), sample: pt50Rows.length }),
+      pt50Rows.length,
+      reached50Pct < 0.40 ? 'TP_UNREALISTIC' : reached50Pct > 0.70 ? 'TP_CONSERVATIVE' : null);
+  }
+
+  // ── MNQ_SWING hold time: wins vs losses ───────────────────────────────────
+  const swingRows = db.prepare(`
+    SELECT outcome, hold_time_min
+    FROM trade_dna
+    WHERE strategy_name = 'MNQ_SWING'
+      AND outcome IN ('WIN','LOSS')
+      AND hold_time_min IS NOT NULL
+  `).all();
+
+  if (swingRows.length >= 5) {
+    const swingWins   = swingRows.filter(r => r.outcome === 'WIN');
+    const swingLosses = swingRows.filter(r => r.outcome === 'LOSS');
+    const avgWinHold  = swingWins.length   ? swingWins.reduce((s, r)   => s + r.hold_time_min, 0) / swingWins.length   : null;
+    const avgLossHold = swingLosses.length ? swingLosses.reduce((s, r) => s + r.hold_time_min, 0) / swingLosses.length : null;
+    upsertLog(db, runDate, 'MNQ_SWING', 'mnq_review', 'swing_hold_win_avg',
+      avgWinHold != null ? +avgWinHold.toFixed(2) : null, null, swingWins.length, null);
+    upsertLog(db, runDate, 'MNQ_SWING', 'mnq_review', 'swing_hold_loss_avg',
+      avgLossHold != null ? +avgLossHold.toFixed(2) : null, null, swingLosses.length, null);
+  }
+
+  // ── Best session per MNQ strategy ─────────────────────────────────────────
+  const sessionRows = db.prepare(`
+    SELECT strategy_name, session,
+           SUM(CASE WHEN outcome = 'WIN'  THEN 1 ELSE 0 END) AS wins,
+           SUM(CASE WHEN outcome = 'LOSS' THEN 1 ELSE 0 END) AS losses,
+           COUNT(*) AS total
+    FROM trade_dna
+    WHERE strategy_name IN ('MNQ_INTRADAY','MNQ_SWING','MNQ_50PT')
+      AND outcome IN ('WIN','LOSS')
+      AND session IS NOT NULL
+    GROUP BY strategy_name, session
+  `).all();
+
+  const bestSessions = {};
+  for (const r of sessionRows) {
+    const total = r.wins + r.losses;
+    if (total < 5) continue;
+    const wr = r.wins / total;
+    if (!bestSessions[r.strategy_name] || wr > bestSessions[r.strategy_name].wr) {
+      bestSessions[r.strategy_name] = { session: r.session, wr, trade_count: total };
+    }
+  }
+  for (const [strat, best] of Object.entries(bestSessions)) {
+    upsertLog(db, runDate, strat, 'mnq_review', 'best_session',
+      +best.wr.toFixed(4),
+      JSON.stringify({ session: best.session, wr: +best.wr.toFixed(4), trade_count: best.trade_count }),
+      best.trade_count, null);
+  }
+
+  console.log(`[${WORKER_NAME}] Phase 7 MNQ: ${scorecardParts.join(' | ')}`);
+  return { scorecardParts };
+}
+
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 async function main() {
@@ -546,11 +815,30 @@ async function main() {
     }
   }
 
+  // Instrument deep reviews run once (not per-strategy loop)
+  let mgcSummary = null, mnqSummary = null;
+  try {
+    mgcSummary = runPhase6(db, runDate);
+  } catch (err) {
+    console.error(`[${WORKER_NAME}] Phase 6 error: ${err.message}`);
+    logWorkerError(db, WORKER_NAME, err);
+  }
+  try {
+    mnqSummary = runPhase7(db, runDate);
+  } catch (err) {
+    console.error(`[${WORKER_NAME}] Phase 7 error: ${err.message}`);
+    logWorkerError(db, WORKER_NAME, err);
+  }
+
   heartbeat(db, WORKER_NAME, 'COMPLETED', { completedAt: new Date().toISOString() });
 
-  const body = summaryParts.length > 0
-    ? summaryParts.join('\n')
-    : 'No significant findings this week.';
+  const mgcLine = mgcSummary ? `[MGC] ${mgcSummary.tradeCount} trades reviewed` : null;
+  const mnqLine = mnqSummary?.scorecardParts?.length
+    ? `[MNQ] ${mnqSummary.scorecardParts.join(' | ')}`
+    : null;
+
+  const allParts = [...summaryParts, mgcLine, mnqLine].filter(Boolean);
+  const body = allParts.length > 0 ? allParts.join('\n') : 'No significant findings this week.';
 
   await sendNotification(
     'Outcome Intelligence — Weekly Analysis Complete',
