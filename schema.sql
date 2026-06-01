@@ -1170,3 +1170,88 @@ CREATE TABLE IF NOT EXISTS portfolio_allocations (
 );
 CREATE INDEX IF NOT EXISTS idx_pa_strategy ON portfolio_allocations(strategy_name, run_ts DESC);
 CREATE INDEX IF NOT EXISTS idx_pa_action   ON portfolio_allocations(capital_action, run_ts DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- PROMPT 12 — Quant Research Lab
+-- hypothesis-engine-worker  (weekly Sunday  07:00 UTC) — Phase 2
+-- experiment-engine-worker  (weekly Monday  06:00 UTC) — Phase 3
+-- edge-discovery-worker     (weekly Saturday 07:00 UTC) — Phase 6
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS research_hypotheses (
+  id              INTEGER PRIMARY KEY AUTOINCREMENT,
+  generated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  strategy_name   TEXT NOT NULL,
+  hypothesis_text TEXT NOT NULL,
+  dimension       TEXT NOT NULL,
+  condition_key   TEXT NOT NULL,
+  condition_value TEXT,
+  sample_size     INTEGER,
+  observed_wr     REAL,
+  baseline_wr     REAL,
+  wr_delta        REAL,
+  z_score         REAL,
+  p_value         REAL,
+  priority_score  REAL,
+  priority        INTEGER DEFAULT 5,
+  status          TEXT NOT NULL DEFAULT 'OPEN',
+  notes           TEXT,
+  UNIQUE(strategy_name, condition_key, condition_value)
+);
+CREATE INDEX IF NOT EXISTS idx_rh_strategy ON research_hypotheses(strategy_name, generated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_rh_status   ON research_hypotheses(status, priority ASC);
+CREATE INDEX IF NOT EXISTS idx_rh_priority ON research_hypotheses(priority_score DESC);
+
+CREATE TABLE IF NOT EXISTS research_experiments (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  hypothesis_id         INTEGER,
+  strategy_name         TEXT NOT NULL,
+  run_date              TEXT NOT NULL,
+  dimension             TEXT,
+  condition_key         TEXT,
+  condition_value       TEXT,
+  control_n             INTEGER,
+  control_wr            REAL,
+  control_expectancy    REAL,
+  test_n                INTEGER,
+  test_wr               REAL,
+  test_expectancy       REAL,
+  wr_delta              REAL,
+  z_score               REAL,
+  p_value               REAL,
+  oos_n                 INTEGER,
+  oos_z                 REAL,
+  oos_confirmed         INTEGER,
+  train_n               INTEGER,
+  train_confirmed       INTEGER,
+  result                TEXT,
+  confidence_level      TEXT,
+  recommendation        TEXT,
+  computed_at           TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_re_strategy ON research_experiments(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_re_result   ON research_experiments(result, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS edge_discoveries (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  discovered_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  strategy_name    TEXT NOT NULL,
+  discovery_type   TEXT NOT NULL DEFAULT 'GRID',
+  dimension_a      TEXT,
+  value_a          TEXT,
+  dimension_b      TEXT,
+  value_b          TEXT,
+  sample_size      INTEGER,
+  observed_wr      REAL,
+  baseline_wr      REAL,
+  wr_delta         REAL,
+  z_score          REAL,
+  cohens_h         REAL,
+  expectancy_delta REAL,
+  impact_score     REAL,
+  status           TEXT NOT NULL DEFAULT 'NEW',
+  notes            TEXT,
+  UNIQUE(strategy_name, discovery_type, dimension_a, value_a, dimension_b, value_b)
+);
+CREATE INDEX IF NOT EXISTS idx_ed_strategy ON edge_discoveries(strategy_name, discovered_at DESC);
+CREATE INDEX IF NOT EXISTS idx_ed_impact   ON edge_discoveries(impact_score DESC);

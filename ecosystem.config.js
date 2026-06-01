@@ -869,6 +869,75 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── HYPOTHESIS ENGINE WORKER ──────────────────────────────────────────────
+    // Weekly Sunday 07:00 UTC: scans trade_dna for statistically significant
+    // patterns across session, regime, entry_type, archetype, htf_bias, hour, and
+    // 2D combinations. Generates research_hypotheses with priority scores.
+    {
+      name:         'hypothesis-engine',
+      script:       'workers/hypothesis-engine-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 7 * * 0',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/hypothesis-engine-error.log',
+      out_file:        '/root/AurumSignals/logs/hypothesis-engine-out.log',
+      merge_logs:      true,
+    },
+
+    // ── EXPERIMENT ENGINE WORKER ──────────────────────────────────────────────
+    // Weekly Monday 06:00 UTC: takes top-30 OPEN hypotheses and runs controlled
+    // statistical experiments (control vs test, with out-of-sample validation).
+    // Updates hypothesis status: CONFIRMED / REFUTED / INCONCLUSIVE.
+    {
+      name:         'experiment-engine',
+      script:       'workers/experiment-engine-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 6 * * 1',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/experiment-engine-error.log',
+      out_file:        '/root/AurumSignals/logs/experiment-engine-out.log',
+      merge_logs:      true,
+    },
+
+    // ── EDGE DISCOVERY WORKER ─────────────────────────────────────────────────
+    // Weekly Saturday 07:00 UTC: broad grid search across ATR tiers, direction,
+    // confidence × session, hold time efficiency. Also runs loss/win/frequency
+    // research (Phases 7, 8, 10, 11). Writes to edge_discoveries.
+    {
+      name:         'edge-discovery',
+      script:       'workers/edge-discovery-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 7 * * 6',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/edge-discovery-error.log',
+      out_file:        '/root/AurumSignals/logs/edge-discovery-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).

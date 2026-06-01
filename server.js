@@ -1123,6 +1123,94 @@ applyMigrations();
   } catch (err) { console.error('[prompt11-migration]', err.message); }
 })();
 
+// Prompt 12 migration: research_hypotheses, research_experiments, edge_discoveries
+(function applyPrompt12Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS research_hypotheses (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        generated_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        strategy_name   TEXT NOT NULL,
+        hypothesis_text TEXT NOT NULL,
+        dimension       TEXT NOT NULL,
+        condition_key   TEXT NOT NULL,
+        condition_value TEXT,
+        sample_size     INTEGER,
+        observed_wr     REAL,
+        baseline_wr     REAL,
+        wr_delta        REAL,
+        z_score         REAL,
+        p_value         REAL,
+        priority_score  REAL,
+        priority        INTEGER DEFAULT 5,
+        status          TEXT NOT NULL DEFAULT 'OPEN',
+        notes           TEXT,
+        UNIQUE(strategy_name, condition_key, condition_value)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rh_strategy ON research_hypotheses(strategy_name, generated_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_rh_status   ON research_hypotheses(status, priority ASC);
+      CREATE INDEX IF NOT EXISTS idx_rh_priority ON research_hypotheses(priority_score DESC);
+
+      CREATE TABLE IF NOT EXISTS research_experiments (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        hypothesis_id         INTEGER,
+        strategy_name         TEXT NOT NULL,
+        run_date              TEXT NOT NULL,
+        dimension             TEXT,
+        condition_key         TEXT,
+        condition_value       TEXT,
+        control_n             INTEGER,
+        control_wr            REAL,
+        control_expectancy    REAL,
+        test_n                INTEGER,
+        test_wr               REAL,
+        test_expectancy       REAL,
+        wr_delta              REAL,
+        z_score               REAL,
+        p_value               REAL,
+        oos_n                 INTEGER,
+        oos_z                 REAL,
+        oos_confirmed         INTEGER,
+        train_n               INTEGER,
+        train_confirmed       INTEGER,
+        result                TEXT,
+        confidence_level      TEXT,
+        recommendation        TEXT,
+        computed_at           TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_re_strategy ON research_experiments(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_re_result   ON research_experiments(result, run_date DESC);
+
+      CREATE TABLE IF NOT EXISTS edge_discoveries (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        discovered_at    TEXT NOT NULL DEFAULT (datetime('now')),
+        strategy_name    TEXT NOT NULL,
+        discovery_type   TEXT NOT NULL DEFAULT 'GRID',
+        dimension_a      TEXT,
+        value_a          TEXT,
+        dimension_b      TEXT,
+        value_b          TEXT,
+        sample_size      INTEGER,
+        observed_wr      REAL,
+        baseline_wr      REAL,
+        wr_delta         REAL,
+        z_score          REAL,
+        cohens_h         REAL,
+        expectancy_delta REAL,
+        impact_score     REAL,
+        status           TEXT NOT NULL DEFAULT 'NEW',
+        notes            TEXT,
+        UNIQUE(strategy_name, discovery_type, dimension_a, value_a, dimension_b, value_b)
+      );
+      CREATE INDEX IF NOT EXISTS idx_ed_strategy ON edge_discoveries(strategy_name, discovered_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_ed_impact   ON edge_discoveries(impact_score DESC);
+    `);
+    for (const agent of ['hypothesis-engine', 'experiment-engine', 'edge-discovery']) {
+      db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+    }
+  } catch (err) { console.error('[prompt12-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -2333,6 +2421,51 @@ app.get('/api/backtest/details', (req, res) => {
 });
 
 // ── STRATEGY PARAMS ───────────────────────────────────────────────────────────────────────
+// ── Quant Research Lab API (Prompt #12) ──────────────────────────────────────
+app.get('/api/research', (req, res) => {
+  try {
+    const hypotheses  = _stmtTopHypotheses  ? _stmtTopHypotheses.all()  : [];
+    const discoveries = _stmtTopDiscoveries ? _stmtTopDiscoveries.all() : [];
+
+    // Latest experiment results
+    let experiments = [];
+    try {
+      experiments = db.prepare(`
+        SELECT strategy_name, dimension, condition_key, condition_value,
+               test_n, test_wr, control_wr, wr_delta, z_score, p_value,
+               oos_confirmed, result, confidence_level, recommendation, run_date
+        FROM research_experiments
+        ORDER BY run_date DESC, ABS(wr_delta) DESC
+        LIMIT 20
+      `).all();
+    } catch (_) {}
+
+    // Summary counts
+    const statusCounts = {};
+    try {
+      const rows = db.prepare(
+        `SELECT status, COUNT(*) AS n FROM research_hypotheses GROUP BY status`
+      ).all();
+      for (const r of rows) statusCounts[r.status] = r.n;
+    } catch (_) {}
+
+    res.json({
+      summary: {
+        hypotheses_by_status: statusCounts,
+        top_discoveries:      discoveries.length,
+        recent_experiments:   experiments.length,
+      },
+      top_hypotheses:    hypotheses,
+      recent_experiments: experiments,
+      top_discoveries:   discoveries,
+      generated_at:      new Date().toISOString(),
+    });
+  } catch (err) {
+    console.error('[/api/research]', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // ── Portfolio Intelligence API (Prompt #11) ───────────────────────────────────
 app.get('/api/portfolio', (req, res) => {
   try {
@@ -2802,6 +2935,31 @@ try {
       WHERE p2.strategy_name = portfolio_allocations.strategy_name
     )
     ORDER BY final_weight_pct DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtTopHypotheses = null;
+try {
+  _stmtTopHypotheses = db.prepare(`
+    SELECT strategy_name, hypothesis_text, dimension, condition_key, condition_value,
+           sample_size, observed_wr, baseline_wr, wr_delta, z_score, priority_score,
+           priority, status, notes, generated_at
+    FROM research_hypotheses
+    ORDER BY priority ASC, priority_score DESC
+    LIMIT 20
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtTopDiscoveries = null;
+try {
+  _stmtTopDiscoveries = db.prepare(`
+    SELECT strategy_name, discovery_type, dimension_a, value_a, dimension_b, value_b,
+           sample_size, observed_wr, baseline_wr, wr_delta, z_score, cohens_h,
+           impact_score, status, notes, discovered_at
+    FROM edge_discoveries
+    WHERE impact_score IS NOT NULL
+    ORDER BY impact_score DESC
+    LIMIT 20
   `);
 } catch (_err) { /* table not yet created */ }
 
