@@ -232,11 +232,11 @@ class Scanner extends EventEmitter {
         INSERT INTO signals
           (ticker, timeframe, direction, grade, setup, strategy_name, entry, sl, tp1, tp2, tp3,
            score, confidence, tier, win_prob_tp1, win_prob_tp2, win_prob_tp3, htf_bias, session,
-           trade_style, instrument, rr, trade_status, raw_payload)
+           trade_style, instrument, rr, trade_status, raw_payload, recommended_size_pct)
         VALUES
           (@ticker, @timeframe, @direction, @grade, @setup, @strategy_name, @entry, @sl, @tp1, @tp2, @tp3,
            @score, @confidence, @tier, @win_prob_tp1, @win_prob_tp2, @win_prob_tp3, @htf_bias, @session,
-           @trade_style, @instrument, @rr, @trade_status, @raw_payload)
+           @trade_style, @instrument, @rr, @trade_status, @raw_payload, @recommended_size_pct)
       `),
 
       insertSignalFeatures: db.prepare(`
@@ -1046,6 +1046,27 @@ class Scanner extends EventEmitter {
 
     const received_at = new Date().toISOString();
     const rank        = signal._rank ?? null;
+
+    // ── Part 5: Adaptive position sizing recommendation ───────────────────────
+    // Base from tier; reduced by gate status and ATR expansion.
+    const sizeTier = rank?.tier ?? signal.tier ?? null;
+    let recommendedSizePct = sizeTier === 'S' ? 100 : sizeTier === 'A' ? 75 : 50;
+    const gateVerdict = signal._gateVerdict ?? null;
+    if (gateVerdict === 'CAUTIOUS')    recommendedSizePct = Math.max(25, recommendedSizePct - 10);
+    else if (gateVerdict === 'RESTRICTED') recommendedSizePct = Math.max(25, recommendedSizePct - 20);
+    try {
+      const atrRow = this.db.prepare(
+        `SELECT sf.atr_percentile FROM signal_features sf
+         JOIN signals s ON s.id = sf.signal_id
+         WHERE s.instrument = ? AND sf.atr_percentile IS NOT NULL
+         ORDER BY sf.recorded_at DESC LIMIT 1`
+      ).get(signal.instrument);
+      if (atrRow?.atr_percentile >= 0.80) {
+        recommendedSizePct = Math.max(25, Math.round(recommendedSizePct * 0.75));
+      }
+    } catch (_) {}
+    signal.recommended_size_pct = recommendedSizePct;
+
     // Build canonical payload; id is null until after insert
     const prePayload  = buildAlertPayload(signal, { id: null, received_at, rank });
 
@@ -1074,6 +1095,7 @@ class Scanner extends EventEmitter {
       rr:            signal.rr,
       trade_status:  STATES.ACTIVE,
       raw_payload:   JSON.stringify(prePayload),
+      recommended_size_pct: recommendedSizePct,
     });
 
     const id         = info.lastInsertRowid;

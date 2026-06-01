@@ -635,6 +635,30 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── EDGE AUDIT PART 6 — Circuit breaker ──────────────────────────────────
+    // Every 30 minutes. Detects loss clusters (3+ consecutive losses or ≥60%
+    // loss rate in the last 4 hours with ≥5 trades) and auto-pauses strategies
+    // via adaptive overrides. Lifts pause automatically after 2h cooldown once
+    // conditions clear. Sends ntfy on every state change.
+    {
+      name:         'circuit-breaker-worker',
+      script:       'workers/circuit-breaker-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '*/30 * * * *',
+      autorestart:  false,
+      max_memory_restart: '100M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/circuit-breaker-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/circuit-breaker-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── EDGE AUDIT PART 4 — Multi-TP backtest ────────────────────────────────
     // Tuesday 06:30 UTC — after trade-dna refresh (04:30) and MFE diagnostic (Mon 06:15).
     // Simulates M1.5 and M2.0 split-exit models against trade_dna.
