@@ -938,6 +938,47 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── PROMPT 14 PERFORMANCE MULTIPLIER ENGINE ──────────────────────────────
+    // performance-multiplier: daily 07:45 UTC — synthesizes research → live scoring multipliers
+    // pnl-decomposition: weekly Saturday 06:00 UTC — 90-day P&L attribution (10 dimensions)
+    {
+      name:         'performance-multiplier',
+      script:       'workers/performance-multiplier-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '45 7 * * *',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/performance-multiplier-error.log',
+      out_file:        '/root/AurumSignals/logs/performance-multiplier-out.log',
+      merge_logs:      true,
+    },
+
+    {
+      name:         'pnl-decomposition',
+      script:       'workers/pnl-decomposition-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '0 6 * * 6',
+      autorestart:  false,
+      max_memory_restart: '200M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/pnl-decomposition-error.log',
+      out_file:        '/root/AurumSignals/logs/pnl-decomposition-out.log',
+      merge_logs:      true,
+    },
+
     // ── PROMPT 13 GAP-FILL WORKERS ───────────────────────────────────────────
     // risk-metrics: daily 07:30 UTC — Sharpe/Sortino/Calmar/MaxDD from live trades
     // correlation-risk: every 30 min — cross-strategy P&L correlation + concurrent signal risk

@@ -1279,6 +1279,56 @@ applyMigrations();
   } catch (err) { console.error('[prompt13-migration]', err.message); }
 })();
 
+(function applyPrompt14Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS performance_multipliers (
+        id              INTEGER PRIMARY KEY AUTOINCREMENT,
+        strategy_name   TEXT NOT NULL,
+        condition_type  TEXT NOT NULL,
+        condition_key   TEXT NOT NULL,
+        score_adj       REAL NOT NULL DEFAULT 0,
+        size_mult       REAL NOT NULL DEFAULT 1.0,
+        should_block    INTEGER DEFAULT 0,
+        confidence      TEXT DEFAULT 'MEDIUM',
+        source          TEXT,
+        n_samples       INTEGER,
+        wr_delta        REAL,
+        updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(strategy_name, condition_type, condition_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pm_strategy ON performance_multipliers(strategy_name, condition_type);
+      CREATE INDEX IF NOT EXISTS idx_pm_block    ON performance_multipliers(should_block, confidence);
+
+      CREATE TABLE IF NOT EXISTS pnl_decomposition (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date         TEXT NOT NULL,
+        strategy_name    TEXT NOT NULL,
+        dimension        TEXT NOT NULL,
+        dimension_value  TEXT NOT NULL,
+        trade_count      INTEGER,
+        win_count        INTEGER,
+        loss_count       INTEGER,
+        win_rate         REAL,
+        avg_pnl_pts      REAL,
+        total_pnl_pts    REAL,
+        avg_win_pts      REAL,
+        avg_loss_pts     REAL,
+        expectancy_score REAL,
+        profit_share_pct REAL,
+        role             TEXT,
+        computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, dimension, dimension_value)
+      );
+      CREATE INDEX IF NOT EXISTS idx_pd_strategy ON pnl_decomposition(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_pd_role     ON pnl_decomposition(role, expectancy_score DESC);
+    `);
+    for (const agent of ['performance-multiplier', 'pnl-decomposition']) {
+      db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run(agent);
+    }
+  } catch (err) { console.error('[prompt14-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -3031,6 +3081,31 @@ try {
   `);
 } catch (_err) { /* table not yet created */ }
 
+let _stmtPerfMultipliers = null;
+try {
+  _stmtPerfMultipliers = db.prepare(`
+    SELECT strategy_name, condition_type, condition_key, score_adj, size_mult,
+           should_block, confidence, source, n_samples, wr_delta, updated_at
+    FROM performance_multipliers
+    WHERE confidence IN ('HIGH','MEDIUM')
+    ORDER BY strategy_name, ABS(wr_delta) DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtPnlDecomp = null;
+try {
+  _stmtPnlDecomp = db.prepare(`
+    SELECT strategy_name, dimension, dimension_value,
+           trade_count, win_rate, avg_pnl_pts, total_pnl_pts,
+           expectancy_score, profit_share_pct, role, run_date
+    FROM pnl_decomposition
+    WHERE run_date = (SELECT MAX(run_date) FROM pnl_decomposition)
+      AND role IN ('PROFIT_CENTER','LOSS_DRIVER')
+    ORDER BY role, ABS(total_pnl_pts) DESC
+    LIMIT 60
+  `);
+} catch (_err) { /* table not yet created */ }
+
 let _stmtRiskMetrics90d = null;
 try {
   _stmtRiskMetrics90d = db.prepare(`
@@ -3070,6 +3145,17 @@ try {
     ORDER BY ABS(correlation_30d) DESC
   `);
 } catch (_err) { /* table not yet created */ }
+
+app.get('/api/performance/multipliers', (req, res) => {
+  try {
+    const multipliers  = _stmtPerfMultipliers ? _stmtPerfMultipliers.all() : [];
+    const decomposition = _stmtPnlDecomp     ? _stmtPnlDecomp.all()      : [];
+    res.json({ ok: true, performance_multipliers: multipliers, pnl_decomposition: decomposition });
+  } catch (err) {
+    console.error('[/api/performance/multipliers]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 app.get('/api/performance/risk', (req, res) => {
   try {
