@@ -1437,6 +1437,42 @@ applyMigrations();
   } catch (err) { console.error('[prompt15-migration]', err.message); }
 })();
 
+(function applyPrompt15P34Migrations() {
+  try {
+    // Phase 4: add expires_at to performance_multipliers (ignore if column already exists)
+    try { db.exec(`ALTER TABLE performance_multipliers ADD COLUMN expires_at TEXT`); } catch (_) {}
+
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS regime_classifier_validation (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date              TEXT NOT NULL,
+        strategy_name         TEXT NOT NULL,
+        regime                TEXT NOT NULL,
+        trade_count           INTEGER,
+        win_rate              REAL,
+        baseline_wr           REAL,
+        wr_delta              REAL,
+        z_score               REAL,
+        avg_pnl_pts           REAL,
+        expectancy_score      REAL,
+        current_multiplier    REAL,
+        empirical_multiplier  REAL,
+        multiplier_delta      REAL,
+        multiplier_validated  INTEGER,
+        current_quality_pts   INTEGER,
+        empirical_quality_pts REAL,
+        quality_pts_delta     REAL,
+        recommendation        TEXT,
+        computed_at           TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, regime)
+      );
+      CREATE INDEX IF NOT EXISTS idx_rcv_strategy  ON regime_classifier_validation(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_rcv_validated ON regime_classifier_validation(multiplier_validated, multiplier_delta DESC);
+    `);
+    db.prepare(`INSERT OR IGNORE INTO agent_trust_scores(agent_name) VALUES(?)`).run('regime-classifier-validator');
+  } catch (err) { console.error('[prompt15-p34-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
@@ -3188,6 +3224,42 @@ try {
     LIMIT 20
   `);
 } catch (_err) { /* table not yet created */ }
+
+let _stmtRegimeValidation = null;
+try {
+  _stmtRegimeValidation = db.prepare(`
+    SELECT strategy_name, regime, trade_count, win_rate, baseline_wr, wr_delta,
+           z_score, current_multiplier, empirical_multiplier, multiplier_delta,
+           multiplier_validated, current_quality_pts, empirical_quality_pts,
+           quality_pts_delta, recommendation, run_date
+    FROM regime_classifier_validation
+    WHERE run_date = (SELECT MAX(run_date) FROM regime_classifier_validation)
+    ORDER BY strategy_name, multiplier_validated ASC, ABS(multiplier_delta) DESC
+  `);
+} catch (_err) { /* table not yet created */ }
+
+let _stmtExpiredMultipliers = null;
+try {
+  _stmtExpiredMultipliers = db.prepare(`
+    SELECT strategy_name, condition_type, condition_key,
+           score_adj, size_mult, should_block, confidence, expires_at, updated_at
+    FROM performance_multipliers
+    WHERE expires_at IS NOT NULL AND expires_at < datetime('now', '+7 days')
+    ORDER BY expires_at ASC
+    LIMIT 20
+  `);
+} catch (_err) { /* table not yet created */ }
+
+app.get('/api/performance/regime-validation', (req, res) => {
+  try {
+    const regimes  = _stmtRegimeValidation   ? _stmtRegimeValidation.all()   : [];
+    const expiring = _stmtExpiredMultipliers  ? _stmtExpiredMultipliers.all() : [];
+    res.json({ ok: true, regime_validation: regimes, expiring_multipliers: expiring });
+  } catch (err) {
+    console.error('[/api/performance/regime-validation]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 let _stmtExecutionReality = null;
 try {

@@ -1949,7 +1949,8 @@ class Scanner extends EventEmitter {
     try {
       const pmRows = this.db.prepare(
         `SELECT strategy_name, condition_type, condition_key, score_adj, size_mult, should_block
-         FROM performance_multipliers`
+         FROM performance_multipliers
+         WHERE expires_at IS NULL OR expires_at > datetime('now')`
       ).all();
       for (const r of pmRows) {
         if (!performanceMultipliers[r.strategy_name]) performanceMultipliers[r.strategy_name] = {};

@@ -1466,3 +1466,34 @@ CREATE TABLE IF NOT EXISTS quality_score_regression (
   computed_at   TEXT NOT NULL DEFAULT (datetime('now')),
   UNIQUE(run_date, strategy_name)
 );
+
+-- ── PROMPT 15 PHASES 3-4 — Regime Validation + Multiplier Expiry ─────────────
+-- Phase 3: Validate regime sizing multipliers against live trade outcomes.
+-- Phase 4: expires_at column added to performance_multipliers via ALTER TABLE
+--          in server.js migration (SQLite requires try-catch pattern).
+
+CREATE TABLE IF NOT EXISTS regime_classifier_validation (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date              TEXT NOT NULL,
+  strategy_name         TEXT NOT NULL,
+  regime                TEXT NOT NULL,
+  trade_count           INTEGER,
+  win_rate              REAL,
+  baseline_wr           REAL,
+  wr_delta              REAL,
+  z_score               REAL,
+  avg_pnl_pts           REAL,
+  expectancy_score      REAL,
+  current_multiplier    REAL,
+  empirical_multiplier  REAL,
+  multiplier_delta      REAL,
+  multiplier_validated  INTEGER,
+  current_quality_pts   INTEGER,
+  empirical_quality_pts REAL,
+  quality_pts_delta     REAL,
+  recommendation        TEXT,
+  computed_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, regime)
+);
+CREATE INDEX IF NOT EXISTS idx_rcv_strategy ON regime_classifier_validation(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_rcv_validated ON regime_classifier_validation(multiplier_validated, multiplier_delta DESC);
