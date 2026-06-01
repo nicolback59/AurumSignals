@@ -635,6 +635,30 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── EDGE AUDIT PART 4 — Multi-TP backtest ────────────────────────────────
+    // Tuesday 06:30 UTC — after trade-dna refresh (04:30) and MFE diagnostic (Mon 06:15).
+    // Simulates M1.5 and M2.0 split-exit models against trade_dna.
+    // Recommends split exit when net P&L improvement >= 5% over single-exit baseline.
+    // Writes to backtest_multi_tp table; sends consolidated ntfy summary.
+    {
+      name:         'multi-tp-backtest-worker',
+      script:       'workers/multi-tp-backtest-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 6 * * 2',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/multi-tp-backtest-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/multi-tp-backtest-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).

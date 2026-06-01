@@ -945,3 +945,29 @@ CREATE INDEX IF NOT EXISTS idx_rejections_strat
 -- strategy-health-worker sets is_latest=1 on new snapshot, clears 0 on older rows.
 -- Migration: ALTER TABLE adds column to existing DBs (server.js applyMigrations).
 -- ALTER TABLE strategy_health_snapshots ADD COLUMN is_latest INTEGER NOT NULL DEFAULT 0;
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- EDGE AUDIT PART 4 — Multi-TP backtest results
+-- Written by workers/multi-tp-backtest-worker.js (Tue 06:30 UTC).
+-- ════════════════════════════════════════════════════════════════════════════
+
+-- Stores weekly multi-TP simulation results comparing BASE vs M1.5 vs M2.0 models.
+CREATE TABLE IF NOT EXISTS backtest_multi_tp (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date         TEXT    NOT NULL,             -- YYYY-MM-DD
+  strategy_name    TEXT    NOT NULL,
+  trade_count      INTEGER,
+  base_pnl         REAL,                         -- net pts, single exit at TP1
+  m15_pnl          REAL,                         -- net pts, split with TP2 at 1.5R
+  m20_pnl          REAL,                         -- net pts, split with TP2 at 2.0R
+  base_wr          REAL,                         -- win rate 0-1
+  m15_wr           REAL,
+  m20_wr           REAL,
+  m15_tp2_hit_pct  INTEGER,                      -- % of TP1-wins that reached TP2 (M1.5)
+  m20_tp2_hit_pct  INTEGER,                      -- % of TP1-wins that reached TP2 (M2.0)
+  recommended_model TEXT,                        -- 'BASE' | 'M15' | 'M20'
+  notes            TEXT,
+  computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name)
+);
+CREATE INDEX IF NOT EXISTS idx_bmt_strategy ON backtest_multi_tp(strategy_name, run_date DESC);
