@@ -990,3 +990,65 @@ CREATE TABLE IF NOT EXISTS circuit_breaker_log (
   action_taken         TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_cbl_strategy ON circuit_breaker_log(strategy_name, checked_at DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- PROMPT 9 — Outcome Intelligence Engine
+-- outcome-intelligence-worker (Fri 07:00 UTC)
+-- stop-optimizer-worker      (Wed 06:30 UTC)
+-- strategy-evolution-worker  (Thu 06:30 UTC)
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS outcome_intelligence_log (
+  id            INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date      TEXT NOT NULL,
+  strategy_name TEXT NOT NULL,
+  phase         TEXT NOT NULL,   -- mae_analysis | expectancy | regime | session | edge_cross | edge_hour
+  metric_key    TEXT NOT NULL,
+  metric_value  REAL,
+  metric_json   TEXT,
+  sample_size   INTEGER,
+  notes         TEXT,
+  computed_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, phase, metric_key)
+);
+CREATE INDEX IF NOT EXISTS idx_oil_strategy ON outcome_intelligence_log(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_oil_phase    ON outcome_intelligence_log(phase, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS stop_intelligence_log (
+  id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date              TEXT NOT NULL,
+  strategy_name         TEXT NOT NULL,
+  trade_count           INTEGER,
+  winner_count          INTEGER,
+  loser_count           INTEGER,
+  winner_mae_p50_atr    REAL,
+  winner_mae_p75_atr    REAL,
+  winner_mae_p90_atr    REAL,
+  optimal_sl_atr_ratio  REAL,
+  current_sl_atr_ratio  REAL,
+  near_stop_loss_pct    REAL,
+  recoverable_loss_pct  REAL,
+  recommendation        TEXT,
+  computed_at           TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name)
+);
+CREATE INDEX IF NOT EXISTS idx_sil_strategy ON stop_intelligence_log(strategy_name, run_date DESC);
+
+CREATE TABLE IF NOT EXISTS strategy_evolution_log (
+  id               INTEGER PRIMARY KEY AUTOINCREMENT,
+  run_date         TEXT NOT NULL,
+  strategy_name    TEXT NOT NULL,
+  dimension        TEXT NOT NULL,   -- archetype | regime
+  dimension_value  TEXT NOT NULL,
+  recent_wr        REAL,
+  prior_wr         REAL,
+  wr_delta         REAL,
+  recent_trades    INTEGER,
+  prior_trades     INTEGER,
+  trend            TEXT,            -- IMPROVING | DEGRADING | STABLE
+  message_posted   INTEGER DEFAULT 0,
+  computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE(run_date, strategy_name, dimension, dimension_value)
+);
+CREATE INDEX IF NOT EXISTS idx_sel_strategy ON strategy_evolution_log(strategy_name, run_date DESC);
+CREATE INDEX IF NOT EXISTS idx_sel_trend    ON strategy_evolution_log(trend, run_date DESC);

@@ -926,6 +926,75 @@ applyMigrations();
   } catch (err) { console.error('[edge-audit-part6-migration]', err.message); }
 })();
 
+(function applyPrompt9Migrations() {
+  try {
+    db.exec(`
+      CREATE TABLE IF NOT EXISTS outcome_intelligence_log (
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date      TEXT NOT NULL,
+        strategy_name TEXT NOT NULL,
+        phase         TEXT NOT NULL,
+        metric_key    TEXT NOT NULL,
+        metric_value  REAL,
+        metric_json   TEXT,
+        sample_size   INTEGER,
+        notes         TEXT,
+        computed_at   TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, phase, metric_key)
+      );
+      CREATE INDEX IF NOT EXISTS idx_oil_strategy ON outcome_intelligence_log(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_oil_phase    ON outcome_intelligence_log(phase, run_date DESC);
+
+      CREATE TABLE IF NOT EXISTS stop_intelligence_log (
+        id                    INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date              TEXT NOT NULL,
+        strategy_name         TEXT NOT NULL,
+        trade_count           INTEGER,
+        winner_count          INTEGER,
+        loser_count           INTEGER,
+        winner_mae_p50_atr    REAL,
+        winner_mae_p75_atr    REAL,
+        winner_mae_p90_atr    REAL,
+        optimal_sl_atr_ratio  REAL,
+        current_sl_atr_ratio  REAL,
+        near_stop_loss_pct    REAL,
+        recoverable_loss_pct  REAL,
+        recommendation        TEXT,
+        computed_at           TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sil_strategy ON stop_intelligence_log(strategy_name, run_date DESC);
+
+      CREATE TABLE IF NOT EXISTS strategy_evolution_log (
+        id               INTEGER PRIMARY KEY AUTOINCREMENT,
+        run_date         TEXT NOT NULL,
+        strategy_name    TEXT NOT NULL,
+        dimension        TEXT NOT NULL,
+        dimension_value  TEXT NOT NULL,
+        recent_wr        REAL,
+        prior_wr         REAL,
+        wr_delta         REAL,
+        recent_trades    INTEGER,
+        prior_trades     INTEGER,
+        trend            TEXT,
+        message_posted   INTEGER DEFAULT 0,
+        computed_at      TEXT NOT NULL DEFAULT (datetime('now')),
+        UNIQUE(run_date, strategy_name, dimension, dimension_value)
+      );
+      CREATE INDEX IF NOT EXISTS idx_sel_strategy ON strategy_evolution_log(strategy_name, run_date DESC);
+      CREATE INDEX IF NOT EXISTS idx_sel_trend    ON strategy_evolution_log(trend, run_date DESC);
+    `);
+    db.prepare(`
+      INSERT INTO agent_trust_scores (agent_name, trust_score, description)
+      VALUES
+        ('outcome-intelligence', 0.70, 'MAE/expectancy/regime/session/edge discovery — Prompt 9'),
+        ('stop-optimizer',       0.70, 'Stop ATR ratio optimizer — Prompt 9'),
+        ('strategy-evolution',   0.70, 'Rolling archetype/regime WR trend detector — Prompt 9')
+      ON CONFLICT(agent_name) DO NOTHING
+    `).run();
+  } catch (err) { console.error('[prompt9-migration]', err.message); }
+})();
+
 // Dedup runs 5s after startup so the scanner starts immediately
 setTimeout(_deferredBtDedup, 5000);
 
