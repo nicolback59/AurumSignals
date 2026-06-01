@@ -754,6 +754,54 @@ module.exports = {
       merge_logs:      true,
     },
 
+    // ── REGIME PERFORMANCE WORKER ────────────────────────────────────────────
+    // Daily 05:30 UTC — after trade-dna refresh (04:30). Builds the permanent
+    // regime performance database: per-strategy × regime WR, PF, expectancy,
+    // MAE/MFE, max loss streak, frequency. Posts STRONG_EDGE/AVOID_REGIME to
+    // agent_messages when WR ≥ 68% or < 35% with ≥10 trades. (Phase 5)
+    {
+      name:         'regime-performance-worker',
+      script:       'workers/regime-performance-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '30 5 * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/regime-performance-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/regime-performance-worker-out.log',
+      merge_logs:      true,
+    },
+
+    // ── REGIME HEALTH WORKER ─────────────────────────────────────────────────
+    // Every 30 min: reads current regime from regime_states + historical perf
+    // from regime_performance_stats. Computes health score 0-100, derives
+    // behavior mode (AGGRESSIVE/NORMAL/DEFENSIVE/STANDBY). Applies STANDBY to
+    // adaptive overrides. Sends ntfy + agent_messages on state changes. (Phase 11)
+    {
+      name:         'regime-health-worker',
+      script:       'workers/regime-health-worker.js',
+      instances:    1,
+      exec_mode:    'fork',
+      watch:        false,
+      cron_restart: '*/30 * * * *',
+      autorestart:  false,
+      max_memory_restart: '150M',
+
+      env_production:  { NODE_ENV: 'production'  },
+      env_development: { NODE_ENV: 'development' },
+
+      log_date_format: 'YYYY-MM-DD HH:mm:ss Z',
+      error_file:      '/root/AurumSignals/logs/regime-health-worker-error.log',
+      out_file:        '/root/AurumSignals/logs/regime-health-worker-out.log',
+      merge_logs:      true,
+    },
+
     // ── NIGHTLY DB BACKUP ─────────────────────────────────────────────────────
     // Runs at 04:00 UTC (midnight ET) every day. Keeps last 7 daily snapshots.
     // Uses better-sqlite3 hot-backup API — safe under concurrent writes (WAL mode).
