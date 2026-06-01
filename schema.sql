@@ -30,7 +30,8 @@ CREATE TABLE IF NOT EXISTS signals (
   quant_score        INTEGER,       -- composite quant score at signal time (0–100)
   quant_grade        TEXT,          -- S | A | B | IGNORE
   live_gated         INTEGER DEFAULT 0,  -- 1 = research-only at emit time
-  expiration_reason  TEXT               -- EXPIRED_MARKET_CLOSE | EXPIRED_WEEKEND_CLOSE | EXPIRED_MAX_HOLD | EXPIRED_STUCK_TRADE
+  expiration_reason  TEXT,              -- EXPIRED_MARKET_CLOSE | EXPIRED_WEEKEND_CLOSE | EXPIRED_MAX_HOLD | EXPIRED_STUCK_TRADE
+  recommended_size_pct INTEGER          -- 25–100% position size recommendation (tier + gate + ATR vol)
 );
 
 -- Migration: add strategy_name to existing signals tables (safe no-op if already present)
@@ -971,3 +972,21 @@ CREATE TABLE IF NOT EXISTS backtest_multi_tp (
   UNIQUE(run_date, strategy_name)
 );
 CREATE INDEX IF NOT EXISTS idx_bmt_strategy ON backtest_multi_tp(strategy_name, run_date DESC);
+
+-- ════════════════════════════════════════════════════════════════════════════
+-- EDGE AUDIT PART 6 — Circuit breaker log
+-- Written by workers/circuit-breaker-worker.js (every 30 min).
+-- ════════════════════════════════════════════════════════════════════════════
+
+CREATE TABLE IF NOT EXISTS circuit_breaker_log (
+  id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+  strategy_name        TEXT    NOT NULL,
+  checked_at           TEXT    NOT NULL DEFAULT (datetime('now')),
+  triggered            INTEGER NOT NULL DEFAULT 0,
+  trigger_reason       TEXT,
+  streak               INTEGER,
+  rolling_4h_trades    INTEGER,
+  rolling_4h_loss_rate REAL,
+  action_taken         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_cbl_strategy ON circuit_breaker_log(strategy_name, checked_at DESC);
