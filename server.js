@@ -2583,6 +2583,20 @@ try {
   `);
 } catch (_err) { /* table not yet created */ }
 
+let _stmtRegimeHealth = null;
+try {
+  _stmtRegimeHealth = db.prepare(`
+    SELECT strategy_name, current_regime, regime_strength, regime_wr,
+           recent_7d_wr, health_score, behavior_mode, stop_rec, tp_rec, checked_at
+    FROM regime_health_log
+    WHERE checked_at = (
+      SELECT MAX(r2.checked_at) FROM regime_health_log r2
+      WHERE r2.strategy_name = regime_health_log.strategy_name
+    )
+    ORDER BY health_score ASC
+  `);
+} catch (_err) { /* table not yet created */ }
+
 let _stmtEdgeHealth = null;
 try {
   _stmtEdgeHealth = db.prepare(`
@@ -2741,6 +2755,27 @@ app.get('/api/health', (req, res) => {
               consecutive_losses: r.consecutive_losses,
               notes:              r.notes,
               as_of:              r.checked_at,
+            };
+          }
+          return out;
+        } catch { return null; }
+      })(),
+      regime_health: (() => {
+        if (!_stmtRegimeHealth) return null;
+        try {
+          const rows = _stmtRegimeHealth.all();
+          const out  = {};
+          for (const r of rows) {
+            out[r.strategy_name] = {
+              regime:        r.current_regime,
+              strength:      r.regime_strength,
+              regime_wr:     r.regime_wr,
+              recent_7d_wr:  r.recent_7d_wr,
+              health_score:  r.health_score,
+              behavior_mode: r.behavior_mode,
+              stop_rec:      r.stop_rec,
+              tp_rec:        r.tp_rec,
+              as_of:         r.checked_at,
             };
           }
           return out;

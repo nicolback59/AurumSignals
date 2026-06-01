@@ -189,7 +189,7 @@ function getOutcomeContext(db, strategyName, instrument) {
  *
  * @returns {{ allowed: boolean, remainingMin: number, reason: string, details: object }}
  */
-function checkAdaptiveCooldown({ strategyName, instrument, session, regime, confidence, lastSignalTime, db }) {
+function checkAdaptiveCooldown({ strategyName, instrument, session, regime, confidence, lastSignalTime, db, aggressiveMode = false }) {
   const cfg       = STRATEGY_CONFIGS[strategyName] ?? _defaultConfig();
   const now       = Date.now();
   const elapsedMin = lastSignalTime > 0 ? (now - lastSignalTime) / 60_000 : Infinity;
@@ -277,6 +277,11 @@ function checkAdaptiveCooldown({ strategyName, instrument, session, regime, conf
   if (_isLiquidSession(session) && elapsedMin >= ANTI_STARVATION_MIN) {
     computedMin   *= ANTI_STARVATION_SCALE;
     antiStarvation = true;
+  }
+
+  // ── Aggressive mode (regime-health: AGGRESSIVE — strong edge confirmed) ───
+  if (aggressiveMode) {
+    computedMin *= 0.70;
   }
 
   // ── Premium mode quality gate ─────────────────────────────────────────────
