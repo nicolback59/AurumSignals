@@ -266,6 +266,7 @@ async function run() {
                htf_bias, entry_type, archetype, trade_date
         FROM trade_dna
         WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+          AND source = 'LIVE'
           AND trade_date >= date('now', '-${WINDOW_DAYS} days')
         ORDER BY trade_date ASC
       `).all(strategy);

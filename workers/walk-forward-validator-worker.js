@@ -140,12 +140,14 @@ async function run() {
       const isQuery = db.prepare(`
         SELECT outcome, pnl_pts, trade_date FROM trade_dna
         WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+          AND source = 'LIVE'
           AND trade_date < date('now', '-${OOS_DAYS} days')
         ORDER BY trade_date
       `);
       const oosQuery = db.prepare(`
         SELECT outcome, pnl_pts, trade_date FROM trade_dna
         WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+          AND source = 'LIVE'
           AND trade_date >= date('now', '-${OOS_DAYS} days')
         ORDER BY trade_date
       `);

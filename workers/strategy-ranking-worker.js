@@ -171,6 +171,7 @@ async function run() {
           AVG(pnl_pts) AS expectancy
         FROM trade_dna
         WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+          AND source = 'LIVE'
           AND trade_date >= date('now', '-30 days')
       `).get(strategy);
 
@@ -186,6 +187,7 @@ async function run() {
                SUM(CASE WHEN outcome = 'WIN' THEN 1 ELSE 0 END) AS wins
         FROM trade_dna
         WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+          AND source = 'LIVE'
           AND trade_date >= date('now', '-90 days')
       `).get(strategy);
 
@@ -196,7 +198,7 @@ async function run() {
       const freq          = db.prepare(
         `SELECT COUNT(*) AS n FROM trade_dna
          WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
-           AND trade_date >= date('now', '-28 days')`
+           AND source = 'LIVE' AND trade_date >= date('now', '-28 days')`
       ).get(strategy);
       const tradesPerWeek = (freq?.n ?? 0) / 4;
 
@@ -204,6 +206,7 @@ async function run() {
       const outcomeRows = db.prepare(`
         SELECT outcome FROM trade_dna
         WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+          AND source = 'LIVE'
           AND trade_date >= date('now', '-90 days')
         ORDER BY trade_date ASC
       `).all(strategy);
@@ -225,6 +228,7 @@ async function run() {
                  SUM(CASE WHEN outcome='LOSS' THEN 1 ELSE 0 END) AS losses
           FROM trade_dna
           WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+            AND source = 'LIVE'
             AND trade_date >= ? AND trade_date < ?
         `).get(strategy, start, end);
         if (!r || (r.wins ?? 0) < 3 || (r.losses ?? 0) < 1 || !r.avg_loss) return null;

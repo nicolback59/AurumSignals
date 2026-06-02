@@ -53,6 +53,7 @@ function assessDrawdown(db, strategy) {
     SELECT outcome, pnl_pts, trade_date
     FROM trade_dna
     WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+      AND source = 'LIVE'
     ORDER BY trade_date DESC, rowid DESC
     LIMIT 25
   `).all(strategy);
@@ -80,7 +81,7 @@ function assessDrawdown(db, strategy) {
   const todayPnl = db.prepare(`
     SELECT SUM(pnl_pts) AS total_pts FROM trade_dna
     WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
-      AND trade_date = ?
+      AND source = 'LIVE' AND trade_date = ?
   `).get(strategy, today);
   const dailyPts  = todayPnl?.total_pts ?? 0;
   const dailyDollar = dailyPts * PTS_PER_DOLLAR[instrument];

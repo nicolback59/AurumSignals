@@ -80,6 +80,7 @@ function computeRegimeVetoes(db, strategyName) {
       WHERE strategy_name = ?
         AND trade_date >= date('now', '-90 days')
         AND outcome IN ('WIN','LOSS')
+        AND source = 'LIVE'
         AND regime IS NOT NULL
       GROUP BY regime
       HAVING n >= 10

@@ -248,6 +248,85 @@ async function run() {
     state.lastWalAlert = null; // reset silently
   }
 
+  // ── 5. ADAPTIVE_OVERRIDES integrity ──────────────────────────────────────
+  const OV_STRATEGIES = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+  const ovIssues = [];
+  try {
+    const ovRow = db.prepare(
+      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+    ).get();
+    if (!ovRow?.params_json) {
+      ovIssues.push('row missing');
+    } else {
+      const ov = JSON.parse(ovRow.params_json);
+      for (const strat of OV_STRATEGIES) {
+        const s = ov[strat];
+        if (!s) continue;
+        if (s.paused !== undefined && typeof s.paused !== 'boolean')     ovIssues.push(`${strat}.paused not boolean`);
+        if (!Array.isArray(s.reasons ?? []))                             ovIssues.push(`${strat}.reasons not array`);
+        if (!Array.isArray(s.blockedRegimes ?? []))                      ovIssues.push(`${strat}.blockedRegimes not array`);
+        if (s.drawdownSizeMult  !== undefined && !Number.isFinite(s.drawdownSizeMult))  ovIssues.push(`${strat}.drawdownSizeMult NaN`);
+        if (s.portfolioWeight   !== undefined && !Number.isFinite(s.portfolioWeight))   ovIssues.push(`${strat}.portfolioWeight NaN`);
+        if (s.transitionSizeMult !== undefined && !Number.isFinite(s.transitionSizeMult)) ovIssues.push(`${strat}.transitionSizeMult NaN`);
+      }
+    }
+  } catch (e) {
+    ovIssues.push(`parse_error: ${e.message}`);
+  }
+
+  if (ovIssues.length) {
+    alerts.push(`overrides_integrity: ${ovIssues.join(', ')}`);
+    if (canAlert(state, 'lastOvAlert')) {
+      const fired = await sendAlert(
+        'Aurum — ADAPTIVE_OVERRIDES Corrupt',
+        `ADAPTIVE_OVERRIDES integrity check failed:\n${ovIssues.join('\n')}\nScanner may be using invalid sizing/pause state.`,
+        true,
+      );
+      if (fired) { state.lastOvAlert = nowIso; state.ovWasBad = true; }
+    }
+  } else if (state.ovWasBad) {
+    await sendRecovery('Aurum — ADAPTIVE_OVERRIDES OK', 'Override integrity check passing.');
+    state.ovWasBad = false;
+    state.lastOvAlert = null;
+    recoveries.push('overrides_recovered');
+  }
+
+  // ── 6. Worker heartbeat staleness ─────────────────────────────────────────
+  const CRITICAL_WORKERS = [
+    { name: 'reconcile-worker',          maxStaleMin: 15 },
+    { name: 'circuit-breaker',           maxStaleMin: 90 },
+    { name: 'drawdown-protection',       maxStaleMin: 90 },
+    { name: 'signal-gate',               maxStaleMin: 90 },
+    { name: 'portfolio-circuit-breaker', maxStaleMin: 45 },
+  ];
+  const staleWorkers = [];
+  try {
+    for (const { name, maxStaleMin } of CRITICAL_WORKERS) {
+      const row = db.prepare(
+        'SELECT last_heartbeat FROM worker_health WHERE worker_name = ?'
+      ).get(name);
+      if (!row) { staleWorkers.push(`${name}(never_seen)`); continue; }
+      const ageMin = (Date.now() - new Date(row.last_heartbeat).getTime()) / 60000;
+      if (ageMin > maxStaleMin) staleWorkers.push(`${name}(${Math.round(ageMin)}m_ago)`);
+    }
+  } catch (_) { /* non-critical */ }
+
+  if (staleWorkers.length) {
+    alerts.push(`stale_workers: ${staleWorkers.join(', ')}`);
+    if (canAlert(state, 'lastStaleAlert')) {
+      const fired = await sendAlert(
+        'Aurum — Worker Heartbeat Stale',
+        `${staleWorkers.length} worker(s) not heartbeating:\n${staleWorkers.join('\n')}\nCheck: pm2 status | pm2 logs`,
+      );
+      if (fired) { state.lastStaleAlert = nowIso; state.workersWereStale = true; }
+    }
+  } else if (state.workersWereStale) {
+    await sendRecovery('Aurum — Workers Healthy', 'All critical workers heartbeating normally.');
+    state.workersWereStale = false;
+    state.lastStaleAlert = null;
+    recoveries.push('workers_recovered');
+  }
+
   // ── Persist state + heartbeat ─────────────────────────────────────────────
   heartbeat(db, WORKER_NAME, 'IDLE', {
     lastChecked: nowIso,
