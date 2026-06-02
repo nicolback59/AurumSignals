@@ -80,6 +80,7 @@ function buildDailySeries(db, strategy, windowDays) {
     SELECT trade_date, SUM(pnl_pts) AS daily_pnl
     FROM trade_dna
     WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+      AND source = 'LIVE'
       AND trade_date >= date('now', ? || ' days')
     GROUP BY trade_date
     ORDER BY trade_date ASC

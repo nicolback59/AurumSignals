@@ -5157,6 +5157,11 @@ app.listen(PORT, '0.0.0.0', () => {
     scanner.on('outcome',   data => _broadcastSSE('outcome',   data));
     scanner.on('error',     data => _broadcastSSE('scannerError', data));
 
+    // Prune stale sse_queue rows even in inline mode (table may accumulate from prior worker-mode runs)
+    setInterval(() => {
+      try { db.prepare("DELETE FROM sse_queue WHERE expires_at < datetime('now')").run(); } catch (_) {}
+    }, 60_000);
+
     scanner.start();
     console.log('[api-server] Scanner started inline');
   }

@@ -5,7 +5,7 @@ const { openDb, heartbeat, bumpCycle, logWorkerError } = require('./worker-utils
 const WORKER_NAME   = 'learning-agent';
 const STRATEGIES    = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN'];
 const LOOKBACK_DAYS = 90;
-const MIN_SAMPLE    = 5;
+const MIN_SAMPLE    = 20;
 const WARN_DELTA    = -10;
 const CRIT_DELTA    = -20;
 const RECENT_N      = 20;
@@ -45,9 +45,17 @@ function classifyAtrQuartile(atr, p25, p50, p75) {
   return 'Q4_high_vol';
 }
 
-function flagging(winRate, baselineWr) {
+function zScore(wr, baselineWr, n) {
+  if (!n || baselineWr == null) return 0;
+  const p0 = baselineWr / 100;
+  const se = Math.sqrt(p0 * (1 - p0) / n);
+  return se > 0 ? (wr / 100 - p0) / se : 0;
+}
+
+function flagging(winRate, baselineWr, n) {
   if (baselineWr == null || winRate == null) return { flagged: 0, flag_severity: null };
   const delta = winRate - baselineWr;
+  if (Math.abs(zScore(winRate, baselineWr, n)) < 1.28) return { flagged: 0, flag_severity: null };
   if (delta <= CRIT_DELTA) return { flagged: 1, flag_severity: 'CRITICAL' };
   if (delta <= WARN_DELTA) return { flagged: 1, flag_severity: 'WARNING' };
   return { flagged: 0, flag_severity: null };
@@ -110,6 +118,7 @@ function fetchTrades(db, strategy) {
     WHERE s.strategy_name = ?
       AND o.result IN ('WIN', 'LOSS')
       AND s.received_at >= datetime('now', ? )
+      AND (s.source IS NULL OR s.source != 'BACKTEST')
   `).all(strategy, `-${LOOKBACK_DAYS} days`);
 }
 
@@ -119,7 +128,7 @@ function insertRow(stmt, strategy, dimension, value, rows, baselineWr) {
   const losses = rows.filter(r => r.result === 'LOSS').length;
   const wr     = winRate(rows);
   const delta  = (wr != null && baselineWr != null) ? +(wr - baselineWr).toFixed(2) : null;
-  const { flagged, flag_severity } = flagging(wr, baselineWr);
+  const { flagged, flag_severity } = flagging(wr, baselineWr, rows.length);
   const flag_reason = flag_severity
     ? `${dimension}=${value} WR ${wr != null ? wr.toFixed(1) : '?'}% vs baseline ${baselineWr != null ? baselineWr.toFixed(1) : '?'}%`
     : null;
@@ -153,8 +162,9 @@ function analyzeStrategy(db, strategy, insertStmt) {
   }
 
   const byDow = groupBy(trades, r => {
-    const d = new Date(r.received_at).getDay();
-    return DOW_LABELS[d] ?? null;
+    if (!r.received_at) return null;
+    const et = new Date(new Date(r.received_at).toLocaleString('en-US', { timeZone: 'America/New_York' }));
+    return DOW_LABELS[et.getDay()] ?? null;
   });
   for (const [val, rows] of byDow) {
     insertRow(insertStmt, strategy, 'dow', val, rows, overallWr);
@@ -191,7 +201,7 @@ function analyzeStrategy(db, strategy, insertStmt) {
   if (recent.length >= MIN_SAMPLE) {
     const recentWr = winRate(recent);
     const delta    = (recentWr != null && overallWr != null) ? +(recentWr - overallWr).toFixed(2) : null;
-    const { flagged, flag_severity } = flagging(recentWr, overallWr);
+    const { flagged, flag_severity } = flagging(recentWr, overallWr, recent.length);
     const flag_reason = flag_severity
       ? `recent_${RECENT_N} WR ${recentWr != null ? recentWr.toFixed(1) : '?'}% vs baseline ${overallWr != null ? overallWr.toFixed(1) : '?'}%`
       : null;

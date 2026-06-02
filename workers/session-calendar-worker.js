@@ -37,6 +37,12 @@ const MIN_N       = 10;   // minimum trades to include a calendar cell
 
 const DOW_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+function calendarZ(wr, baselineWr, n) {
+  if (!n || baselineWr == null) return 0;
+  const se = Math.sqrt(baselineWr * (1 - baselineWr) / n);
+  return se > 0 ? (wr - baselineWr) / se : 0;
+}
+
 // ── Main run ──────────────────────────────────────────────────────────────────
 
 async function run() {
@@ -82,12 +88,12 @@ async function run() {
 
   for (const strategy of STRATEGIES) {
     try {
-      // Baseline WR
+      // Baseline WR (LIVE trades only)
       const base = db.prepare(`
         SELECT COUNT(*) AS n,
                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
         FROM trade_dna
-        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS') AND source = 'LIVE'
       `).get(strategy);
 
       if ((base?.n ?? 0) < MIN_N) continue;
@@ -102,14 +108,17 @@ async function run() {
                SUM(pnl_pts) AS total_pnl,
                AVG(pnl_pts) AS avg_pnl
         FROM trade_dna
-        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS') AND source = 'LIVE'
         GROUP BY dow HAVING n >= ${MIN_N}
       `).all(strategy);
 
       for (const r of dowRows) {
         const wr      = r.wins / r.n;
         const delta   = wr - baselineWr;
-        const pattern = delta >= 0.12 ? 'EDGE' : delta <= -0.12 ? 'AVOID' : 'NEUTRAL';
+        const z       = calendarZ(wr, baselineWr, r.n);
+        const pattern = Math.abs(z) >= 1.28 && delta >= 0.12 ? 'EDGE'
+                      : Math.abs(z) >= 1.28 && delta <= -0.12 ? 'AVOID'
+                      : 'NEUTRAL';
         const key     = DOW_NAMES[r.dow] ?? String(r.dow);
         upsert.run(runDate, strategy, 'dow', key,
           r.n, r.wins, r.n - r.wins,
@@ -140,14 +149,17 @@ async function run() {
                SUM(pnl_pts) AS total_pnl,
                AVG(pnl_pts) AS avg_pnl
         FROM trade_dna
-        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS') AND source = 'LIVE'
         GROUP BY wom HAVING n >= ${MIN_N}
       `).all(strategy);
 
       for (const r of womRows) {
         const wr    = r.wins / r.n;
         const delta = wr - baselineWr;
-        const pattern = delta >= 0.12 ? 'EDGE' : delta <= -0.12 ? 'AVOID' : 'NEUTRAL';
+        const z     = calendarZ(wr, baselineWr, r.n);
+        const pattern = Math.abs(z) >= 1.28 && delta >= 0.12 ? 'EDGE'
+                      : Math.abs(z) >= 1.28 && delta <= -0.12 ? 'AVOID'
+                      : 'NEUTRAL';
         upsert.run(runDate, strategy, 'week_of_month', `W${r.wom}`,
           r.n, r.wins, r.n - r.wins,
           +wr.toFixed(4), +baselineWr.toFixed(4), +delta.toFixed(4),
@@ -165,14 +177,17 @@ async function run() {
                SUM(pnl_pts) AS total_pnl,
                AVG(pnl_pts) AS avg_pnl
         FROM trade_dna
-        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS') AND source = 'LIVE'
         GROUP BY month HAVING n >= ${MIN_N}
       `).all(strategy);
 
       for (const r of monthRows) {
         const wr    = r.wins / r.n;
         const delta = wr - baselineWr;
-        const pattern = delta >= 0.12 ? 'EDGE' : delta <= -0.12 ? 'AVOID' : 'NEUTRAL';
+        const z     = calendarZ(wr, baselineWr, r.n);
+        const pattern = Math.abs(z) >= 1.28 && delta >= 0.12 ? 'EDGE'
+                      : Math.abs(z) >= 1.28 && delta <= -0.12 ? 'AVOID'
+                      : 'NEUTRAL';
         upsert.run(runDate, strategy, 'month', monthNames[r.month] ?? String(r.month),
           r.n, r.wins, r.n - r.wins,
           +wr.toFixed(4), +baselineWr.toFixed(4), +delta.toFixed(4),
@@ -189,7 +204,7 @@ async function run() {
                SUM(pnl_pts) AS total_pnl,
                AVG(pnl_pts) AS avg_pnl
         FROM trade_dna
-        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS') AND source = 'LIVE'
           AND hour_et IS NOT NULL
         GROUP BY hour_et HAVING n >= ${MIN_N}
         ORDER BY hour_et
@@ -198,7 +213,10 @@ async function run() {
       for (const r of hourRows) {
         const wr    = r.wins / r.n;
         const delta = wr - baselineWr;
-        const pattern = delta >= 0.12 ? 'EDGE' : delta <= -0.12 ? 'AVOID' : 'NEUTRAL';
+        const z     = calendarZ(wr, baselineWr, r.n);
+        const pattern = Math.abs(z) >= 1.28 && delta >= 0.12 ? 'EDGE'
+                      : Math.abs(z) >= 1.28 && delta <= -0.12 ? 'AVOID'
+                      : 'NEUTRAL';
         upsert.run(runDate, strategy, 'hour_et', `${r.hour_et}:00`,
           r.n, r.wins, r.n - r.wins,
           +wr.toFixed(4), +baselineWr.toFixed(4), +delta.toFixed(4),
@@ -216,7 +234,7 @@ async function run() {
                AVG(pnl_pts) AS avg_pnl,
                SUM(pnl_pts) AS total_pnl
         FROM trade_dna
-        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+        WHERE strategy_name = ? AND outcome IN ('WIN','LOSS') AND source = 'LIVE'
           AND session IS NOT NULL
         GROUP BY session, dow HAVING n >= ${MIN_N}
       `).all(strategy);
@@ -224,7 +242,10 @@ async function run() {
       for (const r of sessDowRows) {
         const wr    = r.wins / r.n;
         const delta = wr - baselineWr;
-        const pattern = delta >= 0.12 ? 'EDGE' : delta <= -0.12 ? 'AVOID' : 'NEUTRAL';
+        const z     = calendarZ(wr, baselineWr, r.n);
+        const pattern = Math.abs(z) >= 1.28 && delta >= 0.12 ? 'EDGE'
+                      : Math.abs(z) >= 1.28 && delta <= -0.12 ? 'AVOID'
+                      : 'NEUTRAL';
         const key   = `${r.session}|${DOW_NAMES[r.dow] ?? r.dow}`;
         upsert.run(runDate, strategy, 'session_dow', key,
           r.n, r.wins, r.n - r.wins,
