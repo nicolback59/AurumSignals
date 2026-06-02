@@ -25,7 +25,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, logWorkerError } = require('./worker-utils');
+const { openDb, heartbeat, logWorkerError, withOverridesLock } = require('./worker-utils');
 
 const WORKER_NAME = 'circuit-breaker';
 
@@ -54,23 +54,6 @@ async function sendNtfy(title, body, priority = 'default') {
       signal: AbortSignal.timeout(8_000),
     });
   } catch (_) { /* non-critical */ }
-}
-
-function loadOverrides(db) {
-  try {
-    const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
-    ).get();
-    return row?.params_json ? JSON.parse(row.params_json) : {};
-  } catch (_) { return {}; }
-}
-
-function saveOverrides(db, overrides) {
-  db.prepare(`
-    INSERT INTO strategy_params (key, params_json, updated_at)
-    VALUES ('ADAPTIVE_OVERRIDES', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET params_json = excluded.params_json, updated_at = excluded.updated_at
-  `).run(JSON.stringify(overrides));
 }
 
 function checkStrategy(db, strategy) {
@@ -139,16 +122,28 @@ async function run() {
     VALUES (?, ?, ?, ?, ?, ?, ?)
   `);
 
-  let processed = 0;
-  let tripped = 0;
-  let lifted = 0;
-
+  // ── Phase A: collect all check results BEFORE the lock ───────────────────────
+  const checkResults = [];
   for (const strategy of STRATEGIES) {
     try {
-      const { streak, rolling4hTrades, rolling4hLossRate, triggered, triggerReason }
-        = checkStrategy(db, strategy);
+      const check         = checkStrategy(db, strategy);
+      const lastTriggerMs = getLastTriggerTime(db, strategy);
+      checkResults.push({ strategy, check, lastTriggerMs });
+    } catch (stratErr) {
+      console.error(`[${WORKER_NAME}] checkStrategy error on ${strategy}: ${stratErr.message}`);
+      logWorkerError(db, WORKER_NAME, stratErr);
+    }
+  }
 
-      const overrides = loadOverrides(db);
+  // ── Phase B: apply all decisions atomically ────────────────────────────────
+  // Loading overrides per-strategy inside the loop was the race condition:
+  // each load returned the same pre-modification state for concurrent workers.
+  const actions = {};
+  withOverridesLock(db, overrides => {
+    for (const { strategy, check, lastTriggerMs } of checkResults) {
+      const { streak, rolling4hTrades, rolling4hLossRate, triggered, triggerReason } = check;
+      const cooldownElapsed = (Date.now() - lastTriggerMs) > COOLDOWN_MS;
+
       if (!overrides[strategy]) {
         overrides[strategy] = {
           paused: false, blockLong: false, blockShort: false,
@@ -159,50 +154,59 @@ async function run() {
       if (!ov.reasons) ov.reasons = [];
 
       const isCbPaused = ov.reasons.some(r => r.startsWith('auto-paused: circuit-breaker'));
-      const lastTriggerMs = getLastTriggerTime(db, strategy);
-      const cooldownElapsed = (Date.now() - lastTriggerMs) > COOLDOWN_MS;
-
       let action = 'NO_CHANGE';
 
       if (triggered && !isCbPaused) {
-        // Trip: apply pause
         if (!ov.manualPause) ov.paused = true;
-        ov.reasons.push(`auto-paused: circuit-breaker ${triggerReason} (streak=${streak} rate=${(rolling4hLossRate*100).toFixed(0)}%/${rolling4hTrades}trades)`);
-        saveOverrides(db, overrides);
+        ov.reasons.push(`auto-paused: circuit-breaker ${triggerReason} (streak=${streak} rate=${(rolling4hLossRate * 100).toFixed(0)}%/${rolling4hTrades}trades)`);
         action = 'PAUSED';
-        tripped++;
-
-        const emoji = '🔴';
-        const reason = triggerReason === 'streak'
-          ? `${streak} consecutive losses`
-          : `${(rolling4hLossRate*100).toFixed(0)}% loss rate over ${rolling4hTrades} trades (4h)`;
-        await sendNtfy(
-          `${emoji} Circuit Breaker Tripped — ${strategy}`,
-          `${strategy} auto-paused\nReason: ${reason}\nConsecutive losses: ${streak}\n4h trades: ${rolling4hTrades} | Loss rate: ${(rolling4hLossRate*100).toFixed(0)}%`,
-          'high',
-        );
-        console.log(`[${WORKER_NAME}] TRIPPED ${strategy}: ${reason}`);
-
       } else if (!triggered && isCbPaused && cooldownElapsed) {
-        // Lift: remove circuit-breaker pause
         ov.reasons = ov.reasons.filter(r => !r.startsWith('auto-paused: circuit-breaker'));
         if (!ov.manualPause && !ov.reasons.some(r => r.startsWith('auto-paused') || r.startsWith('intelligence-gate'))) {
           ov.paused = false;
         }
-        saveOverrides(db, overrides);
         action = 'LIFTED';
-        lifted++;
+      }
 
+      actions[strategy] = { action, isCbPaused, cooldownElapsed };
+    }
+  });
+
+  // ── Phase C: log and notify OUTSIDE the lock ──────────────────────────────
+  let processed = 0;
+  let tripped   = 0;
+  let lifted    = 0;
+
+  for (const { strategy, check } of checkResults) {
+    const { streak, rolling4hTrades, rolling4hLossRate, triggered, triggerReason } = check;
+    const { action } = actions[strategy] ?? { action: 'NO_CHANGE' };
+
+    try {
+      if (action === 'PAUSED') {
+        tripped++;
+        const reason = triggerReason === 'streak'
+          ? `${streak} consecutive losses`
+          : `${(rolling4hLossRate * 100).toFixed(0)}% loss rate over ${rolling4hTrades} trades (4h)`;
         await sendNtfy(
-          `🟢 Circuit Breaker Lifted — ${strategy}`,
-          `${strategy} auto-pause removed\nStreak: ${streak} | 4h trades: ${rolling4hTrades} | Loss rate: ${(rolling4hLossRate*100).toFixed(0)}%\nCooldown elapsed — resuming normal operation`,
+          `Circuit Breaker Tripped — ${strategy}`,
+          `${strategy} auto-paused\nReason: ${reason}\nConsecutive losses: ${streak}\n4h trades: ${rolling4hTrades} | Loss rate: ${(rolling4hLossRate * 100).toFixed(0)}%`,
+          'high',
+        );
+        console.log(`[${WORKER_NAME}] TRIPPED ${strategy}: ${reason}`);
+
+      } else if (action === 'LIFTED') {
+        lifted++;
+        await sendNtfy(
+          `Circuit Breaker Lifted — ${strategy}`,
+          `${strategy} auto-pause removed\nStreak: ${streak} | 4h trades: ${rolling4hTrades} | Loss rate: ${(rolling4hLossRate * 100).toFixed(0)}%\nCooldown elapsed — resuming normal operation`,
           'default',
         );
         console.log(`[${WORKER_NAME}] LIFTED ${strategy}: conditions clear + cooldown elapsed`);
 
       } else {
+        const { isCbPaused, cooldownElapsed } = actions[strategy] ?? {};
         console.log(
-          `[${WORKER_NAME}] ${strategy}: streak=${streak} rate=${(rolling4hLossRate*100).toFixed(0)}%/${rolling4hTrades}t ` +
+          `[${WORKER_NAME}] ${strategy}: streak=${streak} rate=${(rolling4hLossRate * 100).toFixed(0)}%/${rolling4hTrades}t ` +
           `triggered=${triggered} cbPaused=${isCbPaused} cooldown=${cooldownElapsed ? 'elapsed' : 'active'}`
         );
       }

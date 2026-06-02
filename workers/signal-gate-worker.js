@@ -32,7 +32,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, logWorkerError } = require('./worker-utils');
+const { openDb, heartbeat, logWorkerError, withOverridesLock } = require('./worker-utils');
 
 const WORKER_NAME = 'signal-gate';
 
@@ -200,27 +200,8 @@ function computeGate(db, strategyName) {
   };
 }
 
-/** Read current adaptive overrides from strategy_params. */
-function loadOverrides(db) {
-  try {
-    const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
-    ).get();
-    return row?.params_json ? JSON.parse(row.params_json) : {};
-  } catch (_) { return {}; }
-}
-
-/** Write merged overrides back to strategy_params. */
-function saveOverrides(db, overrides) {
-  db.prepare(`
-    INSERT INTO strategy_params (key, params_json, updated_at)
-    VALUES ('ADAPTIVE_OVERRIDES', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET params_json = excluded.params_json, updated_at = excluded.updated_at
-  `).run(JSON.stringify(overrides));
-}
-
-function applyGateToOverrides(db, strategyName, gateStatus, prevGateStatus, blockedRegimes = []) {
-  const overrides = loadOverrides(db);
+/** Apply a single strategy's gate result onto the shared overrides object (no DB I/O). */
+function applyGate(overrides, strategyName, gateStatus, blockedRegimes = []) {
   if (!overrides[strategyName]) {
     overrides[strategyName] = {
       paused: false, blockLong: false, blockShort: false,
@@ -230,7 +211,6 @@ function applyGateToOverrides(db, strategyName, gateStatus, prevGateStatus, bloc
   const ov = overrides[strategyName];
   if (!ov.reasons) ov.reasons = [];
 
-  // Always sync regime blocks from current data analysis
   ov.blockedRegimes = blockedRegimes;
 
   if (gateStatus === 'GATED') {
@@ -241,14 +221,11 @@ function applyGateToOverrides(db, strategyName, gateStatus, prevGateStatus, bloc
       }
     }
   } else {
-    // Lift intelligence-driven pause on recovery — unless WR-based pause is also active
     ov.reasons = ov.reasons.filter(r => !r.startsWith('intelligence-gate'));
     if (!ov.manualPause && !ov.reasons.some(r => r.startsWith('auto-paused'))) {
       ov.paused = false;
     }
   }
-
-  saveOverrides(db, overrides);
 }
 
 async function run() {
@@ -267,13 +244,37 @@ async function run() {
   let processed = 0;
   let statusChanges = 0;
 
+  // ── Phase A: compute all gates and prev statuses BEFORE the lock ─────────────
+  const gateResults = [];
   for (const strategy of STRATEGIES) {
     try {
       const gate = computeGate(db, strategy);
-      const { score, gate_status, conf_adjustment, edge_contribution,
-              health_contribution, calibration_factor, active_vetoes,
-              regime_vetoes, rationale } = gate;
+      const prevRow = db.prepare(`
+        SELECT gate_status FROM signal_gates
+        WHERE strategy_name = ?
+          AND evaluated_at < (SELECT MAX(g2.evaluated_at) FROM signal_gates g2 WHERE g2.strategy_name = ?)
+        ORDER BY evaluated_at DESC LIMIT 1
+      `).get(strategy, strategy);
+      const prevStatus = prevRow?.gate_status ?? 'OPEN';
+      gateResults.push({ strategy, gate, prevStatus });
+    } catch (stratErr) {
+      console.error(`[${WORKER_NAME}] error computing gate for ${strategy}: ${stratErr.message}`);
+      logWorkerError(db, WORKER_NAME, stratErr);
+    }
+  }
 
+  // ── Phase B: apply all gate decisions in a single atomic write ───────────────
+  withOverridesLock(db, overrides => {
+    for (const { strategy, gate, prevStatus } of gateResults) {
+      applyGate(overrides, strategy, gate.gate_status, gate.regime_vetoes ?? []);
+    }
+  });
+
+  // ── Phase C: persist gate rows and notify OUTSIDE the lock ───────────────────
+  for (const { strategy, gate, prevStatus } of gateResults) {
+    try {
+      const { score, gate_status, conf_adjustment, edge_contribution,
+              health_contribution, calibration_factor, active_vetoes, rationale } = gate;
       const adjustedConf = BASE_MIN_CONF + conf_adjustment;
 
       insertGate.run(
@@ -282,18 +283,6 @@ async function run() {
         active_vetoes, JSON.stringify(rationale),
       );
 
-      // Retrieve previous gate status for change detection
-      const prevRow = db.prepare(`
-        SELECT gate_status FROM signal_gates
-        WHERE strategy_name = ?
-          AND evaluated_at < (SELECT MAX(g2.evaluated_at) FROM signal_gates g2 WHERE g2.strategy_name = ?)
-        ORDER BY evaluated_at DESC LIMIT 1
-      `).get(strategy, strategy);
-      const prevStatus = prevRow?.gate_status ?? 'OPEN';
-
-      // Inject into adaptive overrides (this is how the scanner picks it up)
-      applyGateToOverrides(db, strategy, gate_status, prevStatus, regime_vetoes ?? []);
-
       console.log(
         `[${WORKER_NAME}] ${strategy}: score=${score} status=${gate_status} ` +
         `adj=${conf_adjustment > 0 ? '+' : ''}${conf_adjustment}` +
@@ -301,15 +290,12 @@ async function run() {
       );
       processed++;
 
-      // ntfy on status changes that matter
       if (gate_status !== prevStatus) {
         statusChanges++;
         const worsened = ['OPEN','CAUTIOUS','RESTRICTED','GATED'].indexOf(gate_status) >
                          ['OPEN','CAUTIOUS','RESTRICTED','GATED'].indexOf(prevStatus);
-        const emoji = gate_status === 'GATED' ? '🔴' : gate_status === 'RESTRICTED' ? '🟠' :
-                      gate_status === 'CAUTIOUS' ? '🟡' : '🟢';
         await sendNtfy(
-          `${emoji} Signal Gate ${worsened ? 'tightened' : 'eased'} — ${strategy}`,
+          `Signal Gate ${worsened ? 'tightened' : 'eased'} — ${strategy}`,
           `${strategy}: ${prevStatus} → ${gate_status}\n` +
           `Score: ${score} | Conf adjustment: +${conf_adjustment}pts\n` +
           (rationale.length ? `Triggers: ${rationale.join(', ')}` : 'No active triggers'),
@@ -317,7 +303,7 @@ async function run() {
         );
       }
     } catch (stratErr) {
-      console.error(`[${WORKER_NAME}] error processing ${strategy}: ${stratErr.message}`);
+      console.error(`[${WORKER_NAME}] error finalising ${strategy}: ${stratErr.message}`);
       logWorkerError(db, WORKER_NAME, stratErr);
     }
   }

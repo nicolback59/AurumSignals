@@ -29,7 +29,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
+const { openDb, heartbeat, logWorkerError, sendNotification, withOverridesLock } = require('./worker-utils');
 
 const WORKER_NAME        = 'portfolio-circuit-breaker';
 const STRATEGIES         = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
@@ -37,26 +37,6 @@ const COMBINED_PNL_LIMIT = -15;  // pts — combined today triggers WARNING
 const FLOOD_THRESHOLD    =   3;  // how many strategies must be impaired to fire
 const MIN_L2_LEVEL       =   2;  // drawdownProtectionLevel ≥ 2 = REDUCE or PAUSE
 
-// ── ADAPTIVE_OVERRIDES helpers (same pattern as drawdown-protection-worker) ───
-
-function loadOverrides(db) {
-  try {
-    const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
-    ).get();
-    return row?.params_json ? JSON.parse(row.params_json) : {};
-  } catch (_) { return {}; }
-}
-
-function saveOverrides(db, overrides) {
-  db.prepare(`
-    INSERT INTO strategy_params (key, params_json, updated_at)
-    VALUES ('ADAPTIVE_OVERRIDES', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET
-      params_json = excluded.params_json,
-      updated_at  = excluded.updated_at
-  `).run(JSON.stringify(overrides));
-}
 
 // ── Main run ──────────────────────────────────────────────────────────────────
 
@@ -94,10 +74,7 @@ async function run() {
 
   const todayStr = new Date().toISOString().slice(0, 10);
 
-  // ── Gather current state ──────────────────────────────────────────────────
-  const overrides = loadOverrides(db);
-
-  // Combined today's P&L
+  // ── Phase A: gather analysis data OUTSIDE the lock ────────────────────────
   const pnlRow = db.prepare(`
     SELECT SUM(pnl_pts) AS total_pnl
     FROM trade_dna
@@ -105,17 +82,11 @@ async function run() {
   `).get(todayStr);
   const combinedPnlToday = pnlRow?.total_pnl ?? 0;
 
-  // Per-strategy drawdown level from ADAPTIVE_OVERRIDES
-  let strategiesAtL2 = 0;
+  let strategiesAtL2   = 0;
   let strategiesFlooded = 0;
-  const stratDetails = [];
+  const stratPrecheck   = [];
 
   for (const strategy of STRATEGIES) {
-    const ov = overrides[strategy] ?? {};
-    const level = ov.drawdownProtectionLevel ?? 0;
-    if (level >= MIN_L2_LEVEL) strategiesAtL2++;
-
-    // Count consecutive losses from trade_dna
     const recent = db.prepare(`
       SELECT outcome FROM trade_dna
       WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
@@ -127,70 +98,87 @@ async function run() {
       else break;
     }
     if (consec >= 5) strategiesFlooded++;
-
-    stratDetails.push({ strategy, level, consec, paused: !!ov.paused });
+    stratPrecheck.push({ strategy, consec });
   }
 
-  // ── Evaluate triggers ──────────────────────────────────────────────────────
-  const pnlTrigger      = combinedPnlToday < COMBINED_PNL_LIMIT;
-  const floodTrigger    = strategiesAtL2   >= FLOOD_THRESHOLD;
-  const lossTrigger     = strategiesFlooded >= FLOOD_THRESHOLD;
-  const shouldBreak     = pnlTrigger || floodTrigger || lossTrigger;
-
-  const triggerReason   = [
-    pnlTrigger   && `combined_pnl_${combinedPnlToday.toFixed(1)}pts`,
-    floodTrigger && `${strategiesAtL2}_strategies_at_L2+`,
-    lossTrigger  && `${strategiesFlooded}_strategies_5+_losses`,
+  const pnlTrigger   = combinedPnlToday < COMBINED_PNL_LIMIT;
+  const lossTrigger  = strategiesFlooded >= FLOOD_THRESHOLD;
+  const triggerReason = [
+    pnlTrigger  && `combined_pnl_${combinedPnlToday.toFixed(1)}pts`,
+    lossTrigger && `${strategiesFlooded}_strategies_5+_losses`,
   ].filter(Boolean).join('; ');
 
-  // Check if already circuit-broken by this worker
-  const alreadyBroken = STRATEGIES.every(s => {
-    const ov = overrides[s] ?? {};
-    return ov.paused && (ov.reasons ?? []).includes('portfolio_circuit_break');
-  });
-
-  // ── Auto-recovery check ────────────────────────────────────────────────────
+  // ── Phase B: apply break / recovery atomically ────────────────────────────
+  // floodTrigger (L2+ count) and alreadyBroken are determined inside the lock
+  // so they reflect the most current state of ADAPTIVE_OVERRIDES.
+  let shouldBreak  = false;
+  let alreadyBroken = false;
   let autoRecovered = 0;
-  if (alreadyBroken && !shouldBreak) {
-    // Conditions have cleared — lift the portfolio-level pause
-    let changed = false;
-    for (const strategy of STRATEGIES) {
+  let finalTriggerReason = triggerReason;
+  const stratDetails = [];
+
+  withOverridesLock(db, overrides => {
+    // Re-read drawdown levels from the freshly-locked overrides
+    let atL2 = 0;
+    for (const { strategy, consec } of stratPrecheck) {
       const ov = overrides[strategy] ?? {};
-      if ((ov.reasons ?? []).includes('portfolio_circuit_break')) {
-        ov.reasons = (ov.reasons ?? []).filter(r => r !== 'portfolio_circuit_break');
-        // Only clear paused if no other reason remains
-        if (!ov.reasons.length && !ov.manualPause && (ov.drawdownProtectionLevel ?? 0) < 3) {
-          ov.paused = false;
+      const level = ov.drawdownProtectionLevel ?? 0;
+      if (level >= MIN_L2_LEVEL) atL2++;
+      stratDetails.push({ strategy, level, consec, paused: !!ov.paused });
+    }
+    strategiesAtL2 = atL2;
+
+    const floodTrigger = atL2 >= FLOOD_THRESHOLD;
+    shouldBreak = pnlTrigger || floodTrigger || lossTrigger;
+
+    finalTriggerReason = [
+      pnlTrigger   && `combined_pnl_${combinedPnlToday.toFixed(1)}pts`,
+      floodTrigger && `${atL2}_strategies_at_L2+`,
+      lossTrigger  && `${strategiesFlooded}_strategies_5+_losses`,
+    ].filter(Boolean).join('; ');
+
+    alreadyBroken = STRATEGIES.every(s => {
+      const ov = overrides[s] ?? {};
+      return ov.paused && (ov.reasons ?? []).includes('portfolio_circuit_break');
+    });
+
+    if (alreadyBroken && !shouldBreak) {
+      // Conditions cleared — lift the portfolio-level pause only
+      for (const strategy of STRATEGIES) {
+        const ov = overrides[strategy] ?? {};
+        if ((ov.reasons ?? []).includes('portfolio_circuit_break')) {
+          ov.reasons = (ov.reasons ?? []).filter(r => r !== 'portfolio_circuit_break');
+          if (!ov.reasons.length && !ov.manualPause && (ov.drawdownProtectionLevel ?? 0) < 3) {
+            ov.paused = false;
+          }
+          overrides[strategy] = ov;
+          autoRecovered = 1;
         }
+      }
+    } else if (shouldBreak && !alreadyBroken) {
+      for (const strategy of STRATEGIES) {
+        const ov = overrides[strategy] ?? {};
+        ov.paused  = true;
+        ov.reasons = [...new Set([...(ov.reasons ?? []), 'portfolio_circuit_break'])];
         overrides[strategy] = ov;
-        changed = true;
       }
     }
-    if (changed) {
-      saveOverrides(db, overrides);
-      autoRecovered = 1;
-      console.log(`[${WORKER_NAME}] Portfolio circuit break auto-recovered`);
-    }
+  });
+
+  // ── Phase C: log and notify OUTSIDE the lock ──────────────────────────────
+  if (autoRecovered) {
+    console.log(`[${WORKER_NAME}] Portfolio circuit break auto-recovered`);
   }
 
-  // ── Fire circuit break ─────────────────────────────────────────────────────
   if (shouldBreak && !alreadyBroken) {
-    for (const strategy of STRATEGIES) {
-      const ov = overrides[strategy] ?? {};
-      ov.paused  = true;
-      ov.reasons = [...new Set([...(ov.reasons ?? []), 'portfolio_circuit_break'])];
-      overrides[strategy] = ov;
-    }
-    saveOverrides(db, overrides);
-
-    const note = `PORTFOLIO CIRCUIT BREAK: ${triggerReason}. Combined P&L today: ${combinedPnlToday.toFixed(1)}pts. All strategies paused.`;
+    const note = `PORTFOLIO CIRCUIT BREAK: ${finalTriggerReason}. Combined P&L today: ${combinedPnlToday.toFixed(1)}pts. All strategies paused.`;
     console.log(`[${WORKER_NAME}] ${note}`);
 
     try {
       insertMsg.run(WORKER_NAME, 'observation', 'PORTFOLIO', 1,
         JSON.stringify({
           alert:               'portfolio_circuit_break',
-          trigger_reason:      triggerReason,
+          trigger_reason:      finalTriggerReason,
           combined_pnl_today:  +combinedPnlToday.toFixed(2),
           strategies_at_l2:    strategiesAtL2,
           strategies_flooded:  strategiesFlooded,
@@ -201,15 +189,15 @@ async function run() {
     } catch (_) {}
 
     await sendNotification(
-      '🛑 PORTFOLIO CIRCUIT BREAK TRIGGERED',
-      `All strategies paused.\n${triggerReason}\nCombined P&L today: ${combinedPnlToday.toFixed(1)}pts\n${strategiesAtL2} strategies at L2+ drawdown`,
-      { priority: 'urgent', tags: 'rotating_light,no_entry' },
+      'PORTFOLIO CIRCUIT BREAK TRIGGERED',
+      `All strategies paused.\n${finalTriggerReason}\nCombined P&L today: ${combinedPnlToday.toFixed(1)}pts\n${strategiesAtL2} strategies at L2+ drawdown`,
+      { priority: 'urgent', tags: 'rotating_light,no_entry', emailFallback: true },
     );
   }
 
   insertLog.run(
     shouldBreak && !alreadyBroken ? 1 : 0,
-    triggerReason || null,
+    finalTriggerReason || null,
     +combinedPnlToday.toFixed(2),
     strategiesAtL2, strategiesFlooded,
     shouldBreak && !alreadyBroken ? 'ALL_PAUSED'

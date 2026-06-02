@@ -28,7 +28,7 @@ const {
 } = require('../signals/signal-state-machine');
 
 const WORKER_NAME  = 'reconcile-worker';
-const LIVE_STRATS  = new Set(['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE']);
+const LIVE_STRATS  = new Set(['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE']);
 
 // ── DB ────────────────────────────────────────────────────────────────────────
 const db = openDb();
@@ -65,14 +65,24 @@ const _getPending = db.prepare(`
   LEFT   JOIN outcomes o ON o.signal_id = s.id
   WHERE  o.id IS NULL
     AND  s.entry IS NOT NULL
+    AND  s.received_at IS NOT NULL
     AND  (s.trade_status IS NULL OR s.trade_status = 'ACTIVE')
-    AND  s.strategy_name IN ('MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE')
+    AND  s.strategy_name IN ('MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE')
 `);
 
 const _insertOutcome   = db.prepare(`INSERT OR IGNORE INTO outcomes (signal_id, result, exit_price, exit_at, pnl_pts) VALUES (?,?,?,?,?)`);
 const _updateStatus    = db.prepare(`UPDATE signals SET trade_status = 'EXPIRED' WHERE id = ?`);
 const _setSigReason    = db.prepare(`UPDATE signals  SET expiration_reason = ? WHERE id = ?`);
 const _setOutReason    = db.prepare(`UPDATE outcomes SET expiration_reason = ? WHERE signal_id = ?`);
+
+// Wrap the 4-statement expiry in a single transaction — prevents partial writes
+// where the outcome row is inserted but trade_status is never updated (or vice versa).
+const _expireTxn = db.transaction((sigId, entry, nowIso, reason) => {
+  _insertOutcome.run(sigId, 'EXPIRED', entry, nowIso, 0);
+  _updateStatus.run(sigId);
+  _setSigReason.run(reason, sigId);
+  _setOutReason.run(reason, sigId);
+});
 
 // ── Core sweep ────────────────────────────────────────────────────────────────
 function runSweep() {
@@ -94,10 +104,7 @@ function runSweep() {
 
   const expireSignal = (sig, reason) => {
     try {
-      _insertOutcome.run(sig.id, 'EXPIRED', sig.entry, nowIso, 0);
-      _updateStatus.run(sig.id);
-      _setSigReason.run(reason, sig.id);
-      _setOutReason.run(reason, sig.id);
+      _expireTxn(sig.id, sig.entry, nowIso, reason);
       console.log(`[${WORKER_NAME}] EXPIRED #${sig.id} ${sig.instrument} ${sig.direction} reason=${reason}`);
       swept++;
     } catch (err) {
@@ -116,7 +123,8 @@ function runSweep() {
 
     // RULE C: Weekday market close at 13:00 PT
     if (pastDailyClose && !stratCfg.allowHoldOvernight) {
-      const sigPt     = getPtParts(new Date(sig.received_at));
+      if (!sig.received_at) { expireSignal(sig, 'EXPIRED_MARKET_CLOSE'); continue; }
+      const sigPt = getPtParts(new Date(sig.received_at));
       if (sigPt.dateStr < todayStr || (sigPt.dateStr === todayStr && sigPt.hm < 13 * 60)) {
         expireSignal(sig, 'EXPIRED_MARKET_CLOSE');
         continue;

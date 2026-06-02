@@ -33,31 +33,10 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, logWorkerError } = require('./worker-utils');
+const { openDb, heartbeat, logWorkerError, withOverridesLock } = require('./worker-utils');
 
 const WORKER_NAME = 'strategy-ranking';
 const STRATEGIES  = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
-
-// ── Adaptive overrides helpers ────────────────────────────────────────────────
-
-function loadOverrides(db) {
-  try {
-    const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
-    ).get();
-    return row?.params_json ? JSON.parse(row.params_json) : {};
-  } catch (_) { return {}; }
-}
-
-function saveOverrides(db, overrides) {
-  db.prepare(`
-    INSERT INTO strategy_params (key, params_json, updated_at)
-    VALUES ('ADAPTIVE_OVERRIDES', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET
-      params_json = excluded.params_json,
-      updated_at  = excluded.updated_at
-  `).run(JSON.stringify(overrides));
-}
 
 // ── Score helpers ─────────────────────────────────────────────────────────────
 
@@ -314,57 +293,56 @@ async function run() {
     }
   }
 
-  // ── Rank, persist, update overrides ───────────────────────────────────────
+  // ── Rank and compute portfolio weights ───────────────────────────────────────
   rankings.sort((a, b) => b.allocationScore - a.allocationScore);
-  const overrides = loadOverrides(db);
-  let ovChanged   = false;
 
-  rankings.forEach((r, idx) => {
-    const rankPos       = idx + 1;
-    // portfolioWeight: 0.50 at score=0, 1.50 at score=100
-    const portfolioWeight = +(0.50 + r.allocationScore / 100).toFixed(3);
+  const ranked = rankings.map((r, idx) => ({
+    ...r,
+    rankPos:       idx + 1,
+    portfolioWeight: +(0.50 + r.allocationScore / 100).toFixed(3),
+  }));
 
+  // ── Phase B: write all portfolio weights atomically ────────────────────────
+  withOverridesLock(db, overrides => {
+    for (const r of ranked) {
+      if (!overrides[r.strategy]) overrides[r.strategy] = {};
+      overrides[r.strategy].portfolioWeight = r.portfolioWeight;
+    }
+  });
+
+  // ── Phase C: persist rankings and notify OUTSIDE the lock ─────────────────
+  for (const r of ranked) {
     insertRanking.run(
       runDate, r.strategy, r.instrument,
       r.healthScore, r.confidenceScore, r.allocationScore,
-      rankPos,
-      r.wr30d    != null ? +r.wr30d.toFixed(4)        : null,
-      r.wr90d    != null ? +r.wr90d.toFixed(4)        : null,
-      r.pf30d    != null ? +r.pf30d.toFixed(3)        : null,
+      r.rankPos,
+      r.wr30d         != null ? +r.wr30d.toFixed(4)         : null,
+      r.wr90d         != null ? +r.wr90d.toFixed(4)         : null,
+      r.pf30d         != null ? +r.pf30d.toFixed(3)         : null,
       r.expectancy30d != null ? +r.expectancy30d.toFixed(2) : null,
       r.tradeCount90d, r.maxLossStreak,
       +r.tradesPerWeek.toFixed(2),
       r.edgeStatus, r.behaviorMode, r.notes,
     );
 
-    if (!overrides[r.strategy]) overrides[r.strategy] = {};
-    if (overrides[r.strategy].portfolioWeight !== portfolioWeight) {
-      overrides[r.strategy].portfolioWeight = portfolioWeight;
-      ovChanged = true;
-    }
+    console.log(`[${WORKER_NAME}] #${r.rankPos} ${r.strategy}: alloc=${r.allocationScore} weight=${r.portfolioWeight}`);
 
-    // Log ranking to console
-    console.log(`[${WORKER_NAME}] #${rankPos} ${r.strategy}: alloc=${r.allocationScore} weight=${portfolioWeight}`);
-
-    // Post agent message for rank-1 strategy
-    if (rankPos === 1) {
+    if (r.rankPos === 1) {
       try {
         insertMsg.run(
           'strategy-ranking', 'observation', r.strategy, 4,
           JSON.stringify({
-            rank:             rankPos,
+            rank:             r.rankPos,
             health_score:     r.healthScore,
             confidence_score: r.confidenceScore,
             allocation_score: r.allocationScore,
-            portfolio_weight: portfolioWeight,
+            portfolio_weight: r.portfolioWeight,
             reason:           `Top-ranked strategy — highest capital allocation priority (score ${r.allocationScore})`,
           }),
         );
       } catch (_) {}
     }
-  });
-
-  if (ovChanged) saveOverrides(db, overrides);
+  }
 
   heartbeat(db, WORKER_NAME, 'COMPLETED', {
     pid: process.pid, processed,
