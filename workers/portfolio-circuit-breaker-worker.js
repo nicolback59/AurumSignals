@@ -78,7 +78,7 @@ async function run() {
   const pnlRow = db.prepare(`
     SELECT SUM(pnl_pts) AS total_pnl
     FROM trade_dna
-    WHERE outcome IN ('WIN','LOSS') AND trade_date = ?
+    WHERE outcome IN ('WIN','LOSS') AND source = 'LIVE' AND trade_date = ?
   `).get(todayStr);
   const combinedPnlToday = pnlRow?.total_pnl ?? 0;
 
@@ -90,6 +90,7 @@ async function run() {
     const recent = db.prepare(`
       SELECT outcome FROM trade_dna
       WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+        AND source = 'LIVE'
       ORDER BY trade_date DESC, rowid DESC LIMIT 10
     `).all(strategy);
     let consec = 0;

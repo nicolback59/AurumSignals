@@ -124,6 +124,7 @@ function scanDimension(db, strategy, dimension, colExpr, baselineWr, minN, weekl
            SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
     FROM trade_dna
     WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+      AND source = 'LIVE'
       AND ${colExpr} IS NOT NULL AND ${colExpr} != ''
     GROUP BY dim_val
     HAVING n >= ${minN}
@@ -165,6 +166,7 @@ function scan2D(db, strategy, dimA, colA, dimB, colB, baselineWr) {
            SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
     FROM trade_dna
     WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+      AND source = 'LIVE'
       AND ${colA} IS NOT NULL AND ${colA} != ''
       AND ${colB} IS NOT NULL AND ${colB} != ''
     GROUP BY val_a, val_b
@@ -271,6 +273,7 @@ async function run() {
                SUM(CASE WHEN outcome='WIN' THEN 1 ELSE 0 END) AS wins
         FROM trade_dna
         WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')
+          AND source = 'LIVE'
       `).get(strategy);
 
       if ((base?.n ?? 0) < MIN_N_1D) {

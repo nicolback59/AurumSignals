@@ -120,15 +120,16 @@ async function runBackup() {
     db.close();
   }
 
-  // Run PRAGMA optimize before backup completes so SQLite updates its
-  // query planner statistics. Requires a brief writable connection (WAL-safe).
+  // Post-backup maintenance: optimize query planner stats then truncate the WAL
+  // so it doesn't grow unbounded between nightly backups.
   try {
-    const dbOpt = new Database(DB_PATH);
-    dbOpt.pragma('optimize');
-    dbOpt.close();
-    console.log(`[${WORKER_NAME}] PRAGMA optimize complete`);
+    const dbMaint = new Database(DB_PATH);
+    dbMaint.pragma('optimize');
+    dbMaint.pragma('wal_checkpoint(TRUNCATE)');
+    dbMaint.close();
+    console.log(`[${WORKER_NAME}] PRAGMA optimize + wal_checkpoint(TRUNCATE) complete`);
   } catch (optErr) {
-    console.warn(`[${WORKER_NAME}] PRAGMA optimize failed (non-fatal): ${optErr.message}`);
+    console.warn(`[${WORKER_NAME}] Post-backup maintenance failed (non-fatal): ${optErr.message}`);
   }
 
   const localElapsed = ((Date.now() - localStart) / 1000).toFixed(1);
