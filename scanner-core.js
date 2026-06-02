@@ -1117,7 +1117,7 @@ class Scanner extends EventEmitter {
     const pmSizeMult = Math.max(0.30, Math.min(1.50, signal._pmSizeMult ?? 1.0));
 
     // Portfolio weight from strategy-ranking-worker (via ADAPTIVE_OVERRIDES)
-    const portfolioMult = Math.min(1.50, Math.max(0.50, signal._portfolioWeight ?? 1.0));
+    const portfolioMult = Math.min(1.50, Math.max(0.50, Number.isFinite(signal._portfolioWeight) ? signal._portfolioWeight : 1.0));
 
     // Drawdown protection multiplier (from drawdown-protection-worker)
     const drawdownMult = Math.min(1.0, Math.max(0.0, signal._drawdownSizeMult ?? 1.0));
@@ -2249,7 +2249,7 @@ class Scanner extends EventEmitter {
       this._lastSignalTimes[stratKey] = Date.now();
       // Attach portfolio intelligence context so _storeSignal can compute quality-adjusted sizing
       const _ov = adaptiveOverrides[sig.strategy_name] ?? {};
-      sig._portfolioWeight    = _ov.portfolioWeight     ?? 1.0;
+      sig._portfolioWeight    = Number.isFinite(_ov.portfolioWeight)    ? _ov.portfolioWeight    : 1.0;
       sig._drawdownSizeMult   = _ov.drawdownSizeMult    ?? 1.0;
       sig._transitionSizeMult = _ov.transitionSizeMult  ?? 1.0;
       sig._behaviorMode       = _ov.behaviorMode         ?? 'NORMAL';

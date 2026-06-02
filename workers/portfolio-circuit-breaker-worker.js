@@ -29,7 +29,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, logWorkerError, sendNotification, withOverridesLock } = require('./worker-utils');
+const { openDb, heartbeat, logWorkerError, sendNotification, withOverridesLock, getEtDateStr } = require('./worker-utils');
 
 const WORKER_NAME        = 'portfolio-circuit-breaker';
 const STRATEGIES         = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
@@ -72,7 +72,7 @@ async function run() {
     VALUES (?, ?, ?, ?, ?, datetime('now'))
   `);
 
-  const todayStr = new Date().toISOString().slice(0, 10);
+  const todayStr = getEtDateStr();
 
   // ── Phase A: gather analysis data OUTSIDE the lock ────────────────────────
   const pnlRow = db.prepare(`
