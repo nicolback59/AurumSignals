@@ -31,7 +31,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, logWorkerError, sendNotification, withOverridesLock } = require('./worker-utils');
+const { openDb, heartbeat, logWorkerError, sendNotification, withOverridesLock, getEtDateStr } = require('./worker-utils');
 
 const WORKER_NAME = 'drawdown-protection';
 const STRATEGIES  = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
@@ -76,7 +76,7 @@ function assessDrawdown(db, strategy) {
   if (consecutiveWins > 0) consecutiveLosses = 0;
 
   // Daily PnL DD%: sum today's pnl_pts, convert to rough $, divide by account floor
-  const today = new Date().toISOString().slice(0, 10);
+  const today = getEtDateStr();
   const todayPnl = db.prepare(`
     SELECT SUM(pnl_pts) AS total_pts FROM trade_dna
     WHERE strategy_name = ? AND outcome IN ('WIN','LOSS')

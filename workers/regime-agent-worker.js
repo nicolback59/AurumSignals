@@ -210,7 +210,11 @@ function runCycle() {
         continue;
       }
 
-      const bars   = JSON.parse(row.bars_5m);
+      let bars;
+      try { bars = JSON.parse(row.bars_5m); } catch (_) {
+        console.warn(`[${WORKER_NAME}] ${instrument}: bars_5m JSON parse failed — skipping`);
+        continue;
+      }
       const result = classifyRegime(bars);
       if (!result) {
         console.log(`[${WORKER_NAME}] ${instrument}: insufficient bars (${bars.length}) — need ${MIN_BARS}`);

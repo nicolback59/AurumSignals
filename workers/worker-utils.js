@@ -44,6 +44,11 @@ function bumpCycle(db, workerName) {
 
 /** Increment error_count and store the last error message. */
 function logWorkerError(db, workerName, err) {
+  if (!db) {
+    // db unavailable (e.g. fatal crash before openDb) — at least surface to stderr
+    console.error(`[${workerName}] logWorkerError (no db): ${err?.message ?? err}`);
+    return;
+  }
   try {
     db.prepare(`
       UPDATE worker_health
@@ -52,6 +57,21 @@ function logWorkerError(db, workerName, err) {
       WHERE worker_name = ?
     `).run(String(err?.message ?? err), workerName);
   } catch (_) { /* non-critical */ }
+}
+
+/**
+ * Return today's date in Eastern Time (America/New_York) as a YYYY-MM-DD string.
+ * Uses Intl.DateTimeFormat so it handles DST automatically and works correctly
+ * on UTC servers.  Trading days follow ET — use this instead of
+ * new Date().toISOString().slice(0,10) whenever "today" means the ET calendar day.
+ */
+function getEtDateStr(date = new Date()) {
+  const fmt = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'America/New_York',
+    year: 'numeric', month: '2-digit', day: '2-digit',
+  });
+  const parts = Object.fromEntries(fmt.formatToParts(date).map(p => [p.type, p.value]));
+  return `${parts.year}-${parts.month}-${parts.day}`;
 }
 
 /** Read the latest metadata blob for a worker (returns parsed object or {}). */
@@ -183,6 +203,6 @@ function loadOverrides(db) {
 
 module.exports = {
   openDb, heartbeat, bumpCycle, logWorkerError, getWorkerMeta, sendNotification,
-  withOverridesLock, loadOverrides,
+  withOverridesLock, loadOverrides, getEtDateStr,
   DB_PATH,
 };
