@@ -31,7 +31,7 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') });
 
-const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
+const { openDb, heartbeat, logWorkerError, sendNotification, withOverridesLock } = require('./worker-utils');
 
 const WORKER_NAME = 'drawdown-protection';
 const STRATEGIES  = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
@@ -42,27 +42,6 @@ const ACCOUNT_FLOOR  = 5000;
 
 const SIZE_MULT  = [1.00, 0.75, 0.50, 0.00];
 const LEVEL_NAME = ['CLEAR', 'WATCH', 'REDUCE', 'PAUSE'];
-
-// ── Adaptive overrides helpers ────────────────────────────────────────────────
-
-function loadOverrides(db) {
-  try {
-    const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
-    ).get();
-    return row?.params_json ? JSON.parse(row.params_json) : {};
-  } catch (_) { return {}; }
-}
-
-function saveOverrides(db, overrides) {
-  db.prepare(`
-    INSERT INTO strategy_params (key, params_json, updated_at)
-    VALUES ('ADAPTIVE_OVERRIDES', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET
-      params_json = excluded.params_json,
-      updated_at  = excluded.updated_at
-  `).run(JSON.stringify(overrides));
-}
 
 // ── Per-strategy drawdown assessment ─────────────────────────────────────────
 
@@ -165,20 +144,24 @@ async function run() {
     VALUES (?, ?, ?, ?, ?, datetime('now'))
   `);
 
-  const overrides = loadOverrides(db);
-  let ovChanged   = false;
-  let processed   = 0;
-
+  // ── Phase A: collect all assessments BEFORE acquiring the lock ───────────────
+  // DB reads happen here; the lock is held for the minimum time (modification only).
+  const assessments = [];
   for (const strategy of STRATEGIES) {
-    try {
-      const instrument = strategy.startsWith('MGC') ? 'MGC' : 'MNQ';
-      const result     = assessDrawdown(db, strategy);
+    const instrument = strategy.startsWith('MGC') ? 'MGC' : 'MNQ';
+    const result     = assessDrawdown(db, strategy);
+    assessments.push({ strategy, instrument, result });
+  }
 
+  // ── Phase B: apply all assessed levels atomically under BEGIN IMMEDIATE ───────
+  // No other worker can interleave between the read and write of this JSON blob.
+  const changes = [];   // carries the per-strategy outcome for Phase C logging
+  withOverridesLock(db, overrides => {
+    for (const { strategy, instrument, result } of assessments) {
       if (result.skip) {
-        console.log(`[${WORKER_NAME}] ${strategy}: skip — ${result.reason} (${result.tradesAvailable} trades)`);
+        changes.push({ strategy, instrument, skip: true, ...result });
         continue;
       }
-
       const { consecutiveLosses, consecutiveWins, dailyDDPct, dailyPts, tradesAvailable } = result;
 
       if (!overrides[strategy]) {
@@ -191,24 +174,20 @@ async function run() {
       const ov = overrides[strategy];
       if (!ov.reasons) ov.reasons = [];
 
-      const prevLevel      = ov.drawdownProtectionLevel ?? 0;
+      const prevLevel = ov.drawdownProtectionLevel ?? 0;
 
-      // ── Recovery: consecutive wins reduce level ────────────────────────────
       let targetLevel = determineLevel(consecutiveLosses, dailyDDPct);
       if (consecutiveWins >= 2 && prevLevel >= 2) targetLevel = Math.min(targetLevel, prevLevel - 1);
       if (consecutiveWins >= 1 && prevLevel === 1) targetLevel = 0;
-      // Never auto-recover past what the current data supports
       targetLevel = Math.max(targetLevel, determineLevel(consecutiveLosses, dailyDDPct));
 
-      const newLevel   = targetLevel;
-      const sizeMult   = newLevel < 3 ? SIZE_MULT[newLevel] : 0; // level 3 pauses fully
-      const levelName  = LEVEL_NAME[newLevel];
+      const newLevel     = targetLevel;
+      const sizeMult     = newLevel < 3 ? SIZE_MULT[newLevel] : 0;
+      const levelName    = LEVEL_NAME[newLevel];
       const levelChanged = newLevel !== prevLevel;
 
-      // ── Update ADAPTIVE_OVERRIDES ──────────────────────────────────────────
       ov.drawdownProtectionLevel = newLevel;
       ov.drawdownSizeMult        = sizeMult;
-      ovChanged = true;
 
       if (newLevel === 3 && !ov.manualPause) {
         const alreadyTagged = ov.reasons.some(r => r.startsWith('drawdown-protection: PAUSE'));
@@ -217,8 +196,7 @@ async function run() {
           ov.paused = true;
         }
       } else if (newLevel < 3) {
-        // Remove any drawdown-protection pause reason
-        const hasDDReason  = ov.reasons.some(r => r.startsWith('drawdown-protection:'));
+        const hasDDReason    = ov.reasons.some(r => r.startsWith('drawdown-protection:'));
         const hasOtherReason = ov.reasons.some(r => !r.startsWith('drawdown-protection:'));
         if (hasDDReason) {
           ov.reasons = ov.reasons.filter(r => !r.startsWith('drawdown-protection:'));
@@ -226,71 +204,83 @@ async function run() {
         }
       }
 
-      // ── Log ───────────────────────────────────────────────────────────────
-      const notes = [];
-      if (levelChanged) notes.push(`level ${prevLevel}→${newLevel}`);
-      if (consecutiveLosses > 0) notes.push(`${consecutiveLosses} consec losses`);
-      if (dailyDDPct > 0) notes.push(`daily DD ${(dailyDDPct * 100).toFixed(1)}%`);
-      if (consecutiveWins > 0) notes.push(`${consecutiveWins} consec wins`);
+      changes.push({ strategy, instrument, result,
+        newLevel, sizeMult, levelName, levelChanged, prevLevel });
+    }
+  });
 
+  // ── Phase C: log and notify OUTSIDE the lock (notifications are async HTTP) ──
+  let processed = 0;
+  for (const ch of changes) {
+    if (ch.skip) {
+      console.log(`[${WORKER_NAME}] ${ch.strategy}: skip — ${ch.reason} (${ch.tradesAvailable} trades)`);
+      continue;
+    }
+
+    const { strategy, instrument, result, newLevel, sizeMult, levelName, levelChanged, prevLevel } = ch;
+    const { consecutiveLosses, consecutiveWins, dailyDDPct, dailyPts } = result;
+
+    const notes = [];
+    if (levelChanged)           notes.push(`level ${prevLevel}→${newLevel}`);
+    if (consecutiveLosses > 0)  notes.push(`${consecutiveLosses} consec losses`);
+    if (dailyDDPct > 0)         notes.push(`daily DD ${(dailyDDPct * 100).toFixed(1)}%`);
+    if (consecutiveWins > 0)    notes.push(`${consecutiveWins} consec wins`);
+
+    try {
       insertLog.run(
         strategy, instrument,
         newLevel, levelName,
         consecutiveLosses, consecutiveWins,
         +dailyDDPct.toFixed(4), +dailyPts.toFixed(2),
-        sizeMult,
-        prevLevel, levelChanged ? 1 : 0,
+        sizeMult, prevLevel, levelChanged ? 1 : 0,
         notes.join('; ') || null,
       );
+    } catch (logErr) {
+      console.error(`[${WORKER_NAME}] insertLog error for ${strategy}: ${logErr.message}`);
+    }
 
-      console.log(
-        `[${WORKER_NAME}] ${strategy}: level=${levelName}(${newLevel}) ` +
-        `losses=${consecutiveLosses} wins=${consecutiveWins} ` +
-        `DD=${(dailyDDPct * 100).toFixed(1)}% sizeMult=${sizeMult}` +
-        (levelChanged ? ` ⟵ changed from ${LEVEL_NAME[prevLevel]}` : ''),
-      );
+    console.log(
+      `[${WORKER_NAME}] ${strategy}: level=${levelName}(${newLevel}) ` +
+      `losses=${consecutiveLosses} wins=${consecutiveWins} ` +
+      `DD=${(dailyDDPct * 100).toFixed(1)}% sizeMult=${sizeMult}` +
+      (levelChanged ? ` ⟵ changed from ${LEVEL_NAME[prevLevel]}` : ''),
+    );
 
-      // ── Agent message and ntfy on level change ─────────────────────────────
-      if (levelChanged) {
+    if (levelChanged) {
+      try {
         const msgType  = newLevel === 3 ? 'veto' : 'observation';
         const priority = newLevel >= 2 ? 2 : 4;
         insertMsg.run(
           'drawdown-protection', msgType, strategy, priority,
           JSON.stringify({
-            protection_level: newLevel,
-            level_name:       levelName,
-            prev_level:       LEVEL_NAME[prevLevel],
+            protection_level:   newLevel,
+            level_name:         levelName,
+            prev_level:         LEVEL_NAME[prevLevel],
             consecutive_losses: consecutiveLosses,
-            daily_dd_pct:     +(dailyDDPct * 100).toFixed(1),
+            daily_dd_pct:       +(dailyDDPct * 100).toFixed(1),
             drawdown_size_mult: sizeMult,
             action: newLevel === 3 ? 'strategy_paused' :
-                    newLevel >  prevLevel ? `size_reduced_to_${(sizeMult * 100).toFixed(0)}pct` :
+                    newLevel > prevLevel ? `size_reduced_to_${(sizeMult * 100).toFixed(0)}pct` :
                     `size_restored_to_${(sizeMult * 100).toFixed(0)}pct`,
           }),
         );
+      } catch (_) {}
 
-        if (newLevel >= 2) {
-          await sendNotification(
-            newLevel === 3
-              ? `DD PAUSE — ${strategy}`
-              : `DD REDUCE — ${strategy}`,
-            `${strategy} drawdown protection level ${newLevel} (${levelName})\n` +
-            `Consecutive losses: ${consecutiveLosses}\n` +
-            `Daily DD: ${(dailyDDPct * 100).toFixed(1)}%\n` +
-            `Size multiplier: ${sizeMult === 0 ? 'PAUSED' : (sizeMult * 100).toFixed(0) + '%'}`,
-            { priority: newLevel === 3 ? 'high' : 'default', tags: newLevel === 3 ? 'red_circle,no_entry' : 'orange_circle,warning' },
-          );
-        }
+      if (newLevel >= 2) {
+        await sendNotification(
+          newLevel === 3 ? `DD PAUSE — ${strategy}` : `DD REDUCE — ${strategy}`,
+          `${strategy} drawdown protection level ${newLevel} (${levelName})\n` +
+          `Consecutive losses: ${consecutiveLosses}\n` +
+          `Daily DD: ${(dailyDDPct * 100).toFixed(1)}%\n` +
+          `Size multiplier: ${sizeMult === 0 ? 'PAUSED' : (sizeMult * 100).toFixed(0) + '%'}`,
+          { priority: newLevel === 3 ? 'high' : 'default',
+            tags: newLevel === 3 ? 'red_circle,no_entry' : 'orange_circle,warning' },
+        );
       }
-
-      processed++;
-    } catch (stratErr) {
-      console.error(`[${WORKER_NAME}] error on ${strategy}: ${stratErr.message}`);
-      logWorkerError(db, WORKER_NAME, stratErr);
     }
-  }
 
-  if (ovChanged) saveOverrides(db, overrides);
+    processed++;
+  }
 
   heartbeat(db, WORKER_NAME, 'COMPLETED', {
     pid: process.pid, processed,

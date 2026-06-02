@@ -9,7 +9,8 @@ const DB_PATH = process.env.DB_PATH || path.join(__dirname, '..', 'signals.db');
 function openDb() {
   const db = new Database(DB_PATH);
   db.pragma('journal_mode = WAL');
-  db.pragma('busy_timeout = 5000');
+  db.pragma('busy_timeout = 15000');   // 15 s — handles 5+ concurrent writers at :00/:30
+  db.pragma('foreign_keys = ON');
   return db;
 }
 
@@ -136,4 +137,52 @@ async function sendNotification(title, body, { priority = 'default', tags = 'bel
   return { ntfyOk, emailOk };
 }
 
-module.exports = { openDb, heartbeat, bumpCycle, logWorkerError, getWorkerMeta, sendNotification, DB_PATH };
+/**
+ * Atomically read-modify-write the ADAPTIVE_OVERRIDES JSON blob.
+ *
+ * Uses BEGIN IMMEDIATE so the write lock is acquired BEFORE reading — this
+ * prevents the read-modify-write race that occurs when 5+ workers fire
+ * simultaneously at :00/:30 and each overwrites the others' changes.
+ *
+ * @param {Database} db
+ * @param {function(object): void} fn  — receives the parsed overrides object;
+ *   mutate it in place.  Do NOT use await inside fn — this is synchronous.
+ */
+function withOverridesLock(db, fn) {
+  const locked = db.transaction(() => {
+    const row = db.prepare(
+      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+    ).get();
+    const overrides = row?.params_json ? JSON.parse(row.params_json) : {};
+    fn(overrides);
+    db.prepare(`
+      INSERT INTO strategy_params (key, params_json, updated_at)
+      VALUES ('ADAPTIVE_OVERRIDES', ?, datetime('now'))
+      ON CONFLICT(key) DO UPDATE SET
+        params_json = excluded.params_json,
+        updated_at  = excluded.updated_at
+    `).run(JSON.stringify(overrides));
+  });
+  try {
+    locked.immediate();
+  } catch (err) {
+    console.error('[withOverridesLock] transaction failed:', err.message);
+    throw err;
+  }
+}
+
+/** Read-only load of ADAPTIVE_OVERRIDES (no lock needed for reads in WAL mode). */
+function loadOverrides(db) {
+  try {
+    const row = db.prepare(
+      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+    ).get();
+    return row?.params_json ? JSON.parse(row.params_json) : {};
+  } catch (_) { return {}; }
+}
+
+module.exports = {
+  openDb, heartbeat, bumpCycle, logWorkerError, getWorkerMeta, sendNotification,
+  withOverridesLock, loadOverrides,
+  DB_PATH,
+};
