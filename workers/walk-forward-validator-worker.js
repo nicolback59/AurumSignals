@@ -29,7 +29,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME   = 'walk-forward-validator';
-const STRATEGIES    = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES    = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 const OOS_DAYS      = 90;
 const OVERFIT_RATIO = 0.60;  // OOS Sharpe must be ≥ 60% of IS Sharpe to pass
 

@@ -40,7 +40,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME        = 'performance-multiplier';
-const STRATEGIES         = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES         = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 const MIN_IMPACT         = 1.5;    // edge_discoveries minimum impact_score
 const MIN_DELTA_ED       = 0.08;   // minimum |wr_delta| to act on from edge_discoveries
 const MIN_DELTA_EXP      = 0.07;   // minimum |wr_delta| from confirmed experiments

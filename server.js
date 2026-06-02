@@ -4036,7 +4036,7 @@ app.get('/api/signal-gates', (req, res) => {
     let adaptiveOverrides = {};
     try {
       const ovRow = db.prepare(
-        "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+        "SELECT params_json FROM strategy_params WHERE instrument = 'ADAPTIVE_OVERRIDES'"
       ).get();
       adaptiveOverrides = ovRow?.params_json ? JSON.parse(ovRow.params_json) : {};
     } catch (_) {}

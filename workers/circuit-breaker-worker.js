@@ -29,7 +29,7 @@ const { openDb, heartbeat, logWorkerError, withOverridesLock } = require('./work
 
 const WORKER_NAME = 'circuit-breaker';
 
-const STRATEGIES = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 
 const STREAK_THRESHOLD    = 3;    // consecutive losses to trip
 const RATE_THRESHOLD      = 0.60; // loss rate to trip

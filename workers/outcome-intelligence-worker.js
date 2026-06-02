@@ -5,7 +5,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME = 'outcome-intelligence';
-const STRATEGIES  = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES  = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 
 function percentile(sorted, p) {
   return sorted[Math.floor(p * sorted.length)];

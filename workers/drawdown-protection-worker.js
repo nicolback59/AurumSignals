@@ -34,7 +34,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification, withOverridesLock, getEtDateStr } = require('./worker-utils');
 
 const WORKER_NAME = 'drawdown-protection';
-const STRATEGIES  = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES  = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 
 // Points-per-dollar factor for rough DD% estimation (per 1 contract, $5k account floor)
 const PTS_PER_DOLLAR = { MNQ: 2, MGC: 10 };

@@ -78,36 +78,36 @@ module.exports = {
     // Hot-standby scanner — stays silent while 'scanner-worker' is alive.
     // Polls the primary heartbeat every 30 s; auto-promotes if primary goes
     // silent for > 3 min. Registers as 'scanner-standby' in worker_health.
-    // To enable: uncomment this block and set SCANNER_ROLE=standby below.
-    // {
-    //   name:    'scanner-standby',
-    //   script:  'workers/scanner-worker.js',
-    //   instances: 1,
-    //   exec_mode: 'fork',
-    //   watch:   false,
-    //   max_memory_restart: '350M',
-    //   node_args: '--max-old-space-size=350',
-    //
-    //   env_production: {
-    //     NODE_ENV:      'production',
-    //     LOG_LEVEL:     'signal',
-    //     SCANNER_ROLE:  'standby',
-    //   },
-    //   env_development: {
-    //     NODE_ENV:  'development',
-    //     LOG_LEVEL: 'full',
-    //     SCANNER_ROLE: 'standby',
-    //   },
-    //
-    //   restart_delay:             10000,
-    //   max_restarts:              20,
-    //   min_uptime:                '15s',
-    //   exp_backoff_restart_delay: 200,
-    //   log_date_format:           'YYYY-MM-DD HH:mm:ss Z',
-    //   error_file:                '/root/AurumSignals/logs/scanner-standby-error.log',
-    //   out_file:                  '/root/AurumSignals/logs/scanner-standby-out.log',
-    //   merge_logs:                true,
-    // },
+    // Hot-standby: auto-promotes if primary goes silent for > 3 min.
+    {
+      name:    'scanner-standby',
+      script:  'workers/scanner-worker.js',
+      instances: 1,
+      exec_mode: 'fork',
+      watch:   false,
+      max_memory_restart: '350M',
+      node_args: '--max-old-space-size=350',
+
+      env_production: {
+        NODE_ENV:      'production',
+        LOG_LEVEL:     'signal',
+        SCANNER_ROLE:  'standby',
+      },
+      env_development: {
+        NODE_ENV:  'development',
+        LOG_LEVEL: 'full',
+        SCANNER_ROLE: 'standby',
+      },
+
+      restart_delay:             10000,
+      max_restarts:              20,
+      min_uptime:                '15s',
+      exp_backoff_restart_delay: 200,
+      log_date_format:           'YYYY-MM-DD HH:mm:ss Z',
+      error_file:                '/root/AurumSignals/logs/scanner-standby-error.log',
+      out_file:                  '/root/AurumSignals/logs/scanner-standby-out.log',
+      merge_logs:                true,
+    },
 
     // ── 4. RECONCILIATION WORKER ──────────────────────────────────────────────
     // Time-based trade lifecycle: sweep expired signals, fix stuck trades.
@@ -248,7 +248,7 @@ module.exports = {
       instances:    1,
       exec_mode:    'fork',
       watch:        false,
-      cron_restart: '20 9 * * 1-5',
+      cron_restart: '20 13 * * 1-5',  // 13:20 UTC = 09:20 EDT (UTC-4)
       autorestart:  false,
       max_memory_restart: '200M',
 

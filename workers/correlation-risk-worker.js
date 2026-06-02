@@ -32,7 +32,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME         = 'correlation-risk';
-const STRATEGIES          = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES          = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 const HIGH_CORR_THRESHOLD = 0.60;   // flag pairs above this
 const WINDOW_DAYS         = 30;
 

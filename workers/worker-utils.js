@@ -171,14 +171,14 @@ async function sendNotification(title, body, { priority = 'default', tags = 'bel
 function withOverridesLock(db, fn) {
   const locked = db.transaction(() => {
     const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+      "SELECT params_json FROM strategy_params WHERE instrument = 'ADAPTIVE_OVERRIDES'"
     ).get();
     const overrides = row?.params_json ? JSON.parse(row.params_json) : {};
     fn(overrides);
     db.prepare(`
-      INSERT INTO strategy_params (key, params_json, updated_at)
+      INSERT INTO strategy_params (instrument, params_json, updated_at)
       VALUES ('ADAPTIVE_OVERRIDES', ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET
+      ON CONFLICT(instrument) DO UPDATE SET
         params_json = excluded.params_json,
         updated_at  = excluded.updated_at
     `).run(JSON.stringify(overrides));
@@ -195,7 +195,7 @@ function withOverridesLock(db, fn) {
 function loadOverrides(db) {
   try {
     const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+      "SELECT params_json FROM strategy_params WHERE instrument = 'ADAPTIVE_OVERRIDES'"
     ).get();
     return row?.params_json ? JSON.parse(row.params_json) : {};
   } catch (_) { return {}; }

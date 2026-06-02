@@ -32,7 +32,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification, withOverridesLock, getEtDateStr } = require('./worker-utils');
 
 const WORKER_NAME        = 'portfolio-circuit-breaker';
-const STRATEGIES         = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES         = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 const COMBINED_PNL_LIMIT = -15;  // pts — combined today triggers WARNING
 const FLOOD_THRESHOLD    =   3;  // how many strategies must be impaired to fire
 const MIN_L2_LEVEL       =   2;  // drawdownProtectionLevel ≥ 2 = REDUCE or PAUSE

@@ -42,7 +42,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME = 'portfolio-engine';
-const STRATEGIES  = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES  = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 
 // Capital tiers for Phase 8 reference data in the output
 const CAPITAL_TIERS = [
@@ -57,7 +57,7 @@ const CAPITAL_TIERS = [
 function loadOverrides(db) {
   try {
     const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+      "SELECT params_json FROM strategy_params WHERE instrument = 'ADAPTIVE_OVERRIDES'"
     ).get();
     return row?.params_json ? JSON.parse(row.params_json) : {};
   } catch (_) { return {}; }

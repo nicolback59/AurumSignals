@@ -44,7 +44,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME = 'quality-score-validator';
-const STRATEGIES  = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES  = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 const MIN_N_GRADE = 10;   // minimum trades per grade to report
 const MIN_N_COMP  = 10;   // minimum trades per component value to report
 const WINDOW_DAYS = 180;  // use 180 days for stability

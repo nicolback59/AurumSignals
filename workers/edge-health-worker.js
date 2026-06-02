@@ -32,7 +32,7 @@ const { openDb, heartbeat, logWorkerError } = require('./worker-utils');
 
 const WORKER_NAME = 'edge-health';
 
-const STRATEGIES = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 
 const DECAY_THRESHOLDS = { HEALTHY: 20, WATCH: 40, WARNING: 60, CRITICAL: 80 };
 

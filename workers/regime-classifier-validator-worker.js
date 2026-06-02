@@ -41,7 +41,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME  = 'regime-classifier-validator';
-const STRATEGIES   = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES   = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 const WINDOW_DAYS  = 180;
 const MIN_N        = 12;
 const Z_THRESHOLD  = 1.28;   // p < 0.10 one-tailed — sufficient for multiplier validation

@@ -249,11 +249,11 @@ async function run() {
   }
 
   // ── 5. ADAPTIVE_OVERRIDES integrity ──────────────────────────────────────
-  const OV_STRATEGIES = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+  const OV_STRATEGIES = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
   const ovIssues = [];
   try {
     const ovRow = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+      "SELECT params_json FROM strategy_params WHERE instrument = 'ADAPTIVE_OVERRIDES'"
     ).get();
     if (!ovRow?.params_json) {
       ovIssues.push('row missing');

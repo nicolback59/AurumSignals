@@ -5,7 +5,7 @@ require('dotenv').config({ path: require('path').join(__dirname, '..', '.env') }
 const { openDb, heartbeat, bumpCycle, logWorkerError, sendNotification } = require('./worker-utils');
 
 const WORKER_NAME = 'strategy-evolution';
-const STRATEGIES  = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES  = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 
 const RECENT_MIN_TRADES = 15;
 const PRIOR_MIN_TRADES  = 5;

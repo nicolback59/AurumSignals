@@ -36,7 +36,7 @@ const { openDb, heartbeat, logWorkerError, withOverridesLock } = require('./work
 
 const WORKER_NAME = 'signal-gate';
 
-const STRATEGIES = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 
 const CONF_ADJUSTMENT = { OPEN: 0, CAUTIOUS: 5, RESTRICTED: 10, GATED: 20 };
 

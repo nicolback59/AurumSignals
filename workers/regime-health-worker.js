@@ -19,13 +19,13 @@ const { openDb, heartbeat, logWorkerError, sendNotification } = require('./worke
 
 const WORKER_NAME = 'regime-health';
 
-const STRATEGIES = ['MNQ_INTRADAY', 'MNQ_SWING', 'MNQ_50PT', 'MGC_SCALP'];
+const STRATEGIES = ['MNQ_INTRADAY', 'MGC_SCALP', 'NQ_NY_OPEN', 'MNQ_FIRE'];
 
 const STRATEGY_INSTRUMENT = {
   MNQ_INTRADAY: 'MNQ',
-  MNQ_SWING:    'MNQ',
-  MNQ_50PT:     'MNQ',
   MGC_SCALP:    'MGC',
+  NQ_NY_OPEN:   'MNQ',
+  MNQ_FIRE:     'MNQ',
 };
 
 const REGIME_RECS = {
@@ -98,7 +98,7 @@ function behaviorMode(health) {
 function loadOverrides(db) {
   try {
     const row = db.prepare(
-      "SELECT params_json FROM strategy_params WHERE key = 'ADAPTIVE_OVERRIDES'"
+      "SELECT params_json FROM strategy_params WHERE instrument = 'ADAPTIVE_OVERRIDES'"
     ).get();
     return row?.params_json ? JSON.parse(row.params_json) : {};
   } catch (_) { return {}; }
@@ -106,9 +106,9 @@ function loadOverrides(db) {
 
 function saveOverrides(db, overrides) {
   db.prepare(`
-    INSERT INTO strategy_params (key, params_json, updated_at)
+    INSERT INTO strategy_params (instrument, params_json, updated_at)
     VALUES ('ADAPTIVE_OVERRIDES', ?, datetime('now'))
-    ON CONFLICT(key) DO UPDATE SET
+    ON CONFLICT(instrument) DO UPDATE SET
       params_json = excluded.params_json,
       updated_at  = excluded.updated_at
   `).run(JSON.stringify(overrides));
