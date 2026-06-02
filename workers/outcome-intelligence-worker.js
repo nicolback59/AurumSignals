@@ -40,6 +40,7 @@ function runPhase1(db, strategy, runDate) {
     FROM trade_dna
     WHERE strategy_name = ?
       AND outcome IN ('WIN','LOSS','BE')
+      AND source = 'LIVE'
     ORDER BY trade_date ASC
   `).all(strategy);
 
@@ -155,6 +156,7 @@ function runPhase2(db, strategy, runDate) {
     WHERE strategy_name = ?
       AND outcome = 'WIN'
       AND mfe_pts IS NOT NULL
+      AND source = 'LIVE'
     ORDER BY mfe_sl_ratio ASC
   `).all(strategy);
 
@@ -181,6 +183,7 @@ function runPhase2(db, strategy, runDate) {
     WHERE strategy_name = ?
       AND outcome = 'LOSS'
       AND mfe_pts IS NOT NULL
+      AND source = 'LIVE'
     ORDER BY mfe_sl_ratio ASC
   `).all(strategy);
 
@@ -229,6 +232,7 @@ function runPhase3(db, strategy, runDate) {
       AND outcome = 'WIN'
       AND mae_pts IS NOT NULL
       AND atr > 0
+      AND source = 'LIVE'
   `).all(strategy);
 
   if (rows.length < 10) {
@@ -264,6 +268,7 @@ function runPhase8(db, strategy, runDate) {
     FROM trade_dna
     WHERE strategy_name = ?
       AND outcome IN ('WIN', 'LOSS', 'BE')
+      AND source = 'LIVE'
   `).all(strategy);
 
   function bucket(rows, key) {
@@ -324,6 +329,7 @@ function runPhase9(db, strategy, runDate) {
     WHERE strategy_name = ?
       AND outcome IN ('WIN', 'LOSS')
       AND regime IS NOT NULL
+      AND source = 'LIVE'
     GROUP BY regime
   `).all(strategy);
 
@@ -379,6 +385,7 @@ function runPhase10(db, strategy, runDate) {
     WHERE strategy_name = ?
       AND outcome IN ('WIN', 'LOSS', 'BE')
       AND session IS NOT NULL
+      AND source = 'LIVE'
     GROUP BY session
   `).all(strategy);
 
@@ -419,6 +426,7 @@ function runPhase13(db, strategy, runDate) {
       AND outcome IN ('WIN', 'LOSS')
       AND regime IS NOT NULL
       AND session IS NOT NULL
+      AND source = 'LIVE'
   `).all(strategy);
 
   const totalRows = db.prepare(`
@@ -427,6 +435,7 @@ function runPhase13(db, strategy, runDate) {
     FROM trade_dna
     WHERE strategy_name = ?
       AND outcome IN ('WIN', 'LOSS')
+      AND source = 'LIVE'
   `).get(strategy);
 
   const baselineWr = (totalRows && totalRows.n > 0)
@@ -485,6 +494,7 @@ function runPhase13(db, strategy, runDate) {
     WHERE strategy_name = ?
       AND outcome IN ('WIN', 'LOSS')
       AND hour_et IS NOT NULL
+      AND source = 'LIVE'
     GROUP BY hour_et
   `).all(strategy);
 
